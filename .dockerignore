@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+instance/
+.git/
+.env
+static/captures/*
+static/results/*
+runs/

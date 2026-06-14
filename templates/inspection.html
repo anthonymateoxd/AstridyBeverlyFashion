@@ -1,0 +1,70 @@
+{% extends "base.html" %} {% block content %}
+<header class="page-header">
+  <div>
+    <h1>Inspección en vivo</h1>
+    <p>Captura, análisis y registro individual de prendas</p>
+  </div>
+  <span class="live-badge">● Cámara activa</span>
+</header>
+<section class="grid-2">
+  <article class="card">
+    <h2>Nueva inspección</h2>
+
+    <div class="live-camera">
+      <img
+        src="{{ url_for('video_feed') }}"
+        alt="Cámara en vivo"
+      />
+      <div class="camera-label">Cámara en vivo · Estación de inspección</div>
+    </div>
+
+    <form
+      class="inspect-form"
+      method="post"
+      enctype="multipart/form-data"
+    >
+      <div class="auto-note">
+        El sistema capturará la imagen desde la cámara activa y generará
+        automáticamente el registro de inspección con fecha, resultado, defecto
+        detectado, confianza, zona e imagen procesada.
+      </div>
+
+      <button type="submit">Capturar e inspeccionar</button>
+    </form>
+  </article>
+  <article class="card">
+    <h2>Resultado</h2>
+    {% if result %}
+    <div class="result-box {{ result.status|lower }}">
+      <h3>{{ result.status }}</h3>
+      <p><strong>ID:</strong> {{ result.code }}</p>
+      <p><strong>Defecto:</strong> {{ result.defect_type }}</p>
+      <p><strong>Confianza:</strong> {{ result.confidence }}%</p>
+      <p><strong>Zona:</strong> {{ result.zone }}</p>
+    </div>
+    <div class="image-pair">
+      <div>
+        <p>Original</p>
+        <img
+          src="{{ url_for('static', filename=result.image_original) }}"
+          alt="Original"
+        />
+      </div>
+      {% if result.image_result %}
+      <div>
+        <p>Procesada</p>
+        <img
+          src="{{ url_for('static', filename=result.image_result) }}"
+          alt="Procesada"
+        />
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <p>Ejecute una inspección para ver el resultado.</p>
+    </div>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}

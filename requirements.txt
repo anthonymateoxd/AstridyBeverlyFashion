@@ -1,0 +1,8 @@
+Flask==3.0.3
+Werkzeug==3.0.3
+opencv-python==4.10.0.84
+numpy==1.26.4
+Pillow==10.4.0
+ultralytics==8.3.40
+mysql-connector-python==9.0.0
+python-dotenv==1.0.1

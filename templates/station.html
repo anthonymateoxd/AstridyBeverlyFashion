@@ -1,0 +1,236 @@
+{% extends "base.html" %} {% block content %}
+<header class="page-header station-header">
+  <div>
+    <h1>Estación de inspección</h1>
+    <p>Modo automático y manual de control de calidad visual</p>
+  </div>
+
+  <span
+    id="stationModeBadge"
+    class="live-badge"
+    >● Modo manual</span
+  >
+</header>
+
+<section class="station-layout">
+  <article class="station-camera-card">
+    <div class="station-camera-topbar">
+      <span>Cámara en vivo</span>
+      <span>Área de inspección activa</span>
+      <span id="cameraText">Sistema listo</span>
+    </div>
+
+    <div class="station-camera-frame">
+      <img
+        src="{{ url_for('video_feed') }}"
+        alt="Cámara de estación de inspección"
+      />
+
+      <div class="station-scan-line"></div>
+
+      <div class="station-overlay-bottom">
+        <span>Visión artificial · Control de calidad textil</span>
+        <span id="autoStateText">Automático detenido</span>
+      </div>
+    </div>
+  </article>
+
+  <aside class="station-control-card">
+    <h2>Control de inspección</h2>
+
+    <div class="station-actions">
+      <button
+        id="manualBtn"
+        type="button"
+      >
+        Inspeccionar ahora
+      </button>
+
+      <button
+        id="autoStartBtn"
+        type="button"
+      >
+        Iniciar automático
+      </button>
+
+      <button
+        id="autoStopBtn"
+        type="button"
+        class="secondary"
+      >
+        Detener automático
+      </button>
+    </div>
+
+    <div class="station-info">
+      <p>
+        <strong>Modo manual:</strong> registra una inspección cuando el operario
+        lo indique.
+      </p>
+      <p>
+        <strong>Modo automático:</strong> registra inspecciones cuando detecta
+        movimiento o cambio en la zona de cámara.
+      </p>
+    </div>
+
+    <div
+      id="stationMessage"
+      class="station-message"
+    >
+      Esperando acción del sistema.
+    </div>
+
+    <div class="station-last-result">
+      <h3>Último resultado</h3>
+
+      <p><strong>ID:</strong> <span id="lastCode">N/A</span></p>
+      <p><strong>Estado:</strong> <span id="lastStatus">N/A</span></p>
+      <p><strong>Defecto:</strong> <span id="lastDefect">N/A</span></p>
+      <p><strong>Confianza:</strong> <span id="lastConfidence">N/A</span></p>
+      <p><strong>Zona:</strong> <span id="lastZone">N/A</span></p>
+      <p><strong>Fecha:</strong> <span id="lastDate">N/A</span></p>
+    </div>
+  </aside>
+</section>
+
+<script>
+  const manualBtn = document.getElementById('manualBtn');
+  const autoStartBtn = document.getElementById('autoStartBtn');
+  const autoStopBtn = document.getElementById('autoStopBtn');
+  const stationMessage = document.getElementById('stationMessage');
+  const stationModeBadge = document.getElementById('stationModeBadge');
+  const autoStateText = document.getElementById('autoStateText');
+
+  function setMessage(text, type = 'normal') {
+    stationMessage.textContent = text;
+    stationMessage.className = 'station-message ' + type;
+  }
+
+  function setLastResult(result) {
+    if (!result) return;
+
+    document.getElementById('lastCode').textContent = result.code || 'N/A';
+    document.getElementById('lastStatus').textContent = result.status || 'N/A';
+    document.getElementById('lastDefect').textContent =
+      result.defect_type || 'N/A';
+    document.getElementById('lastConfidence').textContent = result.confidence
+      ? result.confidence + '%'
+      : 'N/A';
+    document.getElementById('lastZone').textContent = result.zone || 'N/A';
+    document.getElementById('lastDate').textContent =
+      result.created_at || 'N/A';
+  }
+
+  async function manualInspect() {
+    manualBtn.disabled = true;
+    setMessage('Ejecutando inspección manual...', 'normal');
+
+    try {
+      const response = await fetch("{{ url_for('station_manual_inspect') }}", {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+
+      if (data.ok) {
+        setMessage(data.message, 'success');
+        setLastResult(data.result);
+      } else {
+        setMessage(
+          data.message || 'No se pudo ejecutar la inspección.',
+          'error',
+        );
+      }
+    } catch (error) {
+      setMessage('Error de conexión con el servidor.', 'error');
+    }
+
+    manualBtn.disabled = false;
+  }
+
+  async function startAuto() {
+    setMessage('Iniciando modo automático...', 'normal');
+
+    try {
+      const response = await fetch("{{ url_for('station_auto_start') }}", {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+
+      if (data.ok) {
+        stationModeBadge.textContent = '● Modo automático';
+        autoStateText.textContent = 'Automático activo';
+        setMessage(data.message, 'success');
+      } else {
+        setMessage(
+          data.message || 'No se pudo iniciar el modo automático.',
+          'error',
+        );
+      }
+    } catch (error) {
+      setMessage('Error de conexión con el servidor.', 'error');
+    }
+  }
+
+  async function stopAuto() {
+    setMessage('Deteniendo modo automático...', 'normal');
+
+    try {
+      const response = await fetch("{{ url_for('station_auto_stop') }}", {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+
+      if (data.ok) {
+        stationModeBadge.textContent = '● Modo manual';
+        autoStateText.textContent = 'Automático detenido';
+        setMessage(data.message, 'success');
+      } else {
+        setMessage(
+          data.message || 'No se pudo detener el modo automático.',
+          'error',
+        );
+      }
+    } catch (error) {
+      setMessage('Error de conexión con el servidor.', 'error');
+    }
+  }
+
+  async function refreshAutoStatus() {
+    try {
+      const response = await fetch("{{ url_for('station_auto_status') }}", {
+        cache: 'no-store',
+      });
+
+      const data = await response.json();
+
+      if (data.automatic) {
+        stationModeBadge.textContent = '● Modo automático';
+        autoStateText.textContent = 'Automático activo';
+      } else {
+        stationModeBadge.textContent = '● Modo manual';
+        autoStateText.textContent = 'Automático detenido';
+      }
+
+      if (data.last_result) {
+        setLastResult(data.last_result);
+      }
+
+      if (data.last_error) {
+        setMessage(data.last_error, 'error');
+      }
+    } catch (error) {
+      setMessage('No se pudo consultar el estado automático.', 'error');
+    }
+  }
+
+  manualBtn.addEventListener('click', manualInspect);
+  autoStartBtn.addEventListener('click', startAuto);
+  autoStopBtn.addEventListener('click', stopAuto);
+
+  refreshAutoStatus();
+  setInterval(refreshAutoStatus, 3000);
+</script>
+{% endblock %}
