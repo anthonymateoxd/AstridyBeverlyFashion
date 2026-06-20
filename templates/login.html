@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Acceso | Control de Calidad</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body class="login-page">
+  <section class="login-card">
+    <img class="login-logo" src="{{ url_for('static', filename='img/logo.png') }}" alt="Astrid y Beverly">
+    <div class="tiny-line"></div>
+    <p class="overline">Sistema de Gestión</p>
+    <h1>Control de Calidad</h1>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+    {% endwith %}
+    <form method="post">
+      <label>Usuario</label>
+      <input type="text" name="username" placeholder="Ingrese su identificador" required>
+      <label>Contraseña</label>
+      <input type="password" name="password" placeholder="Ingrese su clave de acceso" required>
+      <button type="submit">Acceder</button>
+    </form>
+    <p class="restricted">Acceso restringido<br>Solo personal autorizado</p>
+    <p class="hint">Demo: admin / admin123</p>
+  </section>
+</body>
+</html>

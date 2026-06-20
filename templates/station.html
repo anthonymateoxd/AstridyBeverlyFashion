@@ -1,0 +1,429 @@
+{% extends "base.html" %} {% block content %}
+<style>
+  .station-page {
+    min-height: calc(100vh - 80px);
+  }
+
+  .station-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 380px;
+    gap: 24px;
+    height: calc(100vh - 150px);
+  }
+
+  .station-camera-card,
+  .station-control-card {
+    background: #ffffff;
+    border: 1px solid #e6ded2;
+    border-radius: 8px;
+    padding: 18px;
+  }
+
+  .station-camera-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .station-camera-topbar {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+    font-size: 12px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #7a6d5f;
+  }
+
+  .station-camera-frame {
+    position: relative;
+    flex: 1;
+    min-height: 520px;
+    background: #111;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #222;
+  }
+
+  .station-camera-frame img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    background: #111;
+  }
+
+  .station-scan-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 2px;
+    background: #d8b760;
+    box-shadow: 0 0 16px rgba(216, 183, 96, 0.85);
+    pointer-events: none;
+  }
+
+  .station-overlay-bottom {
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    pointer-events: none;
+  }
+
+  .station-overlay-bottom span {
+    background: #050505;
+    color: #ffffff;
+    padding: 10px 14px;
+    font-size: 12px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    border-radius: 4px;
+  }
+
+  .station-control-card h2 {
+    margin-top: 0;
+  }
+
+  .station-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 18px;
+  }
+
+  .station-actions button {
+    border: none;
+    background: #111;
+    color: #ffffff;
+    padding: 16px 18px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+
+  .station-actions button.secondary {
+    background: #4a4a4a;
+  }
+
+  .station-actions button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .station-info {
+    margin-top: 18px;
+    padding: 14px;
+    background: #f5efe6;
+    color: #4f463d;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .station-message {
+    margin-top: 18px;
+    padding: 14px;
+    background: #f3f3f3;
+    color: #333;
+    border-left: 4px solid #999;
+  }
+
+  .station-message.success {
+    background: #eef8f0;
+    color: #225c30;
+    border-left-color: #2f8f46;
+  }
+
+  .station-message.error {
+    background: #fff0f0;
+    color: #8a1f1f;
+    border-left-color: #d9534f;
+  }
+
+  .station-last-result {
+    margin-top: 20px;
+    padding-top: 14px;
+    border-top: 1px solid #e6ded2;
+  }
+
+  .station-last-result h3 {
+    margin-top: 0;
+  }
+
+  .station-last-result p {
+    margin: 8px 0;
+    font-size: 14px;
+  }
+
+  .live-badge.offline {
+    background: #1a0505;
+    color: #ff6b6b;
+    border-color: rgba(255, 107, 107, 0.35);
+  }
+
+  @media (max-width: 1100px) {
+    .station-layout {
+      grid-template-columns: 1fr;
+      height: auto;
+    }
+
+    .station-camera-frame {
+      height: 520px;
+    }
+  }
+</style>
+
+<div class="station-page">
+  <header class="page-header station-header">
+    <div>
+      <h1>Estación de inspección</h1>
+      <p>Modo automático y manual de control de calidad visual</p>
+    </div>
+
+    <span
+      id="stationModeBadge"
+      class="live-badge"
+      >● Modo manual</span
+    >
+  </header>
+
+  <section class="station-layout">
+    <article class="station-camera-card">
+      <div class="station-camera-topbar">
+        <span>Cámara en vivo</span>
+        <span>Área de inspección activa</span>
+        <span id="cameraText">Sistema listo</span>
+      </div>
+
+      <div class="station-camera-frame">
+        <img
+          src="{{ url_for('video_feed') }}"
+          alt="Cámara de estación de inspección"
+        />
+
+        <div class="station-scan-line"></div>
+
+        <div class="station-overlay-bottom">
+          <span>Visión artificial · Control de calidad textil</span>
+          <span id="autoStateText">Automático detenido</span>
+        </div>
+      </div>
+    </article>
+
+    <aside class="station-control-card">
+      <h2>Control de inspección</h2>
+
+      <div class="station-actions">
+        <button
+          id="manualBtn"
+          type="button"
+        >
+          Inspeccionar ahora
+        </button>
+
+        <button
+          id="autoStartBtn"
+          type="button"
+        >
+          Iniciar automático
+        </button>
+
+        <button
+          id="autoStopBtn"
+          type="button"
+          class="secondary"
+        >
+          Detener automático
+        </button>
+      </div>
+
+      <div class="station-info">
+        <p>
+          <strong>Modo manual:</strong> registra una inspección cuando el
+          operario lo indique.
+        </p>
+        <p>
+          <strong>Modo automático:</strong> registra inspecciones cuando detecta
+          movimiento o cambio en la zona de cámara.
+        </p>
+      </div>
+
+      <div
+        id="stationMessage"
+        class="station-message"
+      >
+        Esperando acción del sistema.
+      </div>
+
+      <div class="station-last-result">
+        <h3>Último resultado</h3>
+
+        <p><strong>ID:</strong> <span id="lastCode">N/A</span></p>
+        <p><strong>Estado:</strong> <span id="lastStatus">N/A</span></p>
+        <p><strong>Defecto:</strong> <span id="lastDefect">N/A</span></p>
+        <p><strong>Confianza:</strong> <span id="lastConfidence">N/A</span></p>
+        <p><strong>Zona:</strong> <span id="lastZone">N/A</span></p>
+        <p><strong>Fecha:</strong> <span id="lastDate">N/A</span></p>
+      </div>
+    </aside>
+  </section>
+</div>
+
+<script>
+  const manualBtn = document.getElementById('manualBtn');
+  const autoStartBtn = document.getElementById('autoStartBtn');
+  const autoStopBtn = document.getElementById('autoStopBtn');
+  const stationMessage = document.getElementById('stationMessage');
+  const stationModeBadge = document.getElementById('stationModeBadge');
+  const autoStateText = document.getElementById('autoStateText');
+
+  function setMessage(text, type = 'normal') {
+    stationMessage.textContent = text;
+    stationMessage.className = 'station-message ' + type;
+  }
+
+  function setLastResult(result) {
+    if (!result) return;
+
+    document.getElementById('lastCode').textContent = result.code || 'N/A';
+    document.getElementById('lastStatus').textContent = result.status || 'N/A';
+    document.getElementById('lastDefect').textContent =
+      result.defect_type || 'N/A';
+
+    const confidence =
+      result.confidence !== null && result.confidence !== undefined
+        ? result.confidence + '%'
+        : 'N/A';
+
+    document.getElementById('lastConfidence').textContent = confidence;
+    document.getElementById('lastZone').textContent = result.zone || 'N/A';
+    document.getElementById('lastDate').textContent =
+      result.created_at || 'N/A';
+  }
+
+  async function manualInspect() {
+    manualBtn.disabled = true;
+    setMessage('Ejecutando inspección manual...', 'normal');
+
+    try {
+      const response = await fetch("{{ url_for('station_manual_inspect') }}", {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+
+      if (data.ok) {
+        setMessage(data.message, 'success');
+        setLastResult(data.result);
+      } else {
+        setMessage(
+          data.message || 'No se pudo ejecutar la inspección.',
+          'error',
+        );
+      }
+    } catch (error) {
+      setMessage('Error de conexión con el servidor.', 'error');
+    }
+
+    manualBtn.disabled = false;
+  }
+
+  async function startAuto() {
+    setMessage('Iniciando modo automático...', 'normal');
+
+    try {
+      const response = await fetch("{{ url_for('station_auto_start') }}", {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+
+      if (data.ok) {
+        stationModeBadge.textContent = '● Modo automático';
+        stationModeBadge.classList.remove('offline');
+        autoStateText.textContent = 'Automático activo';
+        setMessage(data.message, 'success');
+      } else {
+        setMessage(
+          data.message || 'No se pudo iniciar el modo automático.',
+          'error',
+        );
+      }
+    } catch (error) {
+      setMessage('Error de conexión con el servidor.', 'error');
+    }
+  }
+
+  async function stopAuto() {
+    setMessage('Deteniendo modo automático...', 'normal');
+
+    try {
+      const response = await fetch("{{ url_for('station_auto_stop') }}", {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+
+      if (data.ok) {
+        stationModeBadge.textContent = '● Modo manual';
+        stationModeBadge.classList.remove('offline');
+        autoStateText.textContent = 'Automático detenido';
+        setMessage(data.message, 'success');
+      } else {
+        setMessage(
+          data.message || 'No se pudo detener el modo automático.',
+          'error',
+        );
+      }
+    } catch (error) {
+      setMessage('Error de conexión con el servidor.', 'error');
+    }
+  }
+
+  async function refreshAutoStatus() {
+    try {
+      const response = await fetch("{{ url_for('station_auto_status') }}", {
+        cache: 'no-store',
+      });
+
+      const data = await response.json();
+
+      if (data.automatic) {
+        stationModeBadge.textContent = '● Modo automático';
+        stationModeBadge.classList.remove('offline');
+        autoStateText.textContent = 'Automático activo';
+      } else {
+        stationModeBadge.textContent = '● Modo manual';
+        stationModeBadge.classList.remove('offline');
+        autoStateText.textContent = 'Automático detenido';
+      }
+
+      if (data.last_result) {
+        setLastResult(data.last_result);
+      }
+
+      if (data.last_error) {
+        setMessage(data.last_error, 'error');
+      }
+    } catch (error) {
+      stationModeBadge.textContent = '● Sin conexión';
+      stationModeBadge.classList.add('offline');
+      autoStateText.textContent = 'Servidor no disponible';
+      setMessage('No se pudo consultar el estado de la estación.', 'error');
+    }
+  }
+
+  manualBtn.addEventListener('click', manualInspect);
+  autoStartBtn.addEventListener('click', startAuto);
+  autoStopBtn.addEventListener('click', stopAuto);
+
+  refreshAutoStatus();
+  setInterval(refreshAutoStatus, 3000);
+</script>
+{% endblock %}

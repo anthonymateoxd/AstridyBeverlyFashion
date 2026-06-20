@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header"><div><h1>Reportes</h1><p>Métricas preliminares del prototipo</p></div></header>
+<section class="summary"><article class="metric"><span>{{ total }}</span><p>Total inspecciones</p></article><article class="metric"><span>{{ approved }}</span><p>Aprobadas</p></article><article class="metric"><span>{{ defects }}</span><p>Con defecto</p></article><article class="metric"><span>{{ review }}</span><p>Para revisar</p></article></section>
+<section class="grid-2">
+  <article class="card"><h2>Resumen por tipo de prenda</h2><table><thead><tr><th>Prenda</th><th>Total</th><th>Defectos</th></tr></thead><tbody>{% for row in by_garment %}<tr><td>{{ row['garment_type'] }}</td><td>{{ row['total'] }}</td><td>{{ row['defects'] or 0 }}</td></tr>{% endfor %}</tbody></table></article>
+  <article class="card"><h2>Resumen por defecto</h2><table><thead><tr><th>Defecto</th><th>Total</th></tr></thead><tbody>{% for row in by_defect %}<tr><td>{{ row['defect_type'] }}</td><td>{{ row['total'] }}</td></tr>{% endfor %}</tbody></table></article>
+</section>
+<section class="card"><h2>Nota metodológica</h2><p>Reporte preliminar. Para tesis, la eficiencia debe calcularse comparando resultado del sistema contra validación del encargado mediante matriz de confusión: VP, VN, FP y FN.</p></section>
+{% endblock %}

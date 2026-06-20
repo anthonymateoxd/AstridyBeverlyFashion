@@ -1,0 +1,12 @@
+# Dataset de detección de defectos textiles en formato YOLO.
+# Las imágenes sin defectos deben tener un archivo .txt vacío con el mismo nombre.
+path: .
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: mancha
+  1: rotura
+  2: agujero
+  3: variacion_color

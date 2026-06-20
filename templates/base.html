@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>{{ title or 'Control de Calidad' }}</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/styles.css') }}"
+    />
+  </head>
+  <body class="app-body">
+    <aside class="sidebar">
+      <div class="brand">
+        <img
+          src="{{ url_for('static', filename='img/logo.png') }}"
+          alt="Astrid y Beverly"
+        />
+      </div>
+      <nav>
+        <a
+          class="{% if request.endpoint == 'dashboard' %}active{% endif %}"
+          href="{{ url_for('dashboard') }}"
+          >▣ Dashboard</a
+        >
+        <a href="{{ url_for('station') }}">▣ Estación automática</a>
+        <a
+          class="{% if request.endpoint == 'inspection' %}active{% endif %}"
+          href="{{ url_for('inspection') }}"
+          >◉ Inspección en vivo</a
+        >
+        <a
+          class="{% if request.endpoint == 'records' %}active{% endif %}"
+          href="{{ url_for('records') }}"
+          >▤ Registro de prendas</a
+        >
+        <a
+          class="{% if request.endpoint == 'reports' %}active{% endif %}"
+          href="{{ url_for('reports') }}"
+          >▦ Reportes</a
+        >
+        <a href="{{ url_for('logout') }}">↳ Salir</a>
+      </nav>
+    </aside>
+    <main class="main">{% block content %}{% endblock %}</main>
+  </body>
+</html>

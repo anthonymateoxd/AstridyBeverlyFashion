@@ -1,0 +1,80 @@
+{% extends "base.html" %} {% block content %}
+<header class="page-header">
+  <div>
+    <h1>Control de Calidad</h1>
+    <p>Inspección automatizada en tiempo real</p>
+  </div>
+  <span class="live-badge">● Sistema activo</span>
+</header>
+
+<section class="grid-2">
+  <article class="card">
+    <div class="card-title">
+      <h2>Últimas inspecciones</h2>
+      <span>Turno matutino</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Prenda</th>
+          <th>Talla</th>
+          <th>Estado</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in inspections %}
+        <tr>
+          <td>#{{ row['code'].replace('INS-', '') }}</td>
+          <td>{{ row['garment_type'] }}</td>
+          <td>{{ row['size'] }}</td>
+          <td>
+            <span class="status {{ row['status']|lower }}">
+              {{ row['status'] }}
+            </span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </article>
+
+  <article class="card">
+    <div class="card-title">
+      <h2>Alertas de defectos</h2>
+      <span class="pending">{{ pending }} pendientes</span>
+    </div>
+    <ul class="alerts">
+      {% for row in alerts %}
+      <li>
+        <span class="alert-dot"></span>
+        <strong>{{ row['defect_type'] }}</strong> en {{ row['garment_type'] }}
+        #{{ row['code'].replace('INS-', '') }}
+        <small>{{ row['zone'] }} · {{ row['confidence'] }}%</small>
+      </li>
+      {% else %}
+      <li>No hay alertas pendientes.</li>
+      {% endfor %}
+    </ul>
+  </article>
+</section>
+
+<section class="summary">
+  <article class="metric">
+    <span>{{ total }}</span>
+    <p>Prendas inspeccionadas</p>
+  </article>
+  <article class="metric">
+    <span>{{ defects }}</span>
+    <p>Defectos detectados</p>
+  </article>
+  <article class="metric">
+    <span>{{ approved }}</span>
+    <p>Aprobadas</p>
+  </article>
+  <article class="metric">
+    <span>{{ pending }}</span>
+    <p>Por validar</p>
+  </article>
+</section>
+{% endblock %}

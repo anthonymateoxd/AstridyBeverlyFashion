@@ -1,0 +1,8 @@
+Flask
+Werkzeug
+python-dotenv
+mysql-connector-python
+opencv-python
+numpy
+Pillow
+ultralytics

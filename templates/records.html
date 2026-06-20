@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header"><div><h1>Registro de prendas</h1><p>Historial trazable de inspecciones</p></div></header>
+<section class="card">
+  <form class="filters" method="get">
+    <input type="text" name="q" placeholder="Buscar ID, defecto o zona" value="{{ request.args.get('q','') }}">
+    <select name="garment_type"><option value="">Todas las prendas</option>{% for g in garments %}<option value="{{ g }}" {% if request.args.get('garment_type') == g %}selected{% endif %}>{{ g }}</option>{% endfor %}</select>
+    <select name="status"><option value="">Todos los estados</option><option value="Aprobado">Aprobado</option><option value="Defecto">Defecto</option><option value="Revisar">Revisar</option></select>
+    <button>Filtrar</button>
+  </form>
+  <table class="records-table"><thead><tr><th>ID</th><th>Fecha</th><th>Prenda</th><th>Talla</th><th>Estado</th><th>Defecto</th><th>Confianza</th><th>Zona</th><th>Validación</th><th>Evidencia</th></tr></thead><tbody>
+    {% for row in rows %}
+    <tr><td>{{ row['code'] }}</td><td>{{ row['created_at'] }}</td><td>{{ row['garment_type'] }}</td><td>{{ row['size'] }}</td><td><span class="status {{ row['status']|lower }}">{{ row['status'] }}</span></td><td>{{ row['defect_type'] }}</td><td>{{ row['confidence'] }}%</td><td>{{ row['zone'] }}</td><td><form class="inline-form" method="post" action="{{ url_for('validate', inspection_id=row['id'], value='Correcto') }}"><button class="mini ok">Correcto</button></form><form class="inline-form" method="post" action="{{ url_for('validate', inspection_id=row['id'], value='Incorrecto') }}"><button class="mini bad">Incorrecto</button></form><small>{{ row['human_validation'] }}</small></td><td>{% if row['image_result'] %}<a href="{{ url_for('static', filename=row['image_result']) }}" target="_blank">Ver imagen</a>{% else %}-{% endif %}</td></tr>
+    {% else %}<tr><td colspan="10">No hay registros.</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

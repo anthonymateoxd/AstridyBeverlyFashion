@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111827" />
+  <title>Captura Dataset Textil</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #111827;
+      color: #fff;
+    }
+    .app {
+      width: min(100%, 760px);
+      margin: 0 auto;
+      padding: 16px;
+    }
+    h1 {
+      margin: 4px 0 16px;
+      font-size: 1.45rem;
+      text-align: center;
+    }
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: .85rem;
+      margin-bottom: 5px;
+      color: #d1d5db;
+    }
+    select, button {
+      width: 100%;
+      min-height: 48px;
+      border: 0;
+      border-radius: 12px;
+      font-size: 1rem;
+    }
+    select {
+      padding: 0 12px;
+      background: #fff;
+      color: #111827;
+    }
+    .camera-box {
+      position: relative;
+      overflow: hidden;
+      width: 100%;
+      background: #000;
+      border-radius: 16px;
+      aspect-ratio: 3 / 4;
+    }
+    video, #photoPreview {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    #photoPreview { display: none; }
+    .message {
+      min-height: 24px;
+      margin: 10px 0;
+      text-align: center;
+      font-size: .93rem;
+      color: #d1d5db;
+    }
+    .buttons {
+      display: grid;
+      gap: 10px;
+    }
+    button {
+      padding: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    #startButton { background: #2563eb; color: #fff; }
+    #captureButton { background: #16a34a; color: #fff; }
+    #downloadButton { display: none; background: #f59e0b; color: #111827; }
+    #newButton { display: none; background: #e5e7eb; color: #111827; }
+    .counter {
+      margin-top: 12px;
+      text-align: center;
+      font-size: .9rem;
+      color: #9ca3af;
+    }
+    canvas { display: none; }
+    @media (max-width: 520px) {
+      .controls { grid-template-columns: 1fr; }
+      .app { padding: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h1>Captura de dataset textil</h1>
+
+    <section class="controls">
+      <div>
+        <label for="garment">Tipo de prenda</label>
+        <select id="garment">
+          <option value="blusa">Blusa</option>
+          <option value="top_corto">Top corto</option>
+          <option value="camisa_cropped">Camisa cropped</option>
+        </select>
+      </div>
+
+      <div>
+        <label for="defect">Estado o defecto</label>
+        <select id="defect">
+          <option value="sin_defecto">Sin defecto</option>
+          <option value="mancha">Mancha</option>
+          <option value="rotura">Rotura</option>
+          <option value="agujero">Agujero</option>
+          <option value="variacion_color">Variación de color</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="camera-box">
+      <video id="camera" autoplay playsinline muted></video>
+      <img id="photoPreview" alt="Fotografía tomada" />
+    </section>
+
+    <p id="message" class="message">Presiona “Abrir cámara”.</p>
+
+    <section class="buttons">
+      <button id="startButton" type="button">Abrir cámara trasera</button>
+      <button id="captureButton" type="button" disabled>Tomar foto</button>
+      <button id="downloadButton" type="button">Descargar foto</button>
+      <button id="newButton" type="button">Tomar otra foto</button>
+    </section>
+
+    <p class="counter">Fotos tomadas en esta sesión: <strong id="counter">0</strong></p>
+    <canvas id="canvas"></canvas>
+  </main>
+
+  <script>
+    const video = document.getElementById("camera");
+    const canvas = document.getElementById("canvas");
+    const preview = document.getElementById("photoPreview");
+    const message = document.getElementById("message");
+    const garment = document.getElementById("garment");
+    const defect = document.getElementById("defect");
+    const startButton = document.getElementById("startButton");
+    const captureButton = document.getElementById("captureButton");
+    const downloadButton = document.getElementById("downloadButton");
+    const newButton = document.getElementById("newButton");
+    const counterElement = document.getElementById("counter");
+
+    let stream = null;
+    let photoBlob = null;
+    let photoCount = 0;
+
+    async function startCamera() {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error("Este navegador no permite acceder directamente a la cámara.");
+        }
+
+        stopCamera();
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          }
+        });
+
+        video.srcObject = stream;
+        await video.play();
+        preview.style.display = "none";
+        video.style.display = "block";
+        captureButton.disabled = false;
+        startButton.textContent = "Reiniciar cámara";
+        message.textContent = "Cámara lista. Coloca la prenda y toma la foto.";
+      } catch (error) {
+        console.error(error);
+        message.textContent = "No se pudo abrir la cámara. Verifica el permiso y que la página use HTTPS.";
+      }
+    }
+
+    function stopCamera() {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+    }
+
+    function takePhoto() {
+      if (!video.videoWidth || !video.videoHeight) {
+        message.textContent = "La cámara todavía no está lista.";
+        return;
+      }
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext("2d");
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      canvas.toBlob(blob => {
+        if (!blob) {
+          message.textContent = "No se pudo generar la fotografía.";
+          return;
+        }
+
+        photoBlob = blob;
+        preview.src = URL.createObjectURL(blob);
+        video.style.display = "none";
+        preview.style.display = "block";
+        downloadButton.style.display = "block";
+        newButton.style.display = "block";
+        captureButton.style.display = "none";
+        photoCount += 1;
+        counterElement.textContent = String(photoCount);
+        message.textContent = "Foto tomada. Descárgala antes de tomar otra.";
+      }, "image/jpeg", 0.95);
+    }
+
+    function buildFileName() {
+      const now = new Date();
+      const timestamp =
+        now.getFullYear() +
+        String(now.getMonth() + 1).padStart(2, "0") +
+        String(now.getDate()).padStart(2, "0") + "_" +
+        String(now.getHours()).padStart(2, "0") +
+        String(now.getMinutes()).padStart(2, "0") +
+        String(now.getSeconds()).padStart(2, "0");
+
+      return `${garment.value}_${defect.value}_${timestamp}_${photoCount}.jpg`;
+    }
+
+    function downloadPhoto() {
+      if (!photoBlob) {
+        message.textContent = "Primero toma una fotografía.";
+        return;
+      }
+
+      const url = URL.createObjectURL(photoBlob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = buildFileName();
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      message.textContent = "Foto descargada. Ya puedes tomar otra.";
+    }
+
+    function prepareNextPhoto() {
+      photoBlob = null;
+      preview.src = "";
+      preview.style.display = "none";
+      video.style.display = "block";
+      downloadButton.style.display = "none";
+      newButton.style.display = "none";
+      captureButton.style.display = "block";
+      message.textContent = "Cámara lista para la siguiente fotografía.";
+    }
+
+    startButton.addEventListener("click", startCamera);
+    captureButton.addEventListener("click", takePhoto);
+    downloadButton.addEventListener("click", downloadPhoto);
+    newButton.addEventListener("click", prepareNextPhoto);
+    window.addEventListener("beforeunload", stopCamera);
+  </script>
+</body>
+</html>
