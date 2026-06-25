@@ -1,0 +1,34 @@
+@'
+
+# Entornos Python
+venv/
+venv_anomaly/
+__pycache__/
+*.pyc
+
+# Configuración privada
+.env
+
+# Modelos pesados
+models/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# Datasets y archivos procesados
+dataset/
+dataset_identidad/
+dataset_patchcore_ready/
+rembg_train/
+rembg_test/
+pruebas/
+
+# Resultados generados
+results/
+patchcore_localized_results/
+archive/
+static/captures/
+static/results/
+evidencias/patchcore_final/runtime/
+'@ | Add-Content .gitignore

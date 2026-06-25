@@ -3,7 +3,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
-
+from garment_service import identify_garment
 import os
 import time
 import uuid
@@ -13,7 +13,7 @@ from functools import wraps
 import mysql.connector
 
 
-load_dotenv()
+load_dotenv(override=True)
 
 try:
     import cv2
@@ -505,19 +505,54 @@ def save_image(file_storage=None):
     return save_frame_to_static(frame)
 
 
-def register_inspection_from_frame(frame, notes="Registro generado por estación de inspección."):
+def register_inspection_from_frame(
+    frame,
+    notes="Registro generado por estación de inspección.",
+    identify_first=False,
+):
     """
-    Ejecuta detección, guarda evidencia y registra el resultado en MySQL.
+    Guarda la captura y, cuando identify_first=True,
+    identifica primero el modelo de prenda.
     """
     if frame is None:
-        raise ValueError("No se recibió imagen de cámara para registrar la inspección.")
+        raise ValueError(
+            "No se recibió imagen de cámara para registrar la inspección."
+        )
 
     img_path, img_rel = save_frame_to_static(frame)
 
-    status, defect, conf, zone, result_rel = detect_defect(img_path)
+    identity_result = None
+    garment_type = "Prenda inspeccionada"
+
+    if identify_first:
+        identity_result = identify_garment(img_path)
+
+        if not identity_result["identified"]:
+            garment_type = "Prenda no identificada"
+            status = "Revisar"
+            defect = "Prenda no identificada"
+            conf = round(identity_result["similarity"] * 100, 2)
+            zone = "No aplica"
+            result_rel = None
+
+        else:
+            garment_type = identity_result["result"]
+
+            status, defect, conf, zone, result_rel = detect_defect(
+                img_path
+            )
+
+    else:
+        status, defect, conf, zone, result_rel = detect_defect(
+            img_path
+        )
 
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    code = f"INS-{datetime.now().strftime('%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
+
+    code = (
+        f"INS-{datetime.now().strftime('%H%M%S')}-"
+        f"{uuid.uuid4().hex[:4].upper()}"
+    )
 
     execute(
         """
@@ -530,7 +565,7 @@ def register_inspection_from_frame(frame, notes="Registro generado por estación
         (
             code,
             created_at,
-            "Prenda inspeccionada",
+            garment_type,
             "N/A",
             status,
             defect,
@@ -544,6 +579,7 @@ def register_inspection_from_frame(frame, notes="Registro generado por estación
 
     return {
         "code": code,
+        "garment_type": garment_type,
         "status": status,
         "defect_type": defect,
         "confidence": float(conf) if conf is not None else None,
@@ -551,8 +587,22 @@ def register_inspection_from_frame(frame, notes="Registro generado por estación
         "image_original": img_rel,
         "image_result": result_rel,
         "created_at": created_at,
+        "identity_identified": (
+            identity_result["identified"]
+            if identity_result is not None
+            else None
+        ),
+        "identity_similarity": (
+            identity_result["similarity"]
+            if identity_result is not None
+            else None
+        ),
+        "identity_threshold": (
+            identity_result["threshold"]
+            if identity_result is not None
+            else None
+        ),
     }
-
 
 def auto_inspection_worker():
     """
@@ -889,6 +939,7 @@ def station_manual_inspect():
         result = register_inspection_from_frame(
             frame,
             notes="Registro manual generado desde estación de inspección.",
+            identify_first=True,
         )
 
         return jsonify({
