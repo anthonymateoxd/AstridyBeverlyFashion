@@ -3,19 +3,23 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
+from urllib.parse import quote
 
 import os
 import time
 import uuid
-import random
 import threading
-from datetime import datetime
+from functools import wraps
 
 import mysql.connector
-from mysql.connector import Error
 
 
 load_dotenv()
+# RTSP mediante TCP: más estable que UDP para OpenCV
+os.environ.setdefault(
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+    "rtsp_transport;tcp"
+)
 
 try:
     import cv2
@@ -50,7 +54,6 @@ DEFECT_TYPES = [
     "Rotura",
     "Agujero",
     "Variación de color",
-    "Costura irregular",
     "Sin defecto",
 ]
 
@@ -90,15 +93,26 @@ def db(include_database=True):
 
 def init_db():
     """
-    Inicializa MySQL:
-    1. Crea la base textile_quality_db si no existe.
-    2. Crea tablas compatibles con las plantillas actuales.
-    3. Crea usuario admin/admin123.
+    Inicializa MySQL de forma segura:
+    1. Crea la base configurada si todavía no existe.
+    2. Crea las tablas requeridas.
+    3. Crea el usuario inicial solo cuando aún no existe.
     """
-def init_db():
     CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Primero se conecta sin seleccionar una base de datos. Esto evita el
+    # error "Unknown database" en la primera ejecución del proyecto.
+    conn = db(include_database=False)
+    cur = conn.cursor()
+    cur.execute(
+        f"CREATE DATABASE IF NOT EXISTS `{DB_NAME}` "
+        "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 
     conn = db(include_database=True)
     cur = conn.cursor()
@@ -136,11 +150,14 @@ def init_db():
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
 
-    cur.execute("SELECT id FROM users WHERE username = %s", ("admin",))
+    admin_username = os.getenv("ADMIN_USERNAME", "admin")
+    admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
+
+    cur.execute("SELECT id FROM users WHERE username = %s", (admin_username,))
     if cur.fetchone() is None:
         cur.execute(
             "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)",
-            ("admin", generate_password_hash("admin123"), "administrador"),
+            (admin_username, generate_password_hash(admin_password), "administrador"),
         )
 
     conn.commit()
@@ -184,152 +201,481 @@ def execute(sql, params=None):
 # ============================================================
 
 def login_required(fn):
+    @wraps(fn)
     def wrapper(*args, **kwargs):
         if "user_id" not in session:
             return redirect(url_for("login"))
         return fn(*args, **kwargs)
 
-    wrapper.__name__ = fn.__name__
     return wrapper
 
 
 # ============================================================
-# CÁMARA
+# CÁMARA / ESTACIÓN AUTOMÁTICA
 # ============================================================
 
-def get_camera_index():
-    return int(os.environ.get("CAMERA_INDEX", "0"))
+CAMERA_IP = os.getenv("CAMERA_IP", "192.168.0.11").strip()
+CAMERA_USER = os.getenv("CAMERA_USER", "admin").strip()
+CAMERA_PASSWORD = os.getenv("CAMERA_PASSWORD", "")
+
+CAMERA_RTSP_PORT = int(os.getenv("CAMERA_RTSP_PORT", "554"))
+CAMERA_CHANNEL = int(os.getenv("CAMERA_CHANNEL", "1"))
+CAMERA_SUBTYPE = int(os.getenv("CAMERA_SUBTYPE", "0"))
+
+# Codifica automáticamente los caracteres especiales de las credenciales.
+CAMERA_USER_ENCODED = quote(CAMERA_USER, safe="")
+CAMERA_PASSWORD_ENCODED = quote(CAMERA_PASSWORD, safe="")
+
+CAMERA_SOURCE = (
+    f"rtsp://{CAMERA_USER_ENCODED}:{CAMERA_PASSWORD_ENCODED}"
+    f"@{CAMERA_IP}:{CAMERA_RTSP_PORT}"
+    f"/cam/realmonitor?channel={CAMERA_CHANNEL}&subtype={CAMERA_SUBTYPE}"
+)
+
+CAMERA_WIDTH = int(os.getenv("CAMERA_WIDTH", "1280"))
+CAMERA_HEIGHT = int(os.getenv("CAMERA_HEIGHT", "720"))
+CAMERA_FPS = int(os.getenv("CAMERA_FPS", "15"))
+
+print(
+    f"[CAMARA] RTSP configurado: "
+    f"{CAMERA_USER}@{CAMERA_IP}:{CAMERA_RTSP_PORT} "
+    f"canal={CAMERA_CHANNEL}, flujo={CAMERA_SUBTYPE}"
+)
+
+AUTO_INSPECTION_ENABLED = False
+AUTO_THREAD = None
+AUTO_LAST_RESULT = None
+AUTO_LAST_ERROR = None
+AUTO_LAST_CAPTURE_TIME = 0
+
+AUTO_COOLDOWN_SECONDS = float(os.getenv("AUTO_COOLDOWN_SECONDS", "4"))
+AUTO_MOTION_THRESHOLD = int(os.getenv("AUTO_MOTION_THRESHOLD", "18000"))
+AUTO_STABILIZATION_SECONDS = float(os.getenv("AUTO_STABILIZATION_SECONDS", "0.6"))
+
+ROI_X1 = float(os.getenv("ROI_X1", "0.10"))
+ROI_Y1 = float(os.getenv("ROI_Y1", "0.10"))
+ROI_X2 = float(os.getenv("ROI_X2", "0.90"))
+ROI_Y2 = float(os.getenv("ROI_Y2", "0.90"))
+
+YOLO_INFERENCE_CONF = float(os.getenv("YOLO_INFERENCE_CONF", "0.40"))
+YOLO_DEFECT_THRESHOLD = float(os.getenv("YOLO_DEFECT_THRESHOLD", "0.70"))
+
+camera_capture = None
 
 
-def generate_placeholder_frame(message="CAMARA NO DISPONIBLE"):
+def parse_camera_source(source):
+    """
+    Permite usar cámara local con 0, 1, 2...
+    o cámara IP/RTSP con una URL.
+    """
+    if str(source).isdigit():
+        return int(source)
+
+    return source
+
+
+def get_camera():
+    """
+    Abre una sola instancia de cámara para todo el sistema.
+    Evita que /video_feed, inspección manual y modo automático abran cámaras separadas.
+    """
+    global camera_capture
+
+    if cv2 is None:
+        return None
+
+    if camera_capture is not None and camera_capture.isOpened():
+        return camera_capture
+
+    source = parse_camera_source(CAMERA_SOURCE)
+
+    if isinstance(source, int):
+        if os.name == "nt":
+            camera_capture = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+
+            if not camera_capture.isOpened():
+                camera_capture.release()
+                camera_capture = cv2.VideoCapture(source)
+        else:
+            camera_capture = cv2.VideoCapture(source)
+    else:
+        # Cámara IP mediante RTSP y FFmpeg
+        camera_capture = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+        camera_capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    camera_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    camera_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+    camera_capture.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
+
+    if not camera_capture.isOpened():
+        try:
+            camera_capture.release()
+        except Exception:
+            pass
+
+        camera_capture = None
+        return None
+
+    return camera_capture
+
+
+def read_camera_frame():
+    """
+    Lee un frame de la cámara activa.
+    Devuelve: (True, frame) si funciona; (False, None) si falla.
+    """
+    global camera_capture
+    global latest_camera_frame
+
+    if cv2 is None:
+        return False, None
+
+    with camera_lock:
+        cap = get_camera()
+
+        if cap is None:
+            return False, None
+
+        ok, frame = cap.read()
+
+        if not ok or frame is None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+
+            camera_capture = None
+            return False, None
+
+        latest_camera_frame = frame.copy()
+        return True, frame
+
+
+def make_camera_error_frame(message="CAMARA NO DISPONIBLE"):
+    """
+    Genera una imagen de error para que la interfaz no se rompa
+    cuando la cámara esté desconectada o apagada.
+    """
     if cv2 is not None and np is not None:
-        frame = np.zeros((480, 800, 3), dtype=np.uint8)
-        frame[:] = (25, 25, 25)
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame[:] = (22, 22, 22)
+
         cv2.putText(
             frame,
             message,
-            (90, 240),
+            (330, 330),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.9,
+            1.3,
             (255, 255, 255),
-            2,
+            3,
+            cv2.LINE_AA,
         )
-        ok, buffer = cv2.imencode(".jpg", frame)
-        if ok:
-            return buffer.tobytes()
+
+        cv2.putText(
+            frame,
+            "Verifique conexion, energia o CAMERA_SOURCE",
+            (315, 400),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (170, 170, 170),
+            2,
+            cv2.LINE_AA,
+        )
+
+        return frame
+
+    return None
+
+
+def generate_placeholder_frame(message="CAMARA NO DISPONIBLE"):
+    """
+    Devuelve bytes JPEG de respaldo. Se usa si OpenCV no puede codificar.
+    """
+    frame = make_camera_error_frame(message)
+
+    if frame is not None:
+        jpg = encode_jpeg(frame)
+
+        if jpg:
+            return jpg
 
     from PIL import Image, ImageDraw
     import io
 
-    img = Image.new("RGB", (800, 480), (25, 25, 25))
+    img = Image.new("RGB", (1280, 720), (25, 25, 25))
     draw = ImageDraw.Draw(img)
-    draw.text((120, 230), message, fill=(255, 255, 255))
+    draw.text((430, 350), message, fill=(255, 255, 255))
     bio = io.BytesIO()
     img.save(bio, format="JPEG")
     return bio.getvalue()
 
 
-def generate_camera_frames():
-    global latest_camera_frame
+def encode_jpeg(frame):
+    if cv2 is None or frame is None:
+        return None
 
-    if cv2 is None:
-        placeholder = generate_placeholder_frame("OPENCV NO INSTALADO")
-        while True:
-            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + placeholder + b"\r\n"
+    ok, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
-    camera_index = get_camera_index()
+    if not ok:
+        return None
 
-    if os.name == "nt":
-        cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-    else:
-        cap = cv2.VideoCapture(camera_index)
+    return buffer.tobytes()
 
-    if not cap.isOpened():
-        placeholder = generate_placeholder_frame("NO SE PUDO ABRIR LA CAMARA")
-        while True:
-            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + placeholder + b"\r\n"
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+def get_roi_bounds(frame):
+    """Devuelve límites ROI válidos en píxeles para el frame recibido."""
+    h, w = frame.shape[:2]
+    x1 = int(max(0.0, min(ROI_X1, 0.99)) * w)
+    y1 = int(max(0.0, min(ROI_Y1, 0.99)) * h)
+    x2 = int(max(0.01, min(ROI_X2, 1.0)) * w)
+    y2 = int(max(0.01, min(ROI_Y2, 1.0)) * h)
 
+    if x2 <= x1 or y2 <= y1:
+        raise ValueError("La región ROI configurada no es válida.")
+
+    return x1, y1, x2, y2
+
+
+def crop_inspection_roi(frame):
+    x1, y1, x2, y2 = get_roi_bounds(frame)
+    return frame[y1:y2, x1:x2]
+
+
+def draw_inspection_overlay(frame):
+    """
+    Dibuja el área de inspección sobre el video en vivo.
+    No afecta la imagen guardada para análisis.
+    """
+    if cv2 is None or frame is None:
+        return frame
+
+    output = frame.copy()
+    x1, y1, x2, y2 = get_roi_bounds(output)
+
+    cv2.rectangle(
+        output,
+        (x1, y1),
+        (x2, y2),
+        (0, 180, 255),
+        2,
+    )
+
+    cv2.putText(
+        output,
+        "AREA DE INSPECCION",
+        (x1, max(25, y1 - 10)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 180, 255),
+        2,
+    )
+
+    return output
+
+
+def generate_video_feed():
+    """
+    Stream MJPEG usado por dashboard, inspección y estación automática.
+    Si la cámara falla, mantiene la página viva mostrando un placeholder.
+    """
     while True:
-        success, frame = cap.read()
+        ok, frame = read_camera_frame()
 
-        if not success:
-            placeholder = generate_placeholder_frame("ERROR LEYENDO CAMARA")
-            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + placeholder + b"\r\n"
-            continue
+        if ok:
+            frame_to_send = draw_inspection_overlay(frame)
+        else:
+            frame_to_send = make_camera_error_frame()
 
-        with camera_lock:
-            latest_camera_frame = frame.copy()
+        jpg = encode_jpeg(frame_to_send)
 
-        h, w = frame.shape[:2]
-        cv2.rectangle(
-            frame,
-            (int(w * 0.08), int(h * 0.08)),
-            (int(w * 0.92), int(h * 0.92)),
-            (0, 180, 255),
-            2,
-        )
-        cv2.putText(
-            frame,
-            "AREA DE INSPECCION",
-            (int(w * 0.08), max(25, int(h * 0.08) - 10)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (0, 180, 255),
-            2,
+        if jpg is None:
+            jpg = generate_placeholder_frame("ERROR DE VIDEO")
+
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
         )
 
-        ok, buffer = cv2.imencode(".jpg", frame)
-        if not ok:
-            continue
+        time.sleep(0.08)
 
-        yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
+def save_frame_to_static(frame):
+    """
+    Guarda una captura tomada desde la cámara.
+    Devuelve: ruta absoluta, ruta relativa dentro de /static.
+    """
+    CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+
+    filename = f"inspection_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6].upper()}.jpg"
+    abs_path = CAPTURE_DIR / filename
+    rel_path = f"captures/{filename}"
+
+    saved = cv2.imwrite(str(abs_path), frame)
+    if not saved:
+        raise IOError(f"No se pudo guardar la captura en {abs_path}")
+
+    return abs_path, rel_path
 
 
 def save_image(file_storage=None):
-    global latest_camera_frame
-
-    name = f"capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
-    path = CAPTURE_DIR / name
-
+    """
+    Compatibilidad con la pantalla anterior de inspección.
+    Si viene archivo subido, lo guarda.
+    Si no viene archivo, intenta capturar desde la cámara.
+    Si la cámara no está disponible, devuelve None.
+    """
     if file_storage and file_storage.filename:
+        CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+
+        name = f"capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
+        path = CAPTURE_DIR / name
         file_storage.save(path)
+
         return path, f"captures/{name}"
 
-    if cv2 is not None:
-        with camera_lock:
-            frame = latest_camera_frame.copy() if latest_camera_frame is not None else None
+    ok, frame = read_camera_frame()
 
-        if frame is not None:
-            cv2.imwrite(str(path), frame)
-            return path, f"captures/{name}"
+    if not ok:
+        return None, None
 
-    if cv2 is not None:
-        camera_index = get_camera_index()
-        if os.name == "nt":
-            cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-        else:
-            cap = cv2.VideoCapture(camera_index)
+    return save_frame_to_static(frame)
 
-        ok, frame = cap.read()
-        cap.release()
 
-        if ok:
-            cv2.imwrite(str(path), frame)
-            return path, f"captures/{name}"
+def register_inspection_from_frame(frame, notes="Registro generado por estación de inspección."):
+    """
+    Ejecuta detección, guarda evidencia y registra el resultado en MySQL.
+    """
+    if frame is None:
+        raise ValueError("No se recibió imagen de cámara para registrar la inspección.")
 
-    from PIL import Image, ImageDraw
+    img_path, img_rel = save_frame_to_static(frame)
 
-    img = Image.new("RGB", (1280, 720), (245, 242, 235))
-    d = ImageDraw.Draw(img)
-    d.rectangle((180, 90, 1100, 630), outline=(210, 190, 150), width=6)
-    d.text((420, 330), "IMAGEN DE PRUEBA - SIN CAMARA", fill=(70, 70, 70))
-    img.save(path)
+    status, defect, conf, zone, result_rel = detect_defect(img_path)
 
-    return path, f"captures/{name}"
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    code = f"INS-{datetime.now().strftime('%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
 
+    execute(
+        """
+        INSERT INTO inspections (
+            code, created_at, garment_type, size, status, defect_type,
+            confidence, zone, image_original, image_result, notes
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            code,
+            created_at,
+            "Prenda inspeccionada",
+            "N/A",
+            status,
+            defect,
+            conf,
+            zone,
+            img_rel,
+            result_rel,
+            notes,
+        ),
+    )
+
+    return {
+        "code": code,
+        "status": status,
+        "defect_type": defect,
+        "confidence": float(conf) if conf is not None else None,
+        "zone": zone,
+        "image_original": img_rel,
+        "image_result": result_rel,
+        "created_at": created_at,
+    }
+
+
+def auto_inspection_worker():
+    """
+    Modo automático: detecta movimiento/cambio en la escena.
+    Cuando la prenda pasa por la cámara, espera una fracción de segundo,
+    captura una imagen estable, ejecuta IA y registra la inspección.
+    """
+    global AUTO_INSPECTION_ENABLED
+    global AUTO_LAST_RESULT
+    global AUTO_LAST_ERROR
+    global AUTO_LAST_CAPTURE_TIME
+
+    previous_gray = None
+
+    while AUTO_INSPECTION_ENABLED:
+        try:
+            ok, frame = read_camera_frame()
+
+            if not ok:
+                AUTO_LAST_ERROR = "Cámara no disponible."
+                time.sleep(1)
+                continue
+
+            roi_frame = crop_inspection_roi(frame)
+            gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.GaussianBlur(gray, (21, 21), 0)
+
+            if previous_gray is None:
+                previous_gray = gray
+                time.sleep(0.5)
+                continue
+
+            diff = cv2.absdiff(previous_gray, gray)
+            _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+
+            motion_pixels = cv2.countNonZero(thresh)
+            now = time.time()
+
+            if (
+                motion_pixels > AUTO_MOTION_THRESHOLD
+                and now - AUTO_LAST_CAPTURE_TIME >= AUTO_COOLDOWN_SECONDS
+            ):
+                time.sleep(AUTO_STABILIZATION_SECONDS)
+
+                ok_stable, stable_frame = read_camera_frame()
+
+                if ok_stable:
+                    result = register_inspection_from_frame(
+                        stable_frame,
+                        notes="Registro automático generado por detección de movimiento.",
+                    )
+
+                    AUTO_LAST_RESULT = result
+                    AUTO_LAST_ERROR = None
+                    AUTO_LAST_CAPTURE_TIME = time.time()
+                    previous_gray = None
+                    continue
+
+            previous_gray = gray
+
+        except Exception as e:
+            AUTO_LAST_ERROR = str(e)
+
+        time.sleep(0.5)
+
+
+def normalize_for_json(value):
+    """
+    Convierte objetos de MySQL como Decimal o datetime a valores serializables.
+    """
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        from decimal import Decimal
+        if isinstance(value, Decimal):
+            return float(value)
+    except Exception:
+        pass
+
+    return value
+
+
+def row_to_json(row):
+    if row is None:
+        return None
+
+    return {key: normalize_for_json(value) for key, value in row.items()}
 
 # ============================================================
 # VISIÓN ARTIFICIAL / IA
@@ -364,7 +710,7 @@ def detect_defect(image_path):
     model = load_yolo_model()
 
     if model is not None and cv2 is not None:
-        results = model(str(image_path), conf=0.40, verbose=False)
+        results = model(str(image_path), conf=YOLO_INFERENCE_CONF, verbose=False)
         result = results[0]
 
         result_name = f"result_{uuid.uuid4().hex[:10]}.jpg"
@@ -379,7 +725,10 @@ def detect_defect(image_path):
             best_index = int(boxes.conf.argmax().item())
             confidence = float(boxes.conf[best_index].item()) * 100
             class_id = int(boxes.cls[best_index].item())
-            defect_type = model.names.get(class_id, "Defecto visible")
+            if isinstance(model.names, dict):
+                defect_type = model.names.get(class_id, "Defecto visible")
+            else:
+                defect_type = model.names[class_id] if class_id < len(model.names) else "Defecto visible"
 
             x1, y1, x2, y2 = boxes.xyxy[best_index].tolist()
             cx = (x1 + x2) / 2
@@ -394,17 +743,15 @@ def detect_defect(image_path):
             else:
                 zone = "Zona frontal"
 
-            status = "Defecto" if confidence >= 70 else "Revisar"
+            status = "Defecto" if confidence >= (YOLO_DEFECT_THRESHOLD * 100) else "Revisar"
             return status, defect_type, round(confidence, 2), zone, f"results/{result_name}"
 
         return "Aprobado", "Sin defecto", 90.0, "Centro", f"results/{result_name}"
 
     if cv2 is None or np is None:
-        status = random.choices(["Aprobado", "Defecto", "Revisar"], [0.55, 0.25, 0.20])[0]
-        defect = "Sin defecto" if status == "Aprobado" else random.choice(DEFECT_TYPES[:-1])
-        confidence = round(random.uniform(65, 94), 2)
-        zone = random.choice(["Centro", "Zona frontal", "Lateral derecho", "Lateral izquierdo"])
-        return status, defect, confidence, zone, None
+        raise RuntimeError(
+            "OpenCV/NumPy no están disponibles y todavía no existe un modelo YOLO utilizable."
+        )
 
     img = cv2.imread(str(image_path))
 
@@ -414,9 +761,7 @@ def detect_defect(image_path):
     original = img.copy()
     h, w = img.shape[:2]
 
-    x1, y1 = int(w * 0.08), int(h * 0.08)
-    x2, y2 = int(w * 0.92), int(h * 0.92)
-
+    x1, y1, x2, y2 = get_roi_bounds(img)
     roi = img[y1:y2, x1:x2]
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
@@ -457,8 +802,8 @@ def detect_defect(image_path):
         confidence = min(95, 70 + (best_area / (w * h)) * 900)
         confidence = round(confidence, 2)
 
-        defect_type = "Posible mancha o anomalía visible"
-        status = "Defecto" if confidence >= 70 else "Revisar"
+        defect_type = "Anomalía visual (modo prototipo, sin modelo entrenado)"
+        status = "Revisar"
 
         cv2.rectangle(original, (bx, by), (bx + bw, by + bh), (0, 0, 255), 3)
         cv2.putText(
@@ -479,14 +824,14 @@ def detect_defect(image_path):
         else:
             zone = "Zona frontal"
     else:
-        confidence = 90.0
-        defect_type = "Sin defecto"
-        status = "Aprobado"
+        confidence = 0.0
+        defect_type = "Sin anomalía evidente (modo prototipo)"
+        status = "Revisar"
         zone = "Centro"
 
         cv2.putText(
             original,
-            f"Aprobado {confidence}%",
+            "SIN MODELO ENTRENADO - REVISION HUMANA",
             (25, 45),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.9,
@@ -505,7 +850,10 @@ def detect_defect(image_path):
 @app.route("/video_feed")
 @login_required
 def video_feed():
-    return Response(generate_camera_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    return Response(
+        generate_video_feed(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -555,6 +903,107 @@ def dashboard():
     )
 
 
+@app.route("/estacion")
+@login_required
+def station():
+    return render_template("station.html")
+
+
+@app.route("/api/station/manual", methods=["POST"])
+@login_required
+def station_manual_inspect():
+    try:
+        ok, frame = read_camera_frame()
+
+        if not ok:
+            return jsonify({
+                "ok": False,
+                "message": "No se pudo leer la cámara. No se guardó ningún registro.",
+            }), 503
+
+        result = register_inspection_from_frame(
+            frame,
+            notes="Registro manual generado desde estación de inspección.",
+        )
+
+        return jsonify({
+            "ok": True,
+            "message": "Inspección manual registrada correctamente.",
+            "result": result,
+        })
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "message": "Error al ejecutar la inspección manual.",
+            "detail": str(e),
+        }), 500
+
+
+@app.route("/api/station/auto/start", methods=["POST"])
+@login_required
+def station_auto_start():
+    global AUTO_INSPECTION_ENABLED
+    global AUTO_THREAD
+
+    if AUTO_INSPECTION_ENABLED:
+        return jsonify({
+            "ok": True,
+            "message": "El modo automático ya está activo.",
+        })
+
+    AUTO_INSPECTION_ENABLED = True
+    AUTO_THREAD = threading.Thread(target=auto_inspection_worker, daemon=True)
+    AUTO_THREAD.start()
+
+    return jsonify({
+        "ok": True,
+        "message": "Modo automático iniciado.",
+    })
+
+
+@app.route("/api/station/auto/stop", methods=["POST"])
+@login_required
+def station_auto_stop():
+    global AUTO_INSPECTION_ENABLED
+
+    AUTO_INSPECTION_ENABLED = False
+
+    return jsonify({
+        "ok": True,
+        "message": "Modo automático detenido.",
+    })
+
+
+@app.route("/api/station/auto/status")
+@login_required
+def station_auto_status():
+    return jsonify({
+        "ok": True,
+        "automatic": AUTO_INSPECTION_ENABLED,
+        "last_result": AUTO_LAST_RESULT,
+        "last_error": AUTO_LAST_ERROR,
+    })
+
+
+@app.route("/api/station/latest")
+@login_required
+def station_latest():
+    row = fetch_one(
+        """
+        SELECT *
+        FROM inspections
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+
+    return jsonify({
+        "ok": True,
+        "inspection": row_to_json(row),
+    })
+
+
 @app.route("/inspeccion", methods=["GET", "POST"])
 @login_required
 def inspection():
@@ -566,6 +1015,11 @@ def inspection():
         notes = "Registro generado automáticamente por el sistema de inspección."
 
         img_path, img_rel = save_image(request.files.get("image"))
+
+        if img_path is None:
+            flash("No se pudo leer la cámara. No se guardó ningún registro.", "error")
+            return render_template("inspection.html", result=None)
+
         status, defect, conf, zone, result_rel = detect_defect(img_path)
 
         code = f"INS-{datetime.now().strftime('%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
@@ -691,7 +1145,19 @@ def logout():
 def health():
     try:
         row = fetch_one("SELECT COUNT(*) AS c FROM inspections")
-        return jsonify({"status": "ok", "database": DB_NAME, "inspections": row["c"]})
+        model_ready = MODEL_PATH.exists() and MODEL_PATH.stat().st_size >= 1024
+        return jsonify({
+            "status": "ok",
+            "database": DB_NAME,
+            "inspections": row["c"],
+            "camera_source": (
+            "RTSP configurado"
+            if CAMERA_SOURCE.lower().startswith("rtsp://")
+            else CAMERA_SOURCE
+            ),
+            "model_ready": model_ready,
+            "detection_mode": "yolo" if model_ready else "prototype",
+        })
     except Exception as e:
         return jsonify({"status": "error", "detail": str(e)}), 500
 
@@ -699,4 +1165,4 @@ def health():
 if __name__ == "__main__":
     init_db()
     # app.run(debug=True, host="127.0.0.1", port=5000)
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=5000, threaded=True, use_reloader=False)
