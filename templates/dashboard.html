@@ -4,24 +4,9 @@
     <h1>Control de Calidad</h1>
     <p>Inspección automatizada en tiempo real</p>
   </div>
-  <span class="live-badge">● En vivo</span>
+  <span class="live-badge">● Sistema activo</span>
 </header>
-<section class="camera-panel live-dashboard-camera">
-  <div class="camera-toolbar">
-    <span>Cámara</span>
-    <span>Panel LED</span>
-    <span>Inspección en tiempo real</span>
-  </div>
 
-  <img
-    src="{{ url_for('video_feed') }}"
-    alt="Cámara en vivo de inspección"
-  />
-
-  <div class="inspection-line"></div>
-
-  <div class="camera-status">Estación de inspección activa</div>
-</section>
 <section class="grid-2">
   <article class="card">
     <div class="card-title">
@@ -44,15 +29,16 @@
           <td>{{ row['garment_type'] }}</td>
           <td>{{ row['size'] }}</td>
           <td>
-            <span class="status {{ row['status']|lower }}"
-              >{{ row['status'] }}</span
-            >
+            <span class="status {{ row['status']|lower }}">
+              {{ row['status'] }}
+            </span>
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </article>
+
   <article class="card">
     <div class="card-title">
       <h2>Alertas de defectos</h2>
@@ -61,8 +47,8 @@
     <ul class="alerts">
       {% for row in alerts %}
       <li>
-        <span class="alert-dot"></span
-        ><strong>{{ row['defect_type'] }}</strong> en {{ row['garment_type'] }}
+        <span class="alert-dot"></span>
+        <strong>{{ row['defect_type'] }}</strong> en {{ row['garment_type'] }}
         #{{ row['code'].replace('INS-', '') }}
         <small>{{ row['zone'] }} · {{ row['confidence'] }}%</small>
       </li>
@@ -72,6 +58,7 @@
     </ul>
   </article>
 </section>
+
 <section class="summary">
   <article class="metric">
     <span>{{ total }}</span>
