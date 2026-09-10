@@ -20,3 +20,9 @@ anomaly_dataset/
 # Python
 __pycache__/
 *.pyc
+
+# Modelos entrenados / artefactos pesados
+patchcore_results/
+
+# Archivo accidental local
+e build app
