@@ -1,1 +1,22 @@
 .env
+# Entornos y secretos
+.env
+venv/
+venv_patchcore/
+
+# Backups temporales
+*.backup*
+app.py.backup*
+capture_patchcore_dataset.py.backup*
+
+# Evidencia generada en ejecución
+static/captures/
+static/results/
+results/
+
+# Datasets locales
+anomaly_dataset/
+
+# Python
+__pycache__/
+*.pyc

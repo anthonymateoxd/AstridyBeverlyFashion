@@ -1,4 +1,4 @@
-version: '3.9'
+﻿version: '3.9'
 
 services:
   mysql:
@@ -31,16 +31,38 @@ services:
       - '5000:5000'
     environment:
       SECRET_KEY: ***REDACTED***
+
       MYSQL_HOST: mysql
       MYSQL_PORT: '3306'
       MYSQL_USER: textile_user
       MYSQL_PASSWORD: ***REDACTED***
       MYSQL_DATABASE: textile_quality_db
-      CAMERA_INDEX: '0'
+
+      CAMERA_INDEX: '${CAMERA_INDEX}'
+      CAMERA_IP: '${CAMERA_IP}'
+      CAMERA_USER: '${CAMERA_USER}'
+      CAMERA_PASSWORD: '${CAMERA_PASSWORD}'
+      CAMERA_RTSP_PORT: '${CAMERA_RTSP_PORT}'
+      CAMERA_CHANNEL: '${CAMERA_CHANNEL}'
+      CAMERA_SUBTYPE: '${CAMERA_SUBTYPE}'
+      CAMERA_WIDTH: '${CAMERA_WIDTH}'
+      CAMERA_HEIGHT: '${CAMERA_HEIGHT}'
+      CAMERA_FPS: '${CAMERA_FPS}'
+
+      ROI_X1: '${ROI_X1}'
+      ROI_Y1: '${ROI_Y1}'
+      ROI_X2: '${ROI_X2}'
+      ROI_Y2: '${ROI_Y2}'
+      PATCHCORE_CKPT: '/app/patchcore_results/Patchcore/BLUSA_002_S_ROSA_FRONT/v1/weights/lightning/model.ckpt'
+      PATCHCORE_PIXEL_THRESHOLD: '${PATCHCORE_PIXEL_THRESHOLD}'
+      PATCHCORE_MAX_BOX_RATIO: '${PATCHCORE_MAX_BOX_RATIO}'
+
     volumes:
       - ./static/captures:/app/static/captures
       - ./static/results:/app/static/results
       - ./models:/app/models
+      - ./patchcore_results:/app/patchcore_results:ro
+
     depends_on:
       mysql:
         condition: service_healthy

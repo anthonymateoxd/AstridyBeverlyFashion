@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+{% block content %}
+
+<style>
+  .batch-grid {
+    display: grid;
+    grid-template-columns: 360px minmax(0, 1fr);
+    gap: 24px;
+  }
+
+  .batch-form,
+  .batch-list {
+    background: #fff;
+    border: 1px solid #e6ded2;
+    border-radius: 8px;
+    padding: 24px;
+  }
+
+  .batch-form h2,
+  .batch-list h2 {
+    margin-top: 0;
+  }
+
+  .batch-form label {
+    display: block;
+    margin-top: 18px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+
+  .batch-form input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 13px;
+    border: 1px solid #d8d0c5;
+    background: #fff;
+  }
+
+  .batch-form button,
+  .batch-action {
+    display: inline-block;
+    margin-top: 20px;
+    border: 0;
+    background: #111;
+    color: #fff;
+    padding: 13px 18px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-decoration: none;
+  }
+
+  .batch-card {
+    padding: 18px 0;
+    border-bottom: 1px solid #eee6dc;
+  }
+
+  .batch-card:last-child {
+    border-bottom: 0;
+  }
+
+  .batch-card-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+  }
+
+  .batch-code {
+    font-size: 20px;
+    font-weight: 700;
+  }
+
+  .batch-status {
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .batch-stats {
+    display: flex;
+    gap: 28px;
+    margin-top: 14px;
+  }
+
+  .batch-stat strong {
+    display: block;
+    font-size: 22px;
+  }
+
+  .batch-stat span {
+    font-size: 12px;
+    color: #766b60;
+  }
+
+  .batch-progress {
+    height: 8px;
+    margin-top: 16px;
+    background: #eee8df;
+    overflow: hidden;
+  }
+
+  .batch-progress > div {
+    height: 100%;
+    background: #111;
+  }
+
+  .active-note {
+    padding: 14px;
+    margin-bottom: 20px;
+    background: #eef8f0;
+    border-left: 4px solid #2f8f46;
+  }
+
+  @media (max-width: 1050px) {
+    .batch-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<header class="page-header">
+  <div>
+    <h1>Lotes de producción</h1>
+    <p>Inspección automatizada de blusas por lote</p>
+  </div>
+</header>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, message in messages %}
+      <div class="station-message {{ category }}">
+        {{ message }}
+      </div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}
+
+{% if active_batch %}
+<div class="active-note">
+  <strong>Lote activo:</strong>
+  {{ active_batch['code'] }}
+  ?
+  {{ active_batch['processed_quantity'] }}
+  /
+  {{ active_batch['planned_quantity'] }}
+  blusas procesadas.
+  <a href="{{ url_for('station') }}">Ir a la estación</a>
+</div>
+{% endif %}
+
+<section class="batch-grid">
+
+  <article class="batch-form">
+    <h2>Nuevo lote</h2>
+
+    <p>
+      Registra la cantidad de blusas que debe inspeccionar el sistema.
+    </p>
+
+    <form method="post">
+      <label for="code">Código del lote</label>
+      <input
+        id="code"
+        name="code"
+        type="text"
+        placeholder="Opcional · se genera automáticamente"
+      />
+
+      <label for="planned_quantity">
+        Cantidad de blusas
+      </label>
+
+      <input
+        id="planned_quantity"
+        name="planned_quantity"
+        type="number"
+        min="1"
+        max="5000"
+        required
+        placeholder="100"
+      />
+
+      <button type="submit">
+        Crear lote
+      </button>
+    </form>
+  </article>
+
+  <article class="batch-list">
+    <h2>Historial de lotes</h2>
+
+    {% for batch in batches %}
+
+      {% set processed = batch['processed_quantity']|int %}
+      {% set planned = batch['planned_quantity']|int %}
+      {% set progress = ((processed / planned) * 100) if planned else 0 %}
+
+      <div class="batch-card">
+
+        <div class="batch-card-top">
+          <div>
+            <div class="batch-code">
+              {{ batch['code'] }}
+            </div>
+
+            <div class="batch-status">
+              {% if batch['status'] == 'REVISION_PENDIENTE' %}
+              REVISIÓN PENDIENTE
+            {% elif batch['status'] == 'EN_INSPECCION' %}
+              EN INSPECCIÓN
+            {% elif batch['status'] == 'PREPARACION' %}
+              PREPARACIÓN
+            {% else %}
+              {{ batch['status']|replace('_', ' ') }}
+            {% endif %}
+            </div>
+          </div>
+
+          {% if batch['status'] == 'PREPARACION' %}
+            <form
+              method="post"
+              action="{{ url_for('start_batch', batch_id=batch['id']) }}"
+            >
+              <button class="batch-action" type="submit">
+                Iniciar inspección
+              </button>
+            </form>
+          {% elif batch['status'] == 'EN_INSPECCION' %}
+            <a
+              class="batch-action"
+              href="{{ url_for('station') }}"
+            >
+              Continuar
+            </a>
+
+          {% elif batch['status'] == 'REVISION_PENDIENTE' %}
+            <a
+              class="batch-action"
+              href="{{
+                url_for(
+                  'batch_review',
+                  batch_id=batch['id']
+                )
+              }}"
+            >
+              Revisar alertas
+            </a>
+          {% endif %}
+        </div>
+
+        <div class="batch-stats">
+          <div class="batch-stat">
+            <strong>
+              {{ processed }}/{{ planned }}
+            </strong>
+            <span>Procesadas</span>
+          </div>
+
+          <div class="batch-stat">
+            <strong>
+              {{ batch['auto_approved'] }}
+            </strong>
+            <span>Aprobadas automáticamente</span>
+          </div>
+
+          <div class="batch-stat">
+            <strong>
+              {{ batch['alerts'] }}
+            </strong>
+            <span>Alertas</span>
+          </div>
+        </div>
+
+        <div class="batch-progress">
+          <div style="width: {{ [progress, 100]|min }}%;"></div>
+        </div>
+
+      </div>
+
+    {% else %}
+
+      <p>
+        Todavía no existen lotes registrados.
+      </p>
+
+    {% endfor %}
+  </article>
+
+</section>
+
+{% endblock %}

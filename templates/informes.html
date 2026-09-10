@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% block content %}
+
+<style>
+  .informes-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 24px;
+    margin-bottom: 26px;
+  }
+
+  .informes-header h1 {
+    margin-bottom: 4px;
+  }
+
+  .informes-header p {
+    margin: 0;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #8b7969;
+    font-size: 12px;
+  }
+
+  .informes-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .informe-button {
+    display: inline-block;
+    padding: 12px 18px;
+    border: 1px solid #111111;
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .informe-button.excel {
+    background: #111111;
+    color: #ffffff;
+  }
+
+  .informe-button.pdf {
+    background: #ffffff;
+    color: #111111;
+  }
+
+  .informes-kpis {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 18px;
+    margin-bottom: 20px;
+  }
+
+  .informe-kpi,
+  .informe-card {
+    background: #ffffff;
+    border: 1px solid #e5ddd2;
+    border-radius: 8px;
+  }
+
+  .informe-kpi {
+    padding: 30px 20px;
+    text-align: center;
+  }
+
+  .informe-kpi strong {
+    display: block;
+    font-size: 34px;
+    margin-bottom: 8px;
+  }
+
+  .informe-kpi span {
+    color: #8b7969;
+    font-size: 12px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  .informes-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .informe-card {
+    padding: 22px;
+  }
+
+  .informe-card h2 {
+    margin-top: 0;
+    font-size: 18px;
+  }
+
+  .informe-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .informe-table th,
+  .informe-table td {
+    padding: 11px 9px;
+    border-bottom: 1px solid #ebe4db;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .informe-table th {
+    color: #9b8877;
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+
+  .informe-note {
+    margin-top: 20px;
+    padding: 22px;
+    background: #ffffff;
+    border: 1px solid #e5ddd2;
+    border-radius: 8px;
+    line-height: 1.5;
+  }
+
+  @media (max-width: 1100px) {
+    .informes-header {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .informes-kpis {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    .informes-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<header class="informes-header">
+
+  <div>
+    <h1>Informes</h1>
+
+    <p>
+      Métricas preliminares del prototipo
+    </p>
+  </div>
+
+  <div class="informes-actions">
+
+    <a
+      class="informe-button excel"
+      href="{{ url_for('informe_excel') }}"
+    >
+      Descargar Excel
+    </a>
+
+    <a
+      class="informe-button pdf"
+      href="{{ url_for('informe_pdf') }}"
+    >
+      Descargar PDF
+    </a>
+
+  </div>
+
+</header>
+
+<section class="informes-kpis">
+
+  <article class="informe-kpi">
+    <strong>{{ total }}</strong>
+    <span>Total inspecciones</span>
+  </article>
+
+  <article class="informe-kpi">
+    <strong>{{ approved }}</strong>
+    <span>Aprobadas</span>
+  </article>
+
+  <article class="informe-kpi">
+    <strong>{{ defects }}</strong>
+    <span>Con defecto</span>
+  </article>
+
+  <article class="informe-kpi">
+    <strong>{{ review }}</strong>
+    <span>Para revisar</span>
+  </article>
+
+</section>
+
+<section class="informes-grid">
+
+  <article class="informe-card">
+
+    <h2>Resumen por tipo de prenda</h2>
+
+    <table class="informe-table">
+
+      <thead>
+        <tr>
+          <th>Prenda</th>
+          <th>Total</th>
+          <th>Defectos</th>
+        </tr>
+      </thead>
+
+      <tbody>
+
+        {% for row in by_garment %}
+          <tr>
+            <td>{{ row['garment_type'] }}</td>
+            <td>{{ row['total'] }}</td>
+            <td>{{ row['defects'] }}</td>
+          </tr>
+        {% endfor %}
+
+      </tbody>
+
+    </table>
+
+  </article>
+
+  <article class="informe-card">
+
+    <h2>Resumen por defecto</h2>
+
+    <table class="informe-table">
+
+      <thead>
+        <tr>
+          <th>Defecto</th>
+          <th>Total</th>
+        </tr>
+      </thead>
+
+      <tbody>
+
+        {% for row in by_defect %}
+          <tr>
+            <td>
+              {{ row['defect_type'] or 'Sin especificar' }}
+            </td>
+            <td>{{ row['total'] }}</td>
+          </tr>
+        {% endfor %}
+
+      </tbody>
+
+    </table>
+
+  </article>
+
+</section>
+
+<section class="informe-note">
+
+  <h2>Nota metodológica</h2>
+
+  <p>
+    Informe preliminar del prototipo. Para la evaluación
+    final de la eficiencia del sistema deben compararse los
+    resultados de inteligencia artificial con la validación
+    humana mediante verdaderos positivos, verdaderos negativos,
+    falsos positivos y falsos negativos.
+  </p>
+
+  <p>
+    Los registros históricos incluyen pruebas realizadas
+    durante distintas etapas del desarrollo y no deben
+    interpretarse de forma aislada como la exactitud final
+    del modelo.
+  </p>
+
+</section>
+
+{% endblock %}

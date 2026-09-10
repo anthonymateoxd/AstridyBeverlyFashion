@@ -26,7 +26,12 @@
           href="{{ url_for('dashboard') }}"
           >▣ Dashboard</a
         >
-        <a href="{{ url_for('station') }}">▣ Estación automática</a>
+                <a
+          class="{% if request.endpoint in ['batches', 'start_batch'] %}active{% endif %}"
+          href="{{ url_for('batches') }}"
+          >Lotes</a
+        >
+<a href="{{ url_for('station') }}">▣ Estación automática</a>
         <a
           class="{% if request.endpoint == 'inspection' %}active{% endif %}"
           href="{{ url_for('inspection') }}"
@@ -38,9 +43,9 @@
           >▤ Registro de prendas</a
         >
         <a
-          class="{% if request.endpoint == 'reports' %}active{% endif %}"
-          href="{{ url_for('reports') }}"
-          >▦ Reportes</a
+          class="{% if request.endpoint in ['informes', 'informe_excel', 'informe_pdf'] %}active{% endif %}"
+          href="{{ url_for('informes') }}"
+          >▦ Informes</a
         >
         <a href="{{ url_for('logout') }}">↳ Salir</a>
       </nav>

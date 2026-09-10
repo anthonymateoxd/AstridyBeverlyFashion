@@ -1,0 +1,394 @@
+{% extends "base.html" %}
+{% block content %}
+
+<style>
+  .review-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+
+  .review-status {
+    padding: 10px 14px;
+    background: #fff3d8;
+    border-left: 4px solid #c68b12;
+    font-size: 13px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .review-summary {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(120px, 1fr));
+    gap: 14px;
+    margin-bottom: 26px;
+  }
+
+  .review-stat {
+    background: #fff;
+    border: 1px solid #e6ded2;
+    border-radius: 8px;
+    padding: 18px;
+  }
+
+  .review-stat strong {
+    display: block;
+    font-size: 28px;
+    margin-bottom: 4px;
+  }
+
+  .review-stat span {
+    color: #746a60;
+    font-size: 12px;
+    letter-spacing: 0.7px;
+  }
+
+  .review-list {
+    display: grid;
+    gap: 20px;
+  }
+
+  .review-card {
+    background: #fff;
+    border: 1px solid #e6ded2;
+    border-radius: 8px;
+    padding: 20px;
+  }
+
+  .review-card-grid {
+    display: grid;
+    grid-template-columns: minmax(280px, 420px) 1fr;
+    gap: 24px;
+  }
+
+  .review-image {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #111;
+    overflow: hidden;
+    border-radius: 6px;
+  }
+
+  .review-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  .review-number {
+    font-size: 24px;
+    font-weight: 700;
+    margin-bottom: 16px;
+  }
+
+  .review-data {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    row-gap: 10px;
+    column-gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  .review-label {
+    color: #7a6f65;
+  }
+
+  .review-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .review-actions form {
+    margin: 0;
+  }
+
+  .review-button {
+    border: 0;
+    padding: 13px 18px;
+    color: #fff;
+    font-weight: 700;
+    letter-spacing: 0.7px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+
+  .confirm-defect {
+    background: #b42318;
+  }
+
+  .discard-alert {
+    background: #16804c;
+  }
+
+  .review-result {
+    display: inline-block;
+    padding: 10px 13px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.7px;
+    text-transform: uppercase;
+  }
+
+  .review-result.confirmed {
+    background: #fde7e5;
+    color: #9d2018;
+  }
+
+  .review-result.discarded {
+    background: #e3f5eb;
+    color: #12683e;
+  }
+
+  .review-complete {
+    margin-top: 24px;
+    padding: 20px;
+    background: #eef8f0;
+    border-left: 4px solid #23834d;
+  }
+
+  .back-link {
+    display: inline-block;
+    margin-top: 12px;
+  }
+
+  @media (max-width: 1100px) {
+    .review-summary {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    .review-card-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<div class="review-header">
+  <div>
+    <h1>
+      Revisión del lote {{ batch['code'] }}
+    </h1>
+    <p>
+      Revisión humana de las excepciones detectadas
+      por el sistema.
+    </p>
+  </div>
+
+  <div class="review-status">
+    Revisión pendiente
+  </div>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, message in messages %}
+      <div class="station-message {{ category }}">
+        {{ message }}
+      </div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}
+
+<section class="review-summary">
+
+  <div class="review-stat">
+    <strong>
+      {{ batch['processed_quantity'] }}
+      /
+      {{ batch['planned_quantity'] }}
+    </strong>
+    <span>Blusas procesadas</span>
+  </div>
+
+  <div class="review-stat">
+    <strong>{{ batch['auto_approved'] }}</strong>
+    <span>Aprobadas automáticamente</span>
+  </div>
+
+  <div class="review-stat">
+    <strong>{{ batch['alerts'] }}</strong>
+    <span>Alertas detectadas</span>
+  </div>
+
+  <div class="review-stat">
+    <strong>{{ batch['confirmed_defects'] }}</strong>
+    <span>Defectos confirmados</span>
+  </div>
+
+  <div class="review-stat">
+    <strong>{{ batch['pending_alerts'] }}</strong>
+    <span>Alertas pendientes</span>
+  </div>
+
+</section>
+
+<section class="review-list">
+
+  {% for alert in alerts %}
+
+    <article class="review-card">
+
+      <div class="review-card-grid">
+
+        <div class="review-image">
+          {% if alert['image_result'] %}
+            <img
+              src="{{ url_for('static', filename=alert['image_result']) }}"
+              alt="Resultado de inspección de la blusa"
+            />
+          {% elif alert['image_original'] %}
+            <img
+              src="{{ url_for('static', filename=alert['image_original']) }}"
+              alt="Captura original de la blusa"
+            />
+          {% endif %}
+        </div>
+
+        <div>
+
+          <div class="review-number">
+            Blusa #{{ alert['batch_position'] }}
+          </div>
+
+          <div class="review-data">
+
+            <div class="review-label">Decisión IA</div>
+            <div>
+              {{ alert['ai_decision'] }}
+            </div>
+
+            <div class="review-label">Resultado detectado</div>
+            <div>
+              {{ alert['defect_type'] }}
+            </div>
+
+            <div class="review-label">Confianza</div>
+            <div>
+              {% if alert['confidence'] is not none %}
+                {{ alert['confidence'] }} %
+              {% else %}
+                N/A
+              {% endif %}
+            </div>
+
+            <div class="review-label">Zona</div>
+            <div>
+              {{ alert['zone'] or 'No definida' }}
+            </div>
+
+            <div class="review-label">Fecha</div>
+            <div>
+              {{ alert['created_at'] }}
+            </div>
+
+          </div>
+
+          {% if alert['review_status'] == 'DEFECTO_CONFIRMADO' %}
+
+            <div class="review-result confirmed">
+              Defecto confirmado
+            </div>
+
+          {% elif alert['review_status'] == 'ALERTA_DESCARTADA' %}
+
+            <div class="review-result discarded">
+              Alerta descartada
+            </div>
+
+          {% else %}
+
+            <div class="review-actions">
+
+              <form
+                method="post"
+                action="{{
+                  url_for(
+                    'review_batch_alert',
+                    batch_id=batch['id'],
+                    inspection_id=alert['id'],
+                    decision='confirmar'
+                  )
+                }}"
+              >
+                <button
+                  class="review-button confirm-defect"
+                  type="submit"
+                >
+                  Confirmar defecto
+                </button>
+              </form>
+
+              <form
+                method="post"
+                action="{{
+                  url_for(
+                    'review_batch_alert',
+                    batch_id=batch['id'],
+                    inspection_id=alert['id'],
+                    decision='descartar'
+                  )
+                }}"
+              >
+                <button
+                  class="review-button discard-alert"
+                  type="submit"
+                >
+                  Descartar alerta
+                </button>
+              </form>
+
+            </div>
+
+          {% endif %}
+
+        </div>
+
+      </div>
+
+    </article>
+
+  {% else %}
+
+    <div class="review-complete">
+      Este lote no contiene alertas para revisión.
+    </div>
+
+  {% endfor %}
+
+</section>
+
+{% if batch['pending_alerts']|int == 0 %}
+
+  <div class="review-complete">
+    <strong>
+      Revisión de alertas completada.
+    </strong>
+
+    <p>
+      Se confirmaron
+      {{ batch['confirmed_defects'] }}
+      defectos y se descartaron
+      {{ batch['discarded_alerts'] }}
+      alertas.
+    </p>
+
+    <p>
+      El siguiente paso es realizar la auditoría
+      muestral de las prendas aprobadas automáticamente
+      antes del cierre definitivo del lote.
+    </p>
+  </div>
+
+{% endif %}
+
+<a
+  class="back-link"
+  href="{{ url_for('batches') }}"
+>
+  Volver a lotes
+</a>
+
+{% endblock %}

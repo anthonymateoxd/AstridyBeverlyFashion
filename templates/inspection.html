@@ -22,6 +22,16 @@
       class="inspect-form"
       method="post"
       enctype="multipart/form-data"
+      data-single-submit="true"
+      onsubmit="
+        const button = this.querySelector('button[type=submit]');
+        if (button.disabled) {
+          return false;
+        }
+        button.disabled = true;
+        button.textContent = 'Procesando...';
+        return true;
+      "
     >
       <div class="auto-note">
         El sistema capturará la imagen desde la cámara activa y generará

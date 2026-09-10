@@ -38,8 +38,10 @@
 
   .station-camera-frame {
     position: relative;
-    flex: 1;
-    min-height: 520px;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    flex: none;
+    min-height: 0;
     background: #111;
     border-radius: 6px;
     overflow: hidden;
@@ -126,6 +128,72 @@
     line-height: 1.5;
   }
 
+  .camera-status-tools {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+    margin-left: auto;
+  }
+
+  .camera-reconnect-button {
+    border: 0;
+    background: transparent;
+    color: #786d62;
+    padding: 2px 3px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    opacity: 0.72;
+  }
+
+  .camera-reconnect-button:hover {
+    opacity: 1;
+    text-decoration: underline;
+  }
+
+  .camera-reconnect-button:disabled {
+    opacity: 0.4;
+    cursor: wait;
+  }
+
+  .station-camera-alert {
+    margin-top: 18px;
+    padding: 16px;
+    background: #fff0f0;
+    color: #7f1d1d;
+    border: 1px solid #efb8b8;
+    border-left: 4px solid #d9534f;
+    line-height: 1.5;
+  }
+
+  .station-camera-alert strong {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 15px;
+  }
+
+  .station-camera-alert.hidden {
+    display: none;
+  }
+
+  #cameraText.connected {
+    color: #198754;
+    font-weight: 700;
+  }
+
+  #cameraText.disconnected {
+    color: #c0392b;
+    font-weight: 700;
+  }
+
+  #cameraText.checking {
+    color: #9a7413;
+    font-weight: 700;
+  }
+
   .station-message {
     margin-top: 18px;
     padding: 14px;
@@ -174,7 +242,7 @@
     }
 
     .station-camera-frame {
-      height: 520px;
+      height: auto;
     }
   }
 </style>
@@ -198,20 +266,31 @@
       <div class="station-camera-topbar">
         <span>Cámara en vivo</span>
         <span>Área de inspección activa</span>
-        <span id="cameraText">Sistema listo</span>
+        <div class="camera-status-tools">
+          <span id="cameraText">Sistema listo</span>
+
+          <button
+            id="cameraReconnectBtn"
+            class="camera-reconnect-button"
+            type="button"
+            title="Reconectar c\u00e1mara"
+          >
+            &#8635; Reconectar
+          </button>
+        </div>
       </div>
 
       <div class="station-camera-frame">
         <img
           src="{{ url_for('video_feed') }}"
           alt="Cámara de estación de inspección"
-        />
+        / id="cameraFeed">
 
         <div class="station-scan-line"></div>
 
         <div class="station-overlay-bottom">
-          <span>Visión artificial · Control de calidad textil</span>
-          <span id="autoStateText">Automático detenido</span>
+          <span style="display: none;">Visión artificial · Control de calidad textil</span>
+          <span id="autoStateText" style="display: none;">Automático detenido</span>
         </div>
       </div>
     </article>
@@ -219,10 +298,66 @@
     <aside class="station-control-card">
       <h2>Control de inspección</h2>
 
+      {% if active_batch %}
+      <div class="station-info">
+        <strong>Lote activo:</strong>
+        {{ active_batch['code'] }}
+
+        <p>
+          <strong>Progreso:</strong>
+          <span id="batchProgress">
+            {{ active_batch['processed_quantity'] }}
+            /
+            {{ active_batch['planned_quantity'] }}
+          </span>
+          blusas
+        </p>
+
+        <p>
+          <strong>Aprobadas automáticamente:</strong>
+          <span id="batchApproved">
+            {{ active_batch['auto_approved'] }}
+          </span>
+        </p>
+
+        <p>
+          <strong>Alertas:</strong>
+          <span id="batchAlerts">
+            {{ active_batch['alerts'] }}
+          </span>
+        </p>
+      </div>
+      {% else %}
+      <div class="station-message error">
+        No hay un lote activo.
+        <a href="{{ url_for('batches') }}">
+          Crear o iniciar lote
+        </a>
+        antes de inspeccionar.
+      </div>
+      {% endif %}
+
+
+      <div
+        id="cameraAlert"
+        class="station-camera-alert"
+      >
+        <strong id="cameraAlertTitle">
+          Comprobando cámara
+        </strong>
+
+        <span id="cameraAlertMessage">
+          Verificando conexión con la cámara de inspección.
+        </span>
+      </div>
+
+      
+
       <div class="station-actions">
         <button
           id="manualBtn"
           type="button"
+          disabled
         >
           Inspeccionar ahora
         </button>
@@ -230,6 +365,7 @@
         <button
           id="autoStartBtn"
           type="button"
+          disabled
         >
           Iniciar automático
         </button>
@@ -264,12 +400,12 @@
       <div class="station-last-result">
         <h3>Último resultado</h3>
 
-        <p><strong>ID:</strong> <span id="lastCode">N/A</span></p>
-        <p><strong>Estado:</strong> <span id="lastStatus">N/A</span></p>
-        <p><strong>Defecto:</strong> <span id="lastDefect">N/A</span></p>
-        <p><strong>Confianza:</strong> <span id="lastConfidence">N/A</span></p>
-        <p><strong>Zona:</strong> <span id="lastZone">N/A</span></p>
-        <p><strong>Fecha:</strong> <span id="lastDate">N/A</span></p>
+        <p><strong>ID:</strong> <span id="lastCode">—</span></p>
+        <p><strong>Estado:</strong> <span id="lastStatus">—</span></p>
+        <p><strong>Defecto:</strong> <span id="lastDefect">—</span></p>
+        <p><strong>Confianza:</strong> <span id="lastConfidence">—</span></p>
+        <p><strong>Zona:</strong> <span id="lastZone">—</span></p>
+        <p><strong>Fecha:</strong> <span id="lastDate">—</span></p>
       </div>
     </aside>
   </section>
@@ -282,6 +418,172 @@
   const stationMessage = document.getElementById('stationMessage');
   const stationModeBadge = document.getElementById('stationModeBadge');
   const autoStateText = document.getElementById('autoStateText');
+  const cameraText = document.getElementById('cameraText');
+  const cameraAlert = document.getElementById('cameraAlert');
+  const cameraAlertTitle = document.getElementById('cameraAlertTitle');
+  const cameraAlertMessage = document.getElementById('cameraAlertMessage');
+  const cameraFeed = document.getElementById('cameraFeed');
+  const cameraReconnectBtn = document.getElementById('cameraReconnectBtn');
+
+  const cameraFeedUrl = "{{ url_for('video_feed') }}";
+  const cameraReconnectUrl = "{{ url_for('station_camera_reconnect') }}";
+
+  let lastCameraFeedReloadAt = 0;
+  let cameraFeedReloadTimer = null;
+
+  const hasActiveBatch = {{ 'true' if active_batch else 'false' }};
+
+  function reloadCameraFeed(force = false) {
+    if (!cameraFeed) {
+      return;
+    }
+
+    const now = Date.now();
+
+    if (!force && now - lastCameraFeedReloadAt < 2000) {
+      return;
+    }
+
+    lastCameraFeedReloadAt = now;
+
+    const separator = cameraFeedUrl.includes('?') ? '&' : '?';
+
+    cameraFeed.src =
+      cameraFeedUrl +
+      separator +
+      'reload=' +
+      now;
+  }
+
+
+  async function reconnectCamera() {
+    if (!cameraReconnectBtn || cameraReconnectBtn.disabled) {
+      return;
+    }
+
+    cameraReconnectBtn.disabled = true;
+    cameraReconnectBtn.textContent =
+      '\u21bb Reintentando';
+
+    const controller = new AbortController();
+
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      3500,
+    );
+
+    try {
+      const response = await fetch(
+        cameraReconnectUrl,
+        {
+          method: 'POST',
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          signal: controller.signal,
+        },
+      );
+
+      const data = await response.json();
+
+      if (data.camera) {
+        updateCameraState(data.camera);
+      }
+
+      setTimeout(
+        () => reloadCameraFeed(true),
+        300,
+      );
+
+    } catch (error) {
+      if (error.name !== 'AbortError') {
+        console.error(
+          'Error al solicitar reconexi\u00f3n:',
+          error,
+        );
+      }
+
+    } finally {
+      clearTimeout(timeoutId);
+
+      setTimeout(
+        () => {
+          cameraReconnectBtn.disabled = false;
+          cameraReconnectBtn.textContent =
+            '\u21bb Reconectar';
+        },
+        1200,
+      );
+    }
+  }
+
+
+  function scheduleCameraFeedReload() {
+    if (cameraFeedReloadTimer) {
+      clearTimeout(cameraFeedReloadTimer);
+    }
+
+    cameraFeedReloadTimer = setTimeout(
+      () => reloadCameraFeed(),
+      400,
+    );
+  }
+
+
+  function updateCameraState(camera) {
+    const connected = Boolean(camera && camera.connected);
+    const state = camera ? camera.state : 'DISCONNECTED';
+
+    cameraText.classList.remove(
+      'connected',
+      'disconnected',
+      'checking',
+    );
+
+    if (connected) {
+      cameraText.textContent = '● CÁMARA CONECTADA';
+      cameraText.classList.add('connected');
+
+      cameraAlert.classList.add('hidden');
+
+      manualBtn.disabled = !hasActiveBatch;
+      autoStartBtn.disabled = !hasActiveBatch;
+
+      return;
+    }
+
+    manualBtn.disabled = true;
+    autoStartBtn.disabled = true;
+
+    cameraAlert.classList.remove('hidden');
+
+    if (state === 'CHECKING') {
+      cameraText.textContent = '● COMPROBANDO';
+      cameraText.classList.add('checking');
+
+      cameraAlertTitle.textContent =
+        'Comprobando cámara';
+
+      cameraAlertMessage.textContent =
+        camera?.message ||
+        'Verificando conexión con la cámara.';
+
+      return;
+    }
+
+    cameraText.textContent = '● SIN SEÑAL';
+    cameraText.classList.add('disconnected');
+
+    cameraAlertTitle.textContent =
+      'Cámara no disponible';
+
+    cameraAlertMessage.textContent =
+      camera?.message ||
+      'No se recibe video de la cámara de inspección.';
+
+    autoStateText.textContent =
+      'Cámara desconectada';
+  }
 
   function setMessage(text, type = 'normal') {
     stationMessage.textContent = text;
@@ -291,20 +593,60 @@
   function setLastResult(result) {
     if (!result) return;
 
-    document.getElementById('lastCode').textContent = result.code || 'N/A';
-    document.getElementById('lastStatus').textContent = result.status || 'N/A';
+    document.getElementById('lastCode').textContent = result.code || '—';
+    document.getElementById('lastStatus').textContent = result.status || '—';
     document.getElementById('lastDefect').textContent =
-      result.defect_type || 'N/A';
+      result.defect_type || '—';
 
     const confidence =
       result.confidence !== null && result.confidence !== undefined
         ? result.confidence + '%'
-        : 'N/A';
+        : '—';
 
     document.getElementById('lastConfidence').textContent = confidence;
-    document.getElementById('lastZone').textContent = result.zone || 'N/A';
+    document.getElementById('lastZone').textContent = result.zone || '—';
     document.getElementById('lastDate').textContent =
-      result.created_at || 'N/A';
+      result.created_at || '—';
+  }
+
+  function updateBatchFromResult(result) {
+    if (!result) return;
+
+    const progress =
+      document.getElementById('batchProgress');
+
+    const autoApproved =
+      document.getElementById('batchAutoApproved');
+
+    const alerts =
+      document.getElementById('batchAlerts');
+
+    if (
+      progress &&
+      result.processed_quantity !== undefined &&
+      result.planned_quantity !== undefined
+    ) {
+      progress.textContent =
+        result.processed_quantity +
+        '/' +
+        result.planned_quantity;
+    }
+
+    if (
+      autoApproved &&
+      result.auto_approved !== undefined
+    ) {
+      autoApproved.textContent =
+        result.auto_approved;
+    }
+
+    if (
+      alerts &&
+      result.alerts !== undefined
+    ) {
+      alerts.textContent =
+        result.alerts;
+    }
   }
 
   async function manualInspect() {
@@ -321,6 +663,7 @@
       if (data.ok) {
         setMessage(data.message, 'success');
         setLastResult(data.result);
+        updateBatchFromResult(data.result);
       } else {
         setMessage(
           data.message || 'No se pudo ejecutar la inspección.',
@@ -394,6 +737,8 @@
 
       const data = await response.json();
 
+      updateCameraState(data.camera);
+
       if (data.automatic) {
         stationModeBadge.textContent = '● Modo automático';
         stationModeBadge.classList.remove('offline');
@@ -406,6 +751,29 @@
 
       if (data.last_result) {
         setLastResult(data.last_result);
+      }
+
+      if (data.active_batch) {
+        const progress = document.getElementById('batchProgress');
+        const approved = document.getElementById('batchApproved');
+        const alerts = document.getElementById('batchAlerts');
+
+        if (progress) {
+          progress.textContent =
+            data.active_batch.processed_quantity +
+            '/' +
+            data.active_batch.planned_quantity;
+        }
+
+        if (approved) {
+          approved.textContent =
+            data.active_batch.auto_approved;
+        }
+
+        if (alerts) {
+          alerts.textContent =
+            data.active_batch.alerts;
+        }
       }
 
       if (data.last_error) {
@@ -422,6 +790,44 @@
   manualBtn.addEventListener('click', manualInspect);
   autoStartBtn.addEventListener('click', startAuto);
   autoStopBtn.addEventListener('click', stopAuto);
+
+  if (cameraReconnectBtn) {
+    cameraReconnectBtn.addEventListener(
+      'click',
+      reconnectCamera,
+    );
+  }
+
+  if (cameraFeed) {
+    cameraFeed.addEventListener(
+      'error',
+      () => {
+        setTimeout(
+          () => reloadCameraFeed(true),
+          10000,
+        );
+      },
+    );
+  }
+
+  document.addEventListener(
+    'visibilitychange',
+    () => {
+      if (!document.hidden) {
+        scheduleCameraFeedReload();
+      }
+    },
+  );
+
+  window.addEventListener(
+    'focus',
+    scheduleCameraFeedReload,
+  );
+
+  window.addEventListener(
+    'pageshow',
+    scheduleCameraFeedReload,
+  );
 
   refreshAutoStatus();
   setInterval(refreshAutoStatus, 3000);

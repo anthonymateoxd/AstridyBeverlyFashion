@@ -4,7 +4,7 @@
 <section class="card">
   <form class="filters" method="get">
     <input type="text" name="q" placeholder="Buscar ID, defecto o zona" value="{{ request.args.get('q','') }}">
-    <select name="garment_type"><option value="">Todas las prendas</option>{% for g in garments %}<option value="{{ g }}" {% if request.args.get('garment_type') == g %}selected{% endif %}>{{ g }}</option>{% endfor %}</select>
+    
     <select name="status"><option value="">Todos los estados</option><option value="Aprobado">Aprobado</option><option value="Defecto">Defecto</option><option value="Revisar">Revisar</option></select>
     <button>Filtrar</button>
   </form>
@@ -15,3 +15,4 @@
   </tbody></table>
 </section>
 {% endblock %}
+
