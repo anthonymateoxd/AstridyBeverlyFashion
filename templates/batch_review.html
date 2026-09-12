@@ -2,387 +2,600 @@
 {% block content %}
 
 <style>
-  .review-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 24px;
-    margin-bottom: 24px;
+
+.review-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:20px;
+  margin-bottom:22px;
+}
+
+.review-header h1{
+  margin-bottom:6px;
+}
+
+.review-header p{
+  margin:0;
+  color:#746a60;
+}
+
+.review-status{
+  padding:10px 14px;
+  border-left:4px solid #c68b12;
+  background:#fff3d8;
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:.8px;
+  text-transform:uppercase;
+}
+
+.review-status.done{
+  border-color:#23834d;
+  background:#eaf6ee;
+  color:#176238;
+}
+
+.review-summary{
+  display:grid;
+  grid-template-columns:
+    repeat(4,minmax(120px,1fr));
+  gap:14px;
+  margin-bottom:22px;
+}
+
+.review-stat{
+  padding:18px;
+  background:#fff;
+  border:1px solid #e6ded2;
+  border-radius:8px;
+}
+
+.review-stat strong{
+  display:block;
+  margin-bottom:4px;
+  font-size:28px;
+}
+
+.review-stat span{
+  color:#746a60;
+  font-size:11px;
+  letter-spacing:.6px;
+}
+
+.review-focus{
+  margin-bottom:20px;
+  padding:18px 20px;
+  background:#fff;
+  border:1px solid #e6ded2;
+  border-radius:8px;
+}
+
+.review-focus h2{
+  margin:0 0 5px;
+}
+
+.review-focus p{
+  margin:0;
+  color:#746a60;
+}
+
+.review-list{
+  display:grid;
+  gap:18px;
+}
+
+.review-card{
+  padding:20px;
+  background:#fff;
+  border:1px solid #e6ded2;
+  border-radius:8px;
+}
+
+.review-card-grid{
+  display:grid;
+  grid-template-columns:
+    minmax(300px,520px) 1fr;
+  gap:26px;
+  align-items:start;
+}
+
+.review-image{
+  width:100%;
+  aspect-ratio:16 / 9;
+  overflow:hidden;
+  background:#111;
+  border-radius:6px;
+}
+
+.review-image img{
+  display:block;
+  width:100%;
+  height:100%;
+  object-fit:contain;
+}
+
+.review-number{
+  margin-bottom:16px;
+  font-size:26px;
+  font-weight:700;
+}
+
+.review-data{
+  display:grid;
+  grid-template-columns:110px 1fr;
+  column-gap:12px;
+  row-gap:10px;
+  margin-bottom:18px;
+}
+
+.review-label{
+  color:#7a6f65;
+}
+
+.review-note-label{
+  display:block;
+  margin:0 0 7px;
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:1px;
+  text-transform:uppercase;
+}
+
+.review-note-input{
+  width:100%;
+  min-height:76px;
+  box-sizing:border-box;
+  margin-bottom:12px;
+  padding:11px 12px;
+  border:1px solid #d7cec3;
+  border-radius:5px;
+  resize:vertical;
+  font:inherit;
+}
+
+.review-actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+}
+
+.review-button{
+  border:0;
+  padding:12px 17px;
+  color:#fff;
+  font-weight:700;
+  letter-spacing:.6px;
+  text-transform:uppercase;
+  cursor:pointer;
+}
+
+.confirm-defect{
+  background:#b42318;
+}
+
+.discard-alert{
+  background:#16804c;
+}
+
+.review-complete{
+  padding:24px;
+  background:#eef8f0;
+  border-left:4px solid #23834d;
+}
+
+.review-complete h2{
+  margin:0 0 7px;
+}
+
+.review-complete p{
+  margin:0 0 16px;
+}
+
+.review-final-button{
+  border:0;
+  padding:13px 20px;
+  background:#111;
+  color:#fff;
+  font-weight:700;
+  letter-spacing:.7px;
+  text-transform:uppercase;
+  cursor:pointer;
+}
+
+.review-final-button.accept{
+  background:#16804c;
+}
+
+.back-link{
+  display:inline-block;
+  margin-top:18px;
+}
+
+@media(max-width:1100px){
+
+  .review-summary{
+    grid-template-columns:
+      repeat(2,1fr);
   }
 
-  .review-status {
-    padding: 10px 14px;
-    background: #fff3d8;
-    border-left: 4px solid #c68b12;
-    font-size: 13px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
+  .review-card-grid{
+    grid-template-columns:1fr;
   }
+}
 
-  .review-summary {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(120px, 1fr));
-    gap: 14px;
-    margin-bottom: 26px;
-  }
-
-  .review-stat {
-    background: #fff;
-    border: 1px solid #e6ded2;
-    border-radius: 8px;
-    padding: 18px;
-  }
-
-  .review-stat strong {
-    display: block;
-    font-size: 28px;
-    margin-bottom: 4px;
-  }
-
-  .review-stat span {
-    color: #746a60;
-    font-size: 12px;
-    letter-spacing: 0.7px;
-  }
-
-  .review-list {
-    display: grid;
-    gap: 20px;
-  }
-
-  .review-card {
-    background: #fff;
-    border: 1px solid #e6ded2;
-    border-radius: 8px;
-    padding: 20px;
-  }
-
-  .review-card-grid {
-    display: grid;
-    grid-template-columns: minmax(280px, 420px) 1fr;
-    gap: 24px;
-  }
-
-  .review-image {
-    width: 100%;
-    aspect-ratio: 16 / 9;
-    background: #111;
-    overflow: hidden;
-    border-radius: 6px;
-  }
-
-  .review-image img {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    display: block;
-  }
-
-  .review-number {
-    font-size: 24px;
-    font-weight: 700;
-    margin-bottom: 16px;
-  }
-
-  .review-data {
-    display: grid;
-    grid-template-columns: 150px 1fr;
-    row-gap: 10px;
-    column-gap: 12px;
-    margin-bottom: 20px;
-  }
-
-  .review-label {
-    color: #7a6f65;
-  }
-
-  .review-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-
-  .review-actions form {
-    margin: 0;
-  }
-
-  .review-button {
-    border: 0;
-    padding: 13px 18px;
-    color: #fff;
-    font-weight: 700;
-    letter-spacing: 0.7px;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-
-  .confirm-defect {
-    background: #b42318;
-  }
-
-  .discard-alert {
-    background: #16804c;
-  }
-
-  .review-result {
-    display: inline-block;
-    padding: 10px 13px;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.7px;
-    text-transform: uppercase;
-  }
-
-  .review-result.confirmed {
-    background: #fde7e5;
-    color: #9d2018;
-  }
-
-  .review-result.discarded {
-    background: #e3f5eb;
-    color: #12683e;
-  }
-
-  .review-complete {
-    margin-top: 24px;
-    padding: 20px;
-    background: #eef8f0;
-    border-left: 4px solid #23834d;
-  }
-
-  .back-link {
-    display: inline-block;
-    margin-top: 12px;
-  }
-
-  @media (max-width: 1100px) {
-    .review-summary {
-      grid-template-columns: repeat(2, 1fr);
-    }
-
-    .review-card-grid {
-      grid-template-columns: 1fr;
-    }
-  }
 </style>
 
+
+{% set processed =
+   batch['processed_quantity']|int
+%}
+
+{% set alerts_total =
+   batch['alerts']|int
+%}
+
+{% set pending =
+   batch['pending_alerts']|int
+%}
+
+{% set completed =
+   batch['status'] == 'COMPLETADO'
+%}
+
+
 <div class="review-header">
+
   <div>
+
     <h1>
-      Revisión del lote {{ batch['code'] }}
+      Revisi&oacute;n del lote #{{ batch['id'] }}
     </h1>
+
     <p>
-      Revisión humana de las excepciones detectadas
-      por el sistema.
+      Control de excepciones detectadas.
     </p>
+
   </div>
 
-  <div class="review-status">
-    Revisión pendiente
+  <div
+    class="review-status{% if completed %} done{% endif %}"
+  >
+
+    {% if completed %}
+
+      COMPLETADO
+
+    {% elif alerts_total == 0 %}
+
+      SIN ALERTAS
+
+    {% elif pending > 0 %}
+
+      {{ pending }} POR REVISAR
+
+    {% else %}
+
+      LISTO PARA FINALIZAR
+
+    {% endif %}
+
   </div>
+
 </div>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
-  {% if messages %}
-    {% for category, message in messages %}
-      <div class="station-message {{ category }}">
-        {{ message }}
-      </div>
-    {% endfor %}
-  {% endif %}
-{% endwith %}
 
 <section class="review-summary">
 
   <div class="review-stat">
     <strong>
-      {{ batch['processed_quantity'] }}
+      {{ processed }}
       /
       {{ batch['planned_quantity'] }}
     </strong>
-    <span>Blusas procesadas</span>
+    <span>Inspeccionadas</span>
   </div>
 
   <div class="review-stat">
-    <strong>{{ batch['auto_approved'] }}</strong>
-    <span>Aprobadas automáticamente</span>
+    <strong>
+      {{ batch['auto_approved'] }}
+    </strong>
+    <span>Sin alerta</span>
   </div>
 
   <div class="review-stat">
-    <strong>{{ batch['alerts'] }}</strong>
-    <span>Alertas detectadas</span>
+    <strong>
+      {{ alerts_total }}
+    </strong>
+    <span>Alertas</span>
   </div>
 
   <div class="review-stat">
-    <strong>{{ batch['confirmed_defects'] }}</strong>
-    <span>Defectos confirmados</span>
-  </div>
-
-  <div class="review-stat">
-    <strong>{{ batch['pending_alerts'] }}</strong>
-    <span>Alertas pendientes</span>
+    <strong>
+      {{ pending }}
+    </strong>
+    <span>Por revisar</span>
   </div>
 
 </section>
 
-<section class="review-list">
 
-  {% for alert in alerts %}
+{% if completed %}
 
-    <article class="review-card">
+  <section class="review-complete">
 
-      <div class="review-card-grid">
+    <h2>
+      Revisi&oacute;n finalizada
+    </h2>
 
-        <div class="review-image">
-          {% if alert['image_result'] %}
-            <img
-              src="{{ url_for('static', filename=alert['image_result']) }}"
-              alt="Resultado de inspección de la blusa"
-            />
-          {% elif alert['image_original'] %}
-            <img
-              src="{{ url_for('static', filename=alert['image_original']) }}"
-              alt="Captura original de la blusa"
-            />
-          {% endif %}
-        </div>
+    {% if alerts_total == 0 %}
 
-        <div>
+      <p>
+        {{ processed }} prendas aceptadas
+        sin alertas.
+      </p>
 
-          <div class="review-number">
-            Blusa #{{ alert['batch_position'] }}
-          </div>
+    {% else %}
 
-          <div class="review-data">
+      <p>
+        {{ batch['confirmed_defects'] }}
+        defectos confirmados
+        &middot;
+        {{ batch['discarded_alerts'] }}
+        alertas descartadas.
+      </p>
 
-            <div class="review-label">Decisión IA</div>
-            <div>
-              {{ alert['ai_decision'] }}
-            </div>
+    {% endif %}
 
-            <div class="review-label">Resultado detectado</div>
-            <div>
-              {{ alert['defect_type'] }}
-            </div>
+  </section>
 
-            <div class="review-label">Confianza</div>
-            <div>
-              {% if alert['confidence'] is not none %}
-                {{ alert['confidence'] }} %
-              {% else %}
-                N/A
-              {% endif %}
-            </div>
 
-            <div class="review-label">Zona</div>
-            <div>
-              {{ alert['zone'] or 'No definida' }}
-            </div>
+{% elif alerts_total == 0 %}
 
-            <div class="review-label">Fecha</div>
-            <div>
-              {{ alert['created_at'] }}
-            </div>
+  <section class="review-complete">
 
-          </div>
+    <h2>
+      Sin alertas
+    </h2>
 
-          {% if alert['review_status'] == 'DEFECTO_CONFIRMADO' %}
+    <p>
+      Las {{ processed }} prendas fueron
+      inspeccionadas sin detectar anomal&iacute;as.
+    </p>
 
-            <div class="review-result confirmed">
-              Defecto confirmado
-            </div>
+    <form
+      method="post"
+      action="{{
+        url_for(
+          'complete_batch_review',
+          batch_id=batch['id']
+        )
+      }}"
+    >
 
-          {% elif alert['review_status'] == 'ALERTA_DESCARTADA' %}
+      <input
+        type="hidden"
+        name="review_mode"
+        value="sin_alertas"
+      />
 
-            <div class="review-result discarded">
-              Alerta descartada
-            </div>
+      <button
+        class="review-final-button accept"
+        type="submit"
+      >
+        Aceptar todas
+      </button>
 
-          {% else %}
+    </form>
 
-            <div class="review-actions">
+  </section>
 
-              <form
-                method="post"
-                action="{{
+
+{% elif pending > 0 %}
+
+  <div class="review-focus">
+
+    <h2>
+      {{ pending }}
+      {% if pending == 1 %}
+        alerta por revisar
+      {% else %}
+        alertas por revisar
+      {% endif %}
+    </h2>
+
+    <p>
+      Solo se muestran las prendas
+      que necesitan verificaci&oacute;n.
+    </p>
+
+  </div>
+
+
+  <section class="review-list">
+
+    {% for alert in alerts %}
+
+      <article
+        class="review-card"
+        id="alert-{{ alert['id'] }}"
+      >
+
+        <div class="review-card-grid">
+
+          <div class="review-image">
+
+            {% if alert['image_result'] %}
+
+              <img
+                src="{{
                   url_for(
-                    'review_batch_alert',
-                    batch_id=batch['id'],
-                    inspection_id=alert['id'],
-                    decision='confirmar'
+                    'static',
+                    filename=alert['image_result']
                   )
                 }}"
-              >
+                alt="Alerta detectada"
+              />
+
+            {% elif alert['image_original'] %}
+
+              <img
+                src="{{
+                  url_for(
+                    'static',
+                    filename=alert['image_original']
+                  )
+                }}"
+                alt="Captura de la prenda"
+              />
+
+            {% endif %}
+
+          </div>
+
+
+          <div>
+
+            <div class="review-number">
+              Blusa #{{ alert['batch_position'] }}
+            </div>
+
+
+            <div class="review-data">
+
+              <div class="review-label">
+                Alerta
+              </div>
+
+              <div>
+                {{ alert['defect_type'] }}
+              </div>
+
+
+              <div class="review-label">
+                Zona
+              </div>
+
+              <div>
+                {{
+                  alert['zone']
+                  or 'No definida'
+                }}
+              </div>
+
+            </div>
+
+
+            <form
+              method="post"
+              action="{{
+                url_for(
+                  'review_batch_alert',
+                  batch_id=batch['id'],
+                  inspection_id=alert['id'],
+                  decision='confirmar'
+                )
+              }}"
+            >
+
+              <label class="review-note-label">
+                Motivo / observaci&oacute;n
+              </label>
+
+              <textarea
+                class="review-note-input"
+                name="review_notes"
+                minlength="5"
+                maxlength="500"
+                required
+                placeholder="Motivo breve de la decisi&oacute;n..."
+              ></textarea>
+
+
+              <div class="review-actions">
+
                 <button
                   class="review-button confirm-defect"
                   type="submit"
                 >
                   Confirmar defecto
                 </button>
-              </form>
 
-              <form
-                method="post"
-                action="{{
-                  url_for(
-                    'review_batch_alert',
-                    batch_id=batch['id'],
-                    inspection_id=alert['id'],
-                    decision='descartar'
-                  )
-                }}"
-              >
                 <button
                   class="review-button discard-alert"
                   type="submit"
+                  formaction="{{
+                    url_for(
+                      'review_batch_alert',
+                      batch_id=batch['id'],
+                      inspection_id=alert['id'],
+                      decision='descartar'
+                    )
+                  }}"
                 >
                   Descartar alerta
                 </button>
-              </form>
 
-            </div>
+              </div>
 
-          {% endif %}
+            </form>
+
+          </div>
 
         </div>
 
-      </div>
+      </article>
 
-    </article>
+    {% endfor %}
 
-  {% else %}
+  </section>
 
-    <div class="review-complete">
-      Este lote no contiene alertas para revisión.
-    </div>
 
-  {% endfor %}
+{% else %}
 
-</section>
+  <section class="review-complete">
 
-{% if batch['pending_alerts']|int == 0 %}
-
-  <div class="review-complete">
-    <strong>
-      Revisión de alertas completada.
-    </strong>
+    <h2>
+      Alertas revisadas
+    </h2>
 
     <p>
-      Se confirmaron
       {{ batch['confirmed_defects'] }}
-      defectos y se descartaron
+      defectos confirmados
+      &middot;
       {{ batch['discarded_alerts'] }}
-      alertas.
+      alertas descartadas.
     </p>
 
-    <p>
-      El siguiente paso es realizar la auditoría
-      muestral de las prendas aprobadas automáticamente
-      antes del cierre definitivo del lote.
-    </p>
-  </div>
+    <form
+      method="post"
+      action="{{
+        url_for(
+          'complete_batch_review',
+          batch_id=batch['id']
+        )
+      }}"
+    >
+
+      <input
+        type="hidden"
+        name="review_mode"
+        value="revisado"
+      />
+
+      <button
+        class="review-final-button"
+        type="submit"
+      >
+        Finalizar revisi&oacute;n
+      </button>
+
+    </form>
+
+  </section>
 
 {% endif %}
+
 
 <a
   class="back-link"
@@ -390,5 +603,6 @@
 >
   Volver a lotes
 </a>
+
 
 {% endblock %}

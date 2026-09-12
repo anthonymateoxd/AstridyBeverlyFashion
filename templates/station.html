@@ -304,6 +304,20 @@
         {{ active_batch['code'] }}
 
         <p>
+          <strong>Modelo:</strong>
+          <span id="stationGarmentModel">
+            {% if active_batch['garment_model_code'] %}
+              {{ active_batch['garment_model_code'] }}
+              &mdash;
+              {{ active_batch['garment_model_name'] }}
+            {% else %}
+              Sin modelo asignado
+            {% endif %}
+          </span>
+        </p>
+
+
+        <p>
           <strong>Progreso:</strong>
           <span id="batchProgress">
             {{ active_batch['processed_quantity'] }}
@@ -351,7 +365,7 @@
         </span>
       </div>
 
-      
+
 
       <div class="station-actions">
         <button
@@ -377,6 +391,29 @@
         >
           Detener automático
         </button>
+
+        {% if active_batch %}
+        <form
+          method="post"
+          action="{{ url_for(
+            'finish_batch_manual',
+            batch_id=active_batch.id
+          ) }}"
+          style="margin:0"
+          onsubmit="return confirm(
+            '&iquest;Finalizar este lote? Las inspecciones registradas se conservar&aacute;n y el lote dejar&aacute; de aceptar nuevas prendas.'
+          );"
+        >
+          <button
+            id="finishBatchBtn"
+            type="submit"
+            class="secondary"
+            style="width:100%"
+          >
+            Finalizar lote
+          </button>
+        </form>
+        {% endif %}
       </div>
 
       <div class="station-info">
@@ -751,6 +788,93 @@
 
       if (data.last_result) {
         setLastResult(data.last_result);
+      }
+
+      /*
+       * Seguimiento del lote que estaba activo en esta
+       * sesion de la estacion.
+       *
+       * Esto evita redirigir a un lote viejo cuando el
+       * usuario entra a la estacion sin ningun lote activo.
+       */
+      if (
+        window.stationTrackedBatchId === undefined
+      ) {
+        window.stationTrackedBatchId = (
+          data.active_batch &&
+          data.active_batch.id
+        )
+          ? Number(data.active_batch.id)
+          : null;
+      }
+
+      if (
+        data.active_batch &&
+        data.active_batch.id
+      ) {
+        window.stationTrackedBatchId =
+          Number(data.active_batch.id);
+      }
+
+      /*
+       * Cuando el backend deja de devolver lote activo
+       * significa que ya salio de EN_INSPECCION.
+       *
+       * Si el ultimo resultado pertenece al mismo lote y
+       * alcanzo su cantidad planificada, abrimos revision.
+       */
+      if (
+        !data.active_batch &&
+        data.last_result &&
+        window.stationTrackedBatchId &&
+        !window.stationReviewRedirecting
+      ) {
+        const result = data.last_result;
+
+        const sameBatch =
+          Number(result.batch_id) ===
+          Number(window.stationTrackedBatchId);
+
+        const processed =
+          Number(
+            result.processed_quantity || 0
+          );
+
+        const planned =
+          Number(
+            result.planned_quantity || 0
+          );
+
+        if (
+          sameBatch &&
+          planned > 0 &&
+          processed >= planned
+        ) {
+          window.stationReviewRedirecting = true;
+
+          if (autoStateText) {
+            autoStateText.textContent =
+              'Lote completado. Abriendo resultados...';
+          }
+
+          const completedBatchId =
+            Number(
+              window.stationTrackedBatchId
+            );
+
+          setTimeout(
+            function () {
+              window.location.assign(
+                '/lotes/' +
+                completedBatchId +
+                '/revision'
+              );
+            },
+            1200
+          );
+
+          return;
+        }
       }
 
       if (data.active_batch) {

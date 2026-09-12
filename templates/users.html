@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<style>
+.users-page {
+    max-width: 1250px;
+    margin: 0 auto;
+}
+
+.users-header {
+    margin-bottom: 24px;
+}
+
+.users-header h1 {
+    margin-bottom: 6px;
+}
+
+.users-header p {
+    margin: 0;
+    opacity: .72;
+}
+
+.users-grid {
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    gap: 24px;
+    align-items: start;
+}
+
+.users-card {
+    background: #fff;
+    border-radius: 14px;
+    padding: 22px;
+    box-shadow: 0 3px 18px rgba(0,0,0,.08);
+}
+
+.users-card h2 {
+    margin-top: 0;
+    font-size: 1.2rem;
+}
+
+.user-field {
+    margin-bottom: 16px;
+}
+
+.user-field label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.user-field input,
+.user-field select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid #d7d7d7;
+    border-radius: 8px;
+    font: inherit;
+}
+
+.users-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.users-table th,
+.users-table td {
+    padding: 12px 10px;
+    border-bottom: 1px solid #ececec;
+    text-align: left;
+    vertical-align: middle;
+}
+
+.users-table th {
+    font-size: .82rem;
+    text-transform: uppercase;
+    opacity: .7;
+}
+
+.role-form {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.role-form select {
+    min-width: 165px;
+    padding: 7px;
+}
+
+.user-status {
+    display: inline-block;
+    padding: 5px 9px;
+    border-radius: 20px;
+    font-size: .82rem;
+    font-weight: 700;
+}
+
+.user-status.active {
+    background: #e8f6ed;
+    color: #216b39;
+}
+
+.user-status.inactive {
+    background: #f6eaea;
+    color: #9d3030;
+}
+
+.user-button {
+    border: 0;
+    border-radius: 8px;
+    padding: 9px 13px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.user-button.primary {
+    background: #202020;
+    color: #fff;
+}
+
+.user-button.secondary {
+    background: #eeeeee;
+    color: #202020;
+}
+
+.user-button.danger {
+    background: #f4dddd;
+    color: #8a2222;
+}
+
+.user-button.activate {
+    background: #dff2e5;
+    color: #216b39;
+}
+
+@media (max-width: 950px) {
+    .users-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .users-table {
+        font-size: .9rem;
+    }
+}
+</style>
+
+<div class="users-page">
+
+    <div class="users-header">
+        <h1>Administración de usuarios</h1>
+        <p>
+            Gestione las cuentas y responsabilidades del personal
+            que utiliza el sistema de control de calidad.
+        </p>
+    </div>
+
+    <div class="users-grid">
+
+        <section class="users-card">
+            <h2>Nuevo usuario</h2>
+
+            <form method="post">
+
+                <div class="user-field">
+                    <label for="full_name">Nombre completo</label>
+                    <input
+                        id="full_name"
+                        name="full_name"
+                        type="text"
+                        required
+                        maxlength="150"
+                        autocomplete="name"
+                    >
+                </div>
+
+                <div class="user-field">
+                    <label for="username">Usuario</label>
+                    <input
+                        id="username"
+                        name="username"
+                        type="text"
+                        required
+                        minlength="3"
+                        maxlength="100"
+                        autocomplete="off"
+                    >
+                </div>
+
+                <div class="user-field">
+                    <label for="password">Contraseña</label>
+                    <input
+                        id="password"
+                        name="password"
+                        type="password"
+                        required
+                        minlength="8"
+                        autocomplete="new-password"
+                    >
+                </div>
+
+                <div class="user-field">
+                    <label for="role">Rol</label>
+
+                    <select id="role" name="role" required>
+                        <option value="">Seleccione...</option>
+
+                        {% for role in valid_roles %}
+                        <option value="{{ role }}">
+                            {{ role_labels.get(role, role) }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <button
+                    class="user-button primary"
+                    type="submit"
+                >
+                    Crear usuario
+                </button>
+
+            </form>
+        </section>
+
+        <section class="users-card">
+
+            <h2>Usuarios registrados</h2>
+
+            <table class="users-table">
+                <thead>
+                    <tr>
+                        <th>Persona</th>
+                        <th>Usuario</th>
+                        <th>Rol</th>
+                        <th>Estado</th>
+                        <th>Acción</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+
+                    {% for user in users %}
+                    <tr>
+
+                        <td>
+                            <strong>
+                                {{ user.full_name or "Sin nombre" }}
+                            </strong>
+
+                            {% if user.id == session.get("user_id") %}
+                            <div>
+                                <small>Sesión actual</small>
+                            </div>
+                            {% endif %}
+                        </td>
+
+                        <td>{{ user.username }}</td>
+
+                        <td>
+
+                            {% if user.id == session.get("user_id") %}
+
+                                {{ role_labels.get(user.role, user.role) }}
+
+                            {% else %}
+
+                            <form
+                                class="role-form"
+                                method="post"
+                                action="{{ url_for(
+                                    'user_change_role',
+                                    user_id=user.id
+                                ) }}"
+                            >
+
+                                <select name="role">
+
+                                    {% for role in valid_roles %}
+
+                                    <option
+                                        value="{{ role }}"
+                                        {% if user.role == role %}
+                                        selected
+                                        {% endif %}
+                                    >
+                                        {{ role_labels.get(role, role) }}
+                                    </option>
+
+                                    {% endfor %}
+
+                                </select>
+
+                                <button
+                                    class="user-button secondary"
+                                    type="submit"
+                                >
+                                    Guardar
+                                </button>
+
+                            </form>
+
+                            {% endif %}
+
+                        </td>
+
+                        <td>
+
+                            {% if user.active %}
+
+                            <span class="user-status active">
+                                Activo
+                            </span>
+
+                            {% else %}
+
+                            <span class="user-status inactive">
+                                Inactivo
+                            </span>
+
+                            {% endif %}
+
+                        </td>
+
+                        <td>
+
+                            {% if user.id != session.get("user_id") %}
+
+                            <form
+                                method="post"
+                                action="{{ url_for(
+                                    'user_toggle_status',
+                                    user_id=user.id
+                                ) }}"
+                            >
+
+                                {% if user.active %}
+
+                                <button
+                                    class="user-button danger"
+                                    type="submit"
+                                >
+                                    Desactivar
+                                </button>
+
+                                {% else %}
+
+                                <button
+                                    class="user-button activate"
+                                    type="submit"
+                                >
+                                    Activar
+                                </button>
+
+                                {% endif %}
+
+                            </form>
+
+                            {% else %}
+
+                            <small>Cuenta actual</small>
+
+                            {% endif %}
+
+                        </td>
+
+                    </tr>
+                    {% endfor %}
+
+                </tbody>
+            </table>
+
+        </section>
+
+    </div>
+
+</div>
+
+{% endblock %}

@@ -1,18 +1,1050 @@
 {% extends "base.html" %}
 {% block content %}
-<header class="page-header"><div><h1>Registro de prendas</h1><p>Historial trazable de inspecciones</p></div></header>
-<section class="card">
-  <form class="filters" method="get">
-    <input type="text" name="q" placeholder="Buscar ID, defecto o zona" value="{{ request.args.get('q','') }}">
-    
-    <select name="status"><option value="">Todos los estados</option><option value="Aprobado">Aprobado</option><option value="Defecto">Defecto</option><option value="Revisar">Revisar</option></select>
-    <button>Filtrar</button>
-  </form>
-  <table class="records-table"><thead><tr><th>ID</th><th>Fecha</th><th>Prenda</th><th>Talla</th><th>Estado</th><th>Defecto</th><th>Confianza</th><th>Zona</th><th>Validación</th><th>Evidencia</th></tr></thead><tbody>
-    {% for row in rows %}
-    <tr><td>{{ row['code'] }}</td><td>{{ row['created_at'] }}</td><td>{{ row['garment_type'] }}</td><td>{{ row['size'] }}</td><td><span class="status {{ row['status']|lower }}">{{ row['status'] }}</span></td><td>{{ row['defect_type'] }}</td><td>{{ row['confidence'] }}%</td><td>{{ row['zone'] }}</td><td><form class="inline-form" method="post" action="{{ url_for('validate', inspection_id=row['id'], value='Correcto') }}"><button class="mini ok">Correcto</button></form><form class="inline-form" method="post" action="{{ url_for('validate', inspection_id=row['id'], value='Incorrecto') }}"><button class="mini bad">Incorrecto</button></form><small>{{ row['human_validation'] }}</small></td><td>{% if row['image_result'] %}<a href="{{ url_for('static', filename=row['image_result']) }}" target="_blank">Ver imagen</a>{% else %}-{% endif %}</td></tr>
-    {% else %}<tr><td colspan="10">No hay registros.</td></tr>{% endfor %}
-  </tbody></table>
-</section>
-{% endblock %}
 
+<style>
+.reg-wrap {
+    max-width: 1500px;
+}
+
+.reg-head {
+    margin-bottom: 22px;
+}
+
+.reg-head h1 {
+    margin: 0 0 5px;
+}
+
+.reg-head p {
+    margin: 0;
+    color: #756a60;
+}
+
+.reg-kpis {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.reg-kpi {
+    background: #fff;
+    border: 1px solid #e3dbd0;
+    border-radius: 9px;
+    padding: 18px;
+}
+
+.reg-kpi strong {
+    display: block;
+    font-size: 28px;
+    margin-bottom: 4px;
+}
+
+.reg-kpi span {
+    color: #756a60;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.reg-card {
+    background: #fff;
+    border: 1px solid #e3dbd0;
+    border-radius: 9px;
+    padding: 22px;
+    margin-bottom: 20px;
+}
+
+.reg-filters {
+    display: grid;
+    grid-template-columns:
+        1.3fr 1fr 1fr 1fr 1.2fr 1.2fr 1fr auto;
+    gap: 10px;
+    align-items: end;
+}
+
+.reg-field label {
+    display: block;
+    margin-bottom: 6px;
+    color: #766b61;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.reg-field input,
+.reg-field select {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid #d8cfc4;
+    background: #fff;
+    padding: 10px;
+}
+
+.reg-submit,
+.reg-action {
+    display: inline-block;
+    border: 0;
+    background: #111;
+    color: #fff;
+    padding: 11px 16px;
+    font-weight: 700;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.reg-clear {
+    display: inline-block;
+    margin-top: 12px;
+    color: #554d46;
+}
+
+.reg-empty {
+    text-align: center;
+    padding: 32px;
+    color: #746a60;
+}
+
+.lot-box {
+    border: 1px solid #e2d9cd;
+    border-radius: 8px;
+    padding: 20px;
+    margin-top: 15px;
+}
+
+.lot-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    align-items: flex-start;
+    margin-bottom: 18px;
+}
+
+.lot-code {
+    font-size: 25px;
+    font-weight: 700;
+}
+
+.lot-model {
+    color: #74695f;
+    margin-top: 3px;
+}
+
+.lot-numbers {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 10px;
+    margin-bottom: 18px;
+}
+
+.lot-number {
+    background: #f8f5ef;
+    padding: 14px;
+}
+
+.lot-number strong {
+    display: block;
+    font-size: 23px;
+}
+
+.lot-number span {
+    display: block;
+    margin-top: 3px;
+    font-size: 9px;
+    color: #766b61;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.lot-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.lot-actions a {
+    border: 1px solid #151515;
+    padding: 9px 12px;
+    color: #151515;
+    font-size: 12px;
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.lot-actions a.primary {
+    background: #151515;
+    color: #fff;
+}
+
+.reviewers {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.reviewers th,
+.reviewers td {
+    text-align: left;
+    padding: 10px;
+    border-bottom: 1px solid #eee6dc;
+}
+
+.reviewers th {
+    color: #796e63;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.reg-inspection-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.reg-inspection-card {
+    display: grid;
+    grid-template-columns: 210px 1fr;
+    gap: 18px;
+    border: 1px solid #e1d8cd;
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.reg-inspection-image {
+    width: 210px;
+    height: 210px;
+    object-fit: contain;
+    background: #fff;
+    border-radius: 5px;
+}
+
+.reg-inspection-no-image {
+    width: 210px;
+    height: 210px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f2eee8;
+    color: #776d63;
+}
+
+.reg-inspection-title {
+    font-size: 21px;
+    font-weight: 700;
+    margin-bottom: 10px;
+}
+
+.reg-inspection-line {
+    margin-bottom: 8px;
+}
+
+.reg-inspection-line small {
+    display: block;
+    color: #776d63;
+    margin-top: 2px;
+}
+
+.result-badge {
+    display: inline-block;
+    border-radius: 18px;
+    padding: 5px 9px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.result-badge.passed {
+    background: #e4f3e7;
+    color: #25673a;
+}
+
+.result-badge.rejected {
+    background: #f8dddd;
+    color: #982d2d;
+}
+
+.result-badge.pending {
+    background: #fff0cf;
+    color: #8a6014;
+}
+
+.detail-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 18px;
+}
+
+@media (max-width: 1200px) {
+    .reg-kpis,
+    .lot-numbers {
+        grid-template-columns: repeat(3, 1fr);
+    }
+
+    .reg-filters {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .reg-inspection-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* QUICK PERIODS */
+
+.reg-period-panel {
+    margin-bottom: 20px;
+}
+
+.reg-period-title {
+    margin-bottom: 9px;
+    color: #766b61;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.reg-periods {
+    display: flex;
+    gap: 9px;
+    flex-wrap: wrap;
+}
+
+.reg-period-btn {
+    border: 1px solid #cfc5ba;
+    background: #fff;
+    color: #28231f;
+    min-height: 40px;
+    padding: 9px 16px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition:
+        background .15s ease,
+        color .15s ease,
+        border-color .15s ease;
+}
+
+.reg-period-btn:hover {
+    border-color: #202020;
+}
+
+.reg-period-btn.active {
+    background: #202020;
+    border-color: #202020;
+    color: #fff;
+}
+
+.reg-period-help {
+    margin-top: 8px;
+    color: #786e64;
+    font-size: 11px;
+}
+
+@media (max-width: 700px) {
+    .reg-period-btn {
+        flex: 1 1 calc(50% - 9px);
+    }
+}
+
+</style>
+
+<div class="reg-wrap">
+
+<div class="reg-head">
+ <h1>Historial de inspecciones</h1>
+ <div class="reg-sub">
+  Consulte lotes y prendas espec&iacute;ficas para revisar su trazabilidad.
+ </div>
+</div>
+
+
+<section class="reg-card">
+
+
+<div class="reg-period-panel">
+
+ <div class="reg-period-title">
+  Consulta r&aacute;pida por per&iacute;odo
+ </div>
+
+ <div class="reg-periods">
+
+  <button
+   type="button"
+   class="reg-period-btn"
+   data-period="today"
+  >
+   Hoy
+  </button>
+
+  <button
+   type="button"
+   class="reg-period-btn"
+   data-period="week"
+  >
+   Esta semana
+  </button>
+
+  <button
+   type="button"
+   class="reg-period-btn"
+   data-period="month"
+  >
+   Este mes
+  </button>
+
+  <button
+   type="button"
+   class="reg-period-btn"
+   data-period="last7"
+  >
+   &Uacute;ltimos 7 d&iacute;as
+  </button>
+
+  <button
+   type="button"
+   class="reg-period-btn"
+   data-period="last30"
+  >
+   &Uacute;ltimos 30 d&iacute;as
+  </button>
+
+ </div>
+
+ <div class="reg-period-help">
+  Tambi&eacute;n puede utilizar Desde y Hasta
+  para consultar un per&iacute;odo personalizado.
+ </div>
+
+</div>
+
+<form id="recordsFilterForm" method="get" class="reg-filters">
+
+ <div class="reg-field">
+  <label>Buscar</label>
+  <input
+   name="q"
+   type="text"
+   value="{{ request.args.get('q','') }}"
+   placeholder="ID, defecto, zona..."
+  >
+ </div>
+
+ <div class="reg-field">
+  <label>Desde</label>
+  <input id="recordsDateFrom" type="date" name="date_from" value="{{ date_from }}">
+ </div>
+
+ <div class="reg-field">
+  <label>Hasta</label>
+  <input id="recordsDateTo" type="date" name="date_to" value="{{ date_to }}">
+ </div>
+
+ <div class="reg-field">
+  <label>Lote</label>
+  <select name="batch_id">
+   <option value="">Seleccione</option>
+   {% for batch in batches_options %}
+   <option value="{{ batch.id }}"
+    {% if batch_id == batch.id|string %}selected{% endif %}>
+    {{ batch.code }}
+   </option>
+   {% endfor %}
+  </select>
+ </div>
+
+ <div class="reg-field">
+  <label>Modelo</label>
+  <select name="model_id">
+   <option value="">Todos</option>
+   {% for model in models_options %}
+   <option value="{{ model.id }}"
+    {% if model_id == model.id|string %}selected{% endif %}>
+    {{ model.code }} &mdash; {{ model.name }}
+   </option>
+   {% endfor %}
+  </select>
+ </div>
+
+ <div class="reg-field">
+  <label>Responsable</label>
+  <select name="reviewer_id">
+   <option value="">Todos</option>
+   {% for user in reviewers_options %}
+   <option value="{{ user.id }}"
+    {% if reviewer_id == user.id|string %}selected{% endif %}>
+    {{ user.name }}
+   </option>
+   {% endfor %}
+  </select>
+ </div>
+
+ <div class="reg-field">
+  <label>Resultado</label>
+  <select name="result">
+   <option value="">Todos</option>
+   <option value="APTAS"
+    {% if result_filter == 'APTAS' %}selected{% endif %}>
+    Aptas
+   </option>
+   <option value="RECHAZADAS"
+    {% if result_filter == 'RECHAZADAS' %}selected{% endif %}>
+    Rechazadas
+   </option>
+   <option value="ALERTAS"
+    {% if result_filter == 'ALERTAS' %}selected{% endif %}>
+    Alertas IA
+   </option>
+   <option value="PENDIENTES"
+    {% if result_filter == 'PENDIENTES' %}selected{% endif %}>
+    Pendientes
+   </option>
+  </select>
+ </div>
+
+ <button class="reg-submit" type="submit">
+  Consultar
+ </button>
+
+</form>
+
+<a class="reg-clear" href="{{ url_for('records') }}">
+ Limpiar consulta
+</a>
+
+</section>
+
+
+{% if not has_explicit_filters and not show_mode %}
+
+<section class="reg-card">
+
+ <h2>Consultar inspecciones</h2>
+
+ <p class="reg-sub">
+  Seleccione un lote o utilice los filtros para encontrar una inspecci&oacute;n.
+ </p>
+
+ {% if batches_options %}
+
+ <div class="lot-actions">
+
+  {% for batch in batches_options[:8] %}
+
+  <a href="{{ url_for('records', batch_id=batch.id) }}">
+   Lote {{ batch.code }}
+  </a>
+
+  {% endfor %}
+
+ </div>
+
+ {% endif %}
+
+</section>
+
+{% endif %}
+
+
+{% if lot_summary %}
+
+<section class="reg-card">
+
+{% if lot_summary|length == 1 %}
+ <h2>Resultado del lote</h2>
+{% else %}
+ <h2>Lotes encontrados</h2>
+{% endif %}
+
+{% for lot in lot_summary %}
+
+<div class="lot-box">
+
+ <div class="lot-top">
+
+  <div>
+   <div class="lot-code">
+    Lote {{ lot.batch_code }}
+   </div>
+
+   <div class="lot-model">
+    {% if lot.garment_model_code %}
+     {{ lot.garment_model_code }}
+     &mdash;
+     {{ lot.garment_model_name }}
+    {% else %}
+     Sin modelo asignado
+    {% endif %}
+   </div>
+  </div>
+
+ </div>
+
+
+ <div class="lot-numbers">
+
+  <div class="lot-number">
+   <strong>{{ lot.inspected or 0 }}</strong>
+   <span>Inspeccionadas</span>
+  </div>
+
+  <div class="lot-number">
+   <strong>
+    {{
+     (lot.rejected or 0)
+     +
+     (lot.discarded or 0)
+    }}
+   </strong>
+   <span>Revisadas</span>
+  </div>
+
+  <div class="lot-number">
+   <strong>{{ lot.rejected or 0 }}</strong>
+   <span>Rechazadas</span>
+  </div>
+
+  <div class="lot-number">
+   <strong>{{ lot.pending or 0 }}</strong>
+   <span>Pendientes</span>
+  </div>
+
+  <div class="lot-number">
+   <strong>{{ lot.alerts or 0 }}</strong>
+   <span>Alertas IA</span>
+  </div>
+
+  <div class="lot-number">
+   <strong>{{ lot.discarded or 0 }}</strong>
+   <span>Alertas descartadas</span>
+  </div>
+
+ </div>
+
+
+ {% if lot.batch_id %}
+
+ <div class="lot-actions">
+
+  <a class="primary"
+     href="{{ url_for('records', batch_id=lot.batch_id, show='rejected') }}">
+   Rechazadas ({{ lot.rejected or 0 }})
+  </a>
+
+  <a href="{{ url_for('records', batch_id=lot.batch_id, show='alerts') }}">
+   Todas las alertas ({{ lot.alerts or 0 }})
+  </a>
+
+  <a href="{{ url_for('records', batch_id=lot.batch_id, show='reviewed') }}">
+   Revisadas ({{
+    (lot.rejected or 0)
+    +
+    (lot.discarded or 0)
+   }})
+  </a>
+
+  <a href="{{ url_for('records', batch_id=lot.batch_id, show='pending') }}">
+   Pendientes ({{ lot.pending or 0 }})
+  </a>
+
+ </div>
+
+ {% endif %}
+
+</div>
+
+{% endfor %}
+
+</section>
+
+{% endif %}
+
+
+{% if reviewer_summary and batch_id %}
+
+<section class="reg-card">
+
+<h2>Revisi&oacute;n humana</h2>
+
+<table class="reviewers">
+
+<thead>
+<tr>
+ <th>Responsable</th>
+ <th>Decisiones</th>
+ <th>Defectos confirmados</th>
+ <th>Alertas descartadas</th>
+</tr>
+</thead>
+
+<tbody>
+
+{% for reviewer in reviewer_summary %}
+<tr>
+ <td><strong>{{ reviewer.reviewer_name }}</strong></td>
+ <td>{{ reviewer.decisions }}</td>
+ <td>{{ reviewer.rejected }}</td>
+ <td>{{ reviewer.discarded }}</td>
+</tr>
+{% endfor %}
+
+</tbody>
+
+</table>
+
+</section>
+
+{% endif %}
+
+
+{% if show_mode %}
+
+<section class="reg-card">
+
+<div class="detail-head">
+
+ <div>
+
+  {% if show_mode == 'rejected' %}
+   <h2>Prendas rechazadas</h2>
+
+  {% elif show_mode == 'reviewed' %}
+   <h2>Prendas revisadas</h2>
+
+  {% elif show_mode == 'pending' %}
+   <h2>Alertas pendientes</h2>
+
+  {% else %}
+   <h2>Alertas detectadas</h2>
+
+  {% endif %}
+
+ </div>
+
+ {% if batch_id %}
+
+ <a class="reg-action"
+    href="{{ url_for('records', batch_id=batch_id) }}">
+  Volver al lote
+ </a>
+
+  {# RECORDS_REVIEW_BATCH_V3 #}
+  {% if session.get('role') in ['ADMIN', 'QUALITY_MANAGER'] %}
+
+  <a
+   class="reg-action"
+   style="margin-left:10px"
+   href="{{ url_for('batch_review', batch_id=batch_id) }}"
+  >
+   Revisar y tomar decisiones
+  </a>
+
+  {% endif %}
+
+
+ {% endif %}
+
+</div>
+
+
+{% if rows %}
+
+<div class="reg-inspection-grid">
+
+{% for row in rows %}
+
+<article class="reg-inspection-card">
+
+ <div>
+
+  {% if row.image_result %}
+
+  <a
+   href="{{ url_for('static', filename=row.image_result) }}"
+   target="_blank"
+  >
+   <img
+    class="reg-inspection-image"
+    src="{{ url_for('static', filename=row.image_result) }}"
+    alt="Evidencia de inspecci&oacute;n"
+   >
+  </a>
+
+  {% else %}
+
+  <div class="reg-inspection-no-image">
+   Sin evidencia
+  </div>
+
+  {% endif %}
+
+ </div>
+
+
+ <div>
+
+  <div class="reg-inspection-title">
+
+   {% if row.batch_position %}
+    Blusa #{{ row.batch_position }}
+   {% else %}
+    {{ row.code }}
+   {% endif %}
+
+  </div>
+
+
+  <div class="reg-inspection-line">
+
+   <strong>Detecci&oacute;n</strong>
+
+   <small>
+    {{ row.defect_type or 'Anomal&iacute;a visual detectada' }}
+   </small>
+
+   {% if row.zone %}
+   <small>
+    Zona: {{ row.zone }}
+   </small>
+   {% endif %}
+
+   {% if row.confidence is not none %}
+
+   {% endif %}
+
+  </div>
+
+
+  <div class="reg-inspection-line">
+
+   <strong>Decisi&oacute;n final</strong>
+
+   <small>
+    <span class="result-badge {{ row.decision_class }}">
+     {{ row.decision_label }}
+    </span>
+   </small>
+
+  </div>
+
+
+  <div class="reg-inspection-line">
+
+   <strong>Responsable</strong>
+
+   {% if row.reviewed_by %}
+    <small>{{ row.reviewer_name }}</small>
+
+    {% if row.reviewed_at_gt %}
+    <small>
+     {{ row.reviewed_at_gt.strftime('%d/%m/%Y %H:%M') }}
+    </small>
+    {% endif %}
+
+   {% elif row.decision_class == 'pending' %}
+    <small>Pendiente de revisi&oacute;n</small>
+
+   {% else %}
+    <small>No registrado</small>
+
+   {% endif %}
+
+  </div>
+
+
+  <div class="reg-inspection-line">
+
+   <strong>Motivo</strong>
+
+   {% if row.review_notes %}
+    <small>{{ row.review_notes }}</small>
+
+   {% elif row.decision_class == 'pending' %}
+    <small>A&uacute;n no revisada.</small>
+
+   {% else %}
+    <small>Sin observaci&oacute;n hist&oacute;rica.</small>
+
+   {% endif %}
+
+  </div>
+
+
+
+
+
+ </div>
+
+</article>
+
+{% endfor %}
+
+</div>
+
+{% else %}
+
+<div class="reg-empty">
+ No hay prendas para este criterio.
+</div>
+
+{% endif %}
+
+</section>
+
+{% endif %}
+
+</div>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+
+    const form =
+        document.getElementById("recordsFilterForm");
+
+    const fromInput =
+        document.getElementById("recordsDateFrom");
+
+    const toInput =
+        document.getElementById("recordsDateTo");
+
+    const buttons =
+        document.querySelectorAll(".reg-period-btn");
+
+    if (!form || !fromInput || !toInput) {
+        return;
+    }
+
+    function recordsFormatDate(date) {
+        const year = date.getFullYear();
+
+        const month = String(
+            date.getMonth() + 1
+        ).padStart(2, "0");
+
+        const day = String(
+            date.getDate()
+        ).padStart(2, "0");
+
+        return `${year}-${month}-${day}`;
+    }
+
+    function recordsPeriodRange(period) {
+        const today = new Date();
+
+        today.setHours(
+            12,
+            0,
+            0,
+            0
+        );
+
+        let start = new Date(today);
+        let end = new Date(today);
+
+        if (period === "week") {
+            const weekday =
+                today.getDay();
+
+            const daysFromMonday =
+                weekday === 0
+                    ? 6
+                    : weekday - 1;
+
+            start.setDate(
+                today.getDate()
+                - daysFromMonday
+            );
+        }
+
+        else if (period === "month") {
+            start = new Date(
+                today.getFullYear(),
+                today.getMonth(),
+                1,
+                12,
+                0,
+                0
+            );
+        }
+
+        else if (period === "last7") {
+            start.setDate(
+                today.getDate() - 6
+            );
+        }
+
+        else if (period === "last30") {
+            start.setDate(
+                today.getDate() - 29
+            );
+        }
+
+        return {
+            from: recordsFormatDate(start),
+            to: recordsFormatDate(end)
+        };
+    }
+
+    function updateActivePeriod() {
+        buttons.forEach(function (button) {
+
+            const range =
+                recordsPeriodRange(
+                    button.dataset.period
+                );
+
+            const active =
+                fromInput.value === range.from
+                && toInput.value === range.to;
+
+            button.classList.toggle(
+                "active",
+                active
+            );
+        });
+    }
+
+    buttons.forEach(function (button) {
+
+        button.addEventListener(
+            "click",
+            function () {
+
+                const range =
+                    recordsPeriodRange(
+                        button.dataset.period
+                    );
+
+                fromInput.value =
+                    range.from;
+
+                toInput.value =
+                    range.to;
+
+                updateActivePeriod();
+
+                form.submit();
+            }
+        );
+    });
+
+    fromInput.addEventListener(
+        "change",
+        updateActivePeriod
+    );
+
+    toInput.addEventListener(
+        "change",
+        updateActivePeriod
+    );
+
+    updateActivePeriod();
+});
+</script>
+
+{% endblock %}

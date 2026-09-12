@@ -2,282 +2,635 @@
 {% block content %}
 
 <style>
-  .informes-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-    gap: 24px;
-    margin-bottom: 26px;
-  }
+.ana-wrap{max-width:1500px}
+.ana-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:20px}
+.ana-head h1{margin:0 0 4px}
+.ana-sub{color:#756b61}
+.ana-actions{display:flex;gap:8px}
 
-  .informes-header h1 {
-    margin-bottom: 4px;
-  }
+.ana-btn{display:inline-block;padding:11px 15px;border:1px solid #111;background:#fff;color:#111;text-decoration:none;font-weight:700}
+.ana-btn.primary{background:#111;color:#fff}
 
-  .informes-header p {
-    margin: 0;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    color: #8b7969;
-    font-size: 12px;
-  }
+.ana-card{background:#fff;border:1px solid #e5ddd2;border-radius:9px;padding:20px;margin-bottom:18px}
 
-  .informes-actions {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
+.ana-filters{display:grid;grid-template-columns:1fr 1fr 1.35fr 1fr auto;gap:10px;align-items:end}
+.ana-field label{display:block;margin-bottom:6px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#807367}
+.ana-field input,.ana-field select{width:100%;box-sizing:border-box;padding:10px;border:1px solid #d9d0c5;background:#fff}
 
-  .informe-button {
-    display: inline-block;
-    padding: 12px 18px;
-    border: 1px solid #111111;
-    text-decoration: none;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-  }
+.ana-quick{display:flex;gap:16px;margin-top:13px}
+.ana-quick a{color:#111;font-weight:700}
 
-  .informe-button.excel {
-    background: #111111;
-    color: #ffffff;
-  }
+.ana-main-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+.ana-kpi{background:#fff;border:1px solid #e5ddd2;border-radius:9px;padding:20px}
+.ana-kpi strong{display:block;font-size:31px}
+.ana-kpi span{display:block;margin-top:5px;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#7c7065}
+.ana-kpi small{display:block;margin-top:7px;color:#776d63}
 
-  .informe-button.pdf {
-    background: #ffffff;
-    color: #111111;
-  }
+.ana-review{display:grid;grid-template-columns:1.4fr repeat(4,1fr);gap:12px;align-items:center}
+.ana-review-title strong{display:block;font-size:18px}
+.ana-review-title span{color:#766c62}
+.ana-mini strong{display:block;font-size:22px}
+.ana-mini span{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#807367}
 
-  .informes-kpis {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 18px;
-    margin-bottom: 20px;
-  }
+.ana-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.ana-production{display:grid;grid-template-columns:1fr 1fr;gap:25px}
 
-  .informe-kpi,
-  .informe-card {
-    background: #ffffff;
-    border: 1px solid #e5ddd2;
-    border-radius: 8px;
-  }
+.ana-title{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-bottom:15px}
+.ana-title h2{margin:0}
+.ana-muted{color:#786e64}
 
-  .informe-kpi {
-    padding: 30px 20px;
-    text-align: center;
-  }
+.ana-progress{height:9px;background:#eee8df;margin:10px 0;overflow:hidden}
+.ana-progress div{height:100%;background:#111}
 
-  .informe-kpi strong {
-    display: block;
-    font-size: 34px;
-    margin-bottom: 8px;
-  }
+.ana-values{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
+.ana-value{padding:12px;background:#f7f3ed}
+.ana-value strong{display:block;font-size:22px}
+.ana-value span{font-size:9px;letter-spacing:1px;text-transform:uppercase;color:#7b7065}
 
-  .informe-kpi span {
-    color: #8b7969;
-    font-size: 12px;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-  }
+.ana-alert-card{border-left:4px solid #111}
+.ana-alert-card strong.big{display:block;font-size:25px;margin:6px 0}
 
-  .informes-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
-  }
+.ana-table{width:100%;border-collapse:collapse}
+.ana-table th,.ana-table td{padding:11px 8px;border-bottom:1px solid #eee7df;text-align:left;vertical-align:top}
+.ana-table th{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#897b6f}
+.ana-table small{display:block;margin-top:3px;color:#766d64}
 
-  .informe-card {
-    padding: 22px;
-  }
+.ana-rate{font-weight:700}
+.ana-link{color:#111;font-weight:700}
 
-  .informe-card h2 {
-    margin-top: 0;
-    font-size: 18px;
-  }
+.ana-bar{display:flex;align-items:center;gap:10px;min-width:180px}
+.ana-bar-track{height:7px;flex:1;background:#eee8df}
+.ana-bar-fill{height:100%;background:#111}
 
-  .informe-table {
-    width: 100%;
-    border-collapse: collapse;
-  }
+.ana-empty{padding:18px 0;color:#786e64}
 
-  .informe-table th,
-  .informe-table td {
-    padding: 11px 9px;
-    border-bottom: 1px solid #ebe4db;
-    text-align: left;
-    vertical-align: top;
-  }
-
-  .informe-table th {
-    color: #9b8877;
-    font-size: 11px;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-  }
-
-  .informe-note {
-    margin-top: 20px;
-    padding: 22px;
-    background: #ffffff;
-    border: 1px solid #e5ddd2;
-    border-radius: 8px;
-    line-height: 1.5;
-  }
-
-  @media (max-width: 1100px) {
-    .informes-header {
-      align-items: flex-start;
-      flex-direction: column;
-    }
-
-    .informes-kpis {
-      grid-template-columns: repeat(2, 1fr);
-    }
-
-    .informes-grid {
-      grid-template-columns: 1fr;
-    }
-  }
+@media(max-width:1150px){
+ .ana-main-kpis{grid-template-columns:repeat(2,1fr)}
+ .ana-review{grid-template-columns:repeat(2,1fr)}
+ .ana-grid,.ana-production{grid-template-columns:1fr}
+ .ana-filters{grid-template-columns:repeat(2,1fr)}
+}
 </style>
 
-<header class="informes-header">
 
-  <div>
-    <h1>Informes</h1>
+<div class="ana-wrap">
 
-    <p>
-      Métricas preliminares del prototipo
-    </p>
+<header class="ana-head">
+
+ <div>
+  <h1>Informes</h1>
+  <div class="ana-sub">
+   An&aacute;lisis de producci&oacute;n y calidad &middot;
+   <strong>{{ period_label }}</strong>
   </div>
+ </div>
 
-  <div class="informes-actions">
+ <div class="ana-actions">
+  <a class="ana-btn primary"
+     href="{{ url_for('informe_excel', date_from=date_from, date_to=date_to, batch_id=batch_id, model_id=model_id) }}">
+   Excel
+  </a>
 
-    <a
-      class="informe-button excel"
-      href="{{ url_for('informe_excel') }}"
-    >
-      Descargar Excel
-    </a>
-
-    <a
-      class="informe-button pdf"
-      href="{{ url_for('informe_pdf') }}"
-    >
-      Descargar PDF
-    </a>
-
-  </div>
+  <a class="ana-btn"
+     href="{{ url_for('informe_pdf', date_from=date_from, date_to=date_to, batch_id=batch_id, model_id=model_id) }}">
+   PDF
+  </a>
+ </div>
 
 </header>
 
-<section class="informes-kpis">
 
-  <article class="informe-kpi">
-    <strong>{{ total }}</strong>
-    <span>Total inspecciones</span>
-  </article>
+<section class="ana-card">
 
-  <article class="informe-kpi">
-    <strong>{{ approved }}</strong>
-    <span>Aprobadas</span>
-  </article>
+<form method="get" class="ana-filters">
 
-  <article class="informe-kpi">
-    <strong>{{ defects }}</strong>
-    <span>Con defecto</span>
-  </article>
+ <div class="ana-field">
+  <label>Desde</label>
+  <input type="date" name="date_from" value="{{ date_from }}">
+ </div>
 
-  <article class="informe-kpi">
-    <strong>{{ review }}</strong>
-    <span>Para revisar</span>
-  </article>
+ <div class="ana-field">
+  <label>Hasta</label>
+  <input type="date" name="date_to" value="{{ date_to }}">
+ </div>
 
-</section>
+ <div class="ana-field">
+  <label>Modelo</label>
+  <select name="model_id">
+   <option value="">Todos los modelos</option>
+   {% for model in models_options %}
+   <option value="{{ model.id }}"
+    {% if model_id == model.id|string %}selected{% endif %}>
+    {{ model.code }} &mdash; {{ model.name }}
+   </option>
+   {% endfor %}
+  </select>
+ </div>
 
-<section class="informes-grid">
+ <div class="ana-field">
+  <label>Lote</label>
+  <select name="batch_id">
+   <option value="">Todos los lotes</option>
+   {% for batch in batches_options %}
+   <option value="{{ batch.id }}"
+    {% if batch_id == batch.id|string %}selected{% endif %}>
+    {{ batch.code }}
+   </option>
+   {% endfor %}
+  </select>
+ </div>
 
-  <article class="informe-card">
+ <button type="submit" class="ana-btn primary">
+  Consultar
+ </button>
 
-    <h2>Resumen por tipo de prenda</h2>
+</form>
 
-    <table class="informe-table">
-
-      <thead>
-        <tr>
-          <th>Prenda</th>
-          <th>Total</th>
-          <th>Defectos</th>
-        </tr>
-      </thead>
-
-      <tbody>
-
-        {% for row in by_garment %}
-          <tr>
-            <td>{{ row['garment_type'] }}</td>
-            <td>{{ row['total'] }}</td>
-            <td>{{ row['defects'] }}</td>
-          </tr>
-        {% endfor %}
-
-      </tbody>
-
-    </table>
-
-  </article>
-
-  <article class="informe-card">
-
-    <h2>Resumen por defecto</h2>
-
-    <table class="informe-table">
-
-      <thead>
-        <tr>
-          <th>Defecto</th>
-          <th>Total</th>
-        </tr>
-      </thead>
-
-      <tbody>
-
-        {% for row in by_defect %}
-          <tr>
-            <td>
-              {{ row['defect_type'] or 'Sin especificar' }}
-            </td>
-            <td>{{ row['total'] }}</td>
-          </tr>
-        {% endfor %}
-
-      </tbody>
-
-    </table>
-
-  </article>
+<div class="ana-quick">
+ <a href="{{ url_for('informes', date_from=today_text, date_to=today_text) }}">Hoy</a>
+ <a href="{{ url_for('informes', date_from=quick_7_from, date_to=today_text) }}">7 d&iacute;as</a>
+ <a href="{{ url_for('informes', date_from=quick_30_from, date_to=today_text) }}">30 d&iacute;as</a>
+</div>
 
 </section>
 
-<section class="informe-note">
 
-  <h2>Nota metodológica</h2>
+<section class="ana-main-kpis">
+
+ <article class="ana-kpi">
+  <strong>{{ summary.inspected or 0 }}</strong>
+  <span>Inspeccionadas</span>
+  <small>{{ summary.batches_with_activity or 0 }} lotes con actividad</small>
+ </article>
+
+ <article class="ana-kpi">
+  <strong>{{ summary.passed or 0 }}</strong>
+  <span>Aptas</span>
+  <small>{{ summary.acceptance_rate }} % de aceptaci&oacute;n</small>
+ </article>
+
+ <article class="ana-kpi">
+  <strong>{{ summary.rejected or 0 }}</strong>
+  <span>Rechazadas</span>
+  <small>Defectos confirmados</small>
+ </article>
+
+ <article class="ana-kpi">
+  <strong>{{ summary.rejection_rate }} %</strong>
+  <span>Tasa de rechazo</span>
+  <small>{{ summary.rejected or 0 }} de {{ summary.inspected or 0 }} prendas</small>
+ </article>
+
+</section>
+
+
+<section class="ana-card ana-review">
+
+ <div class="ana-review-title">
+  <strong>Revisi&oacute;n de alertas</strong>
+  <span>Estado del control humano sobre las detecciones de IA.</span>
+ </div>
+
+ <div class="ana-mini">
+  <strong>{{ summary.alerts or 0 }}</strong>
+  <span>Alertas IA</span>
+ </div>
+
+ <div class="ana-mini">
+  <strong>{{ summary.rejected or 0 }}</strong>
+  <span>Confirmadas</span>
+ </div>
+
+ <div class="ana-mini">
+  <strong>{{ summary.discarded or 0 }}</strong>
+  <span>Descartadas</span>
+ </div>
+
+ <div class="ana-mini">
+  <strong>{{ summary.pending or 0 }}</strong>
+  <span>Pendientes</span>
+ </div>
+
+</section>
+
+
+{% if date_from == today_text and date_to == today_text and not batch_id and not model_id %}
+
+<section class="ana-card">
+
+ <div class="ana-title">
+  <h2>Producci&oacute;n de hoy</h2>
+  {% if daily_goal %}
+  <strong>
+   {{ summary.inspected or 0 }}/{{ daily_goal.target_garments }}
+  </strong>
+  {% endif %}
+ </div>
+
+ <div class="ana-production">
+
+  <div>
+
+   {% if daily_goal %}
+
+    <div>
+     Meta diaria:
+     <strong>{{ daily_goal.target_garments }} prendas</strong>
+    </div>
+
+    <div class="ana-progress">
+     <div style="width:{{ [daily_goal.progress_rate,100]|min }}%"></div>
+    </div>
+
+    <div>
+     <strong>{{ daily_goal.progress_rate }} %</strong>
+     completado
+    </div>
+
+   {% else %}
+
+    <div class="ana-muted">
+     No se defini&oacute; una meta de producci&oacute;n para hoy.
+    </div>
+
+   {% endif %}
+
+  </div>
+
+
+  <div>
+
+   {% if active_batch %}
+
+    <strong>Lote {{ active_batch.code }}</strong>
+
+    <div class="ana-muted">
+     {% if active_batch.garment_model_code %}
+      {{ active_batch.garment_model_code }}
+      &mdash;
+      {{ active_batch.garment_model_name }}
+     {% else %}
+      Sin modelo asignado
+     {% endif %}
+    </div>
+
+    <div class="ana-values">
+
+     <div class="ana-value">
+      <strong>
+       {{ active_batch.processed_quantity }}
+       /
+       {{ active_batch.planned_quantity }}
+      </strong>
+      <span>Procesadas</span>
+     </div>
+
+     <div class="ana-value">
+      <strong>{{ active_batch.confirmed_defects or 0 }}</strong>
+      <span>Rechazadas</span>
+     </div>
+
+     <div class="ana-value">
+      <strong>{{ active_batch.progress_rate }} %</strong>
+      <span>Avance lote</span>
+     </div>
+
+    </div>
+
+   {% else %}
+
+    <div class="ana-muted">
+     No hay un lote en inspecci&oacute;n.
+    </div>
+
+   {% endif %}
+
+  </div>
+
+ </div>
+
+</section>
+
+{% endif %}
+
+
+{% if top_problem_lot or top_problem_model %}
+
+<div class="ana-grid">
+
+ {% if top_problem_model %}
+
+ <section class="ana-card ana-alert-card">
+
+  <div class="ana-muted">
+   Modelo con m&aacute;s rechazo
+  </div>
+
+  <strong class="big">
+   {{ top_problem_model.code }}
+  </strong>
+
+  <div>{{ top_problem_model.name }}</div>
 
   <p>
-    Informe preliminar del prototipo. Para la evaluación
-    final de la eficiencia del sistema deben compararse los
-    resultados de inteligencia artificial con la validación
-    humana mediante verdaderos positivos, verdaderos negativos,
-    falsos positivos y falsos negativos.
+   <strong>{{ top_problem_model.rejected }}</strong>
+   rechazadas de
+   <strong>{{ top_problem_model.inspected }}</strong>
+   inspeccionadas.
   </p>
+
+  <div>
+   Tasa de rechazo:
+   <strong>{{ top_problem_model.rejection_rate }} %</strong>
+  </div>
 
   <p>
-    Los registros históricos incluyen pruebas realizadas
-    durante distintas etapas del desarrollo y no deben
-    interpretarse de forma aislada como la exactitud final
-    del modelo.
+   <a class="ana-link"
+      href="{{ url_for('records', model_id=top_problem_model.id, date_from=date_from, date_to=date_to, show='rejected') }}">
+    Analizar prendas rechazadas
+   </a>
   </p>
 
+ </section>
+
+ {% endif %}
+
+
+ {% if top_problem_lot %}
+
+ <section class="ana-card ana-alert-card">
+
+  <div class="ana-muted">
+   Lote con m&aacute;s rechazos
+  </div>
+
+  <strong class="big">
+   {{ top_problem_lot.code }}
+  </strong>
+
+  <p>
+   <strong>{{ top_problem_lot.rejected }}</strong>
+   rechazadas de
+   <strong>{{ top_problem_lot.inspected }}</strong>
+   inspeccionadas.
+  </p>
+
+  <div>
+   Tasa de rechazo:
+   <strong>{{ top_problem_lot.rejection_rate }} %</strong>
+  </div>
+
+  <p>
+   <a class="ana-link"
+      href="{{ url_for('records', batch_id=top_problem_lot.id, date_from=date_from, date_to=date_to, show='rejected') }}">
+    Ver prendas rechazadas
+   </a>
+  </p>
+
+ </section>
+
+ {% endif %}
+
+</div>
+
+{% endif %}
+
+
+<section class="ana-card">
+
+<div class="ana-title">
+ <h2>Rendimiento por modelo</h2>
+ <span class="ana-muted">
+  Permite detectar dise&ntilde;os con mayor nivel de rechazo.
+ </span>
+</div>
+
+{% if model_summary %}
+
+<table class="ana-table">
+
+<thead>
+<tr>
+ <th>Modelo</th>
+ <th>Inspeccionadas</th>
+ <th>Rechazadas</th>
+ <th>Tasa de rechazo</th>
+ <th>Comparaci&oacute;n</th>
+ <th></th>
+</tr>
+</thead>
+
+<tbody>
+
+{% for model in model_summary[:8] %}
+
+<tr>
+
+ <td>
+  <strong>{{ model.code }}</strong>
+  <small>{{ model.name }}</small>
+ </td>
+
+ <td>{{ model.inspected }}</td>
+
+ <td>
+  <strong>{{ model.rejected }}</strong>
+ </td>
+
+ <td>
+  <div class="ana-bar">
+   <div class="ana-bar-track">
+    <div
+     class="ana-bar-fill"
+     style="width:{{ [model.rejection_rate,100]|min }}%"
+    ></div>
+   </div>
+   <strong>{{ model.rejection_rate }} %</strong>
+  </div>
+ </td>
+
+ <td>
+  {% if model.rejection_rate > summary.rejection_rate %}
+   Sobre el promedio
+  {% else %}
+   Igual o menor al promedio
+  {% endif %}
+ </td>
+
+ <td>
+  <a class="ana-link"
+     href="{{ url_for('records', model_id=model.id, date_from=date_from, date_to=date_to) }}">
+   Analizar
+  </a>
+ </td>
+
+</tr>
+
+{% endfor %}
+
+</tbody>
+</table>
+
+{% else %}
+
+<div class="ana-empty">
+ No hay inspecciones del per&iacute;odo vinculadas a modelos del cat&aacute;logo.
+</div>
+
+{% endif %}
+
 </section>
+
+
+<section class="ana-card">
+
+<div class="ana-title">
+ <h2>Calidad por lote</h2>
+ <span class="ana-muted">
+  Rendimiento operativo de los lotes del per&iacute;odo.
+ </span>
+</div>
+
+{% if lot_summary %}
+
+<table class="ana-table">
+
+<thead>
+<tr>
+ <th>Lote</th>
+ <th>Modelo</th>
+ <th>Avance</th>
+ <th>Rechazadas</th>
+ <th>% rechazo</th>
+ <th>Pendientes</th>
+ <th></th>
+</tr>
+</thead>
+
+<tbody>
+
+{% for lot in lot_summary[:10] %}
+
+<tr>
+
+ <td><strong>{{ lot.code }}</strong></td>
+
+ <td>
+  {% if lot.garment_model_code %}
+   {{ lot.garment_model_code }}
+   <small>{{ lot.garment_model_name }}</small>
+  {% else %}
+   <span class="ana-muted">Sin modelo asignado</span>
+  {% endif %}
+ </td>
+
+ <td>
+  {{ lot.total_processed }}/{{ lot.planned_quantity }}
+  <small>{{ lot.progress_rate }} %</small>
+ </td>
+
+ <td><strong>{{ lot.rejected }}</strong></td>
+
+ <td class="ana-rate">
+  {{ lot.rejection_rate }} %
+ </td>
+
+ <td>{{ lot.pending }}</td>
+
+ <td>
+  <a class="ana-link"
+     href="{{ url_for('records', batch_id=lot.id, date_from=date_from, date_to=date_to) }}">
+   Ver lote
+  </a>
+ </td>
+
+</tr>
+
+{% endfor %}
+
+</tbody>
+</table>
+
+{% else %}
+
+<div class="ana-empty">
+ No hay lotes con actividad para este per&iacute;odo.
+</div>
+
+{% endif %}
+
+</section>
+
+
+{% if rejection_reasons or rejection_zones %}
+
+<div class="ana-grid">
+
+ <section class="ana-card">
+
+  <h2>Principales causas de rechazo</h2>
+
+  {% if rejection_reasons %}
+
+   <table class="ana-table">
+    <thead>
+     <tr>
+      <th>Defecto</th>
+      <th>Prendas</th>
+     </tr>
+    </thead>
+
+    <tbody>
+    {% for row in rejection_reasons[:5] %}
+     <tr>
+      <td>{{ row.defect_type }}</td>
+      <td><strong>{{ row.total }}</strong></td>
+     </tr>
+    {% endfor %}
+    </tbody>
+   </table>
+
+  {% else %}
+   <div class="ana-empty">Sin defectos confirmados.</div>
+  {% endif %}
+
+ </section>
+
+
+ <section class="ana-card">
+
+  <h2>Zonas con mayor rechazo</h2>
+
+  {% if rejection_zones %}
+
+   <table class="ana-table">
+    <thead>
+     <tr>
+      <th>Zona</th>
+      <th>Prendas</th>
+     </tr>
+    </thead>
+
+    <tbody>
+    {% for row in rejection_zones[:5] %}
+     <tr>
+      <td>{{ row.zone }}</td>
+      <td><strong>{{ row.total }}</strong></td>
+     </tr>
+    {% endfor %}
+    </tbody>
+   </table>
+
+  {% else %}
+   <div class="ana-empty">Sin zonas registradas.</div>
+  {% endif %}
+
+ </section>
+
+</div>
+
+{% endif %}
+
+</div>
 
 {% endblock %}

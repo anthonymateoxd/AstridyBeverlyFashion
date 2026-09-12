@@ -26,3 +26,33 @@ patchcore_results/
 
 # Archivo accidental local
 e build app
+
+# ==========================================
+# Astrid Quality Control - archivos locales
+# ==========================================
+
+# Python
+*.py[cod]
+
+# Entornos virtuales
+.venv/
+
+# Configuracion privada
+.env.*
+!.env.example
+
+# Backups y diagnosticos locales
+_backup*/
+diagnostico*.txt
+estado_*.txt
+flash_*.txt
+revision_*.txt
+
+# Dumps temporales
+textile_quality_db_antes_*.sql
+
+# Datos/runtime generados
+
+# Dataset de entrenamiento
+
+# Resultados/modelos pesados de PatchCore

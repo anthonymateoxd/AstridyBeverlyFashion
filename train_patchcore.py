@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from anomalib.data import Folder
@@ -8,10 +9,20 @@ from anomalib.data.utils import TestSplitMode, ValSplitMode
 
 ROOT = Path(__file__).resolve().parent
 
+DEFAULT_DATASET_NAME = "BLUSA_002_S_ROSA_FRONT"
+
+DATASET_NAME = (
+    os.getenv(
+        "PATCHCORE_DATASET_NAME",
+        DEFAULT_DATASET_NAME,
+    ).strip()
+    or DEFAULT_DATASET_NAME
+)
+
 DATASET_ROOT = (
     ROOT
     / "anomaly_dataset"
-    / "BLUSA_002_S_ROSA_FRONT"
+    / DATASET_NAME
 )
 
 RESULTS_ROOT = ROOT / "patchcore_results"
@@ -92,7 +103,7 @@ def main() -> None:
     test_good = DATASET_ROOT / "test" / "good"
 
     datamodule_args = {
-        "name": "BLUSA_002_S_ROSA_FRONT",
+        "name": DATASET_NAME,
         "root": DATASET_ROOT,
         "normal_dir": "train/good",
         "abnormal_dir": abnormal_dirs,
@@ -109,7 +120,7 @@ def main() -> None:
 
         "seed": 42,
     }
-    
+
     if count_images(test_good) > 0:
         datamodule_args["normal_test_dir"] = "test/good"
 

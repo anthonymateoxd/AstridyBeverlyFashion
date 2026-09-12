@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block content %}
+
+<style>
+.gmf-card{max-width:760px;background:#fff;border:1px solid #e6ded2;border-radius:10px;padding:28px}
+.gmf-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.gmf-field{margin-bottom:18px}
+.gmf-field label{display:block;font-size:12px;letter-spacing:1.3px;text-transform:uppercase;margin-bottom:7px;font-weight:700}
+.gmf-field input,.gmf-field textarea{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d8d0c5}
+.gmf-field textarea{min-height:110px;resize:vertical}
+.gmf-fixed{padding:12px;background:#f5f2ed;border:1px solid #e6ded2}
+.gmf-button{background:#111;color:#fff;border:0;padding:13px 18px;font-weight:700;cursor:pointer}
+@media(max-width:800px){.gmf-grid{grid-template-columns:1fr}}
+</style>
+
+<header class="page-header">
+  <div>
+    <h1>Nuevo modelo de prenda</h1>
+    <p>Registre un modelo de blusa para enviarlo posteriormente a aprobaci&oacute;n.</p>
+  </div>
+</header>
+
+<section class="gmf-card">
+<form method="post" enctype="multipart/form-data">
+
+  <div class="gmf-grid">
+    <div class="gmf-field">
+      <label>C&oacute;digo del modelo</label>
+      <input name="code" placeholder="BLUSA-003">
+    </div>
+
+    <div class="gmf-field">
+      <label>Nombre del modelo</label>
+      <input name="name" required placeholder="Blusa cuello redondo">
+    </div>
+  </div>
+
+  <div class="gmf-grid">
+    <div class="gmf-field">
+      <label>Color</label>
+      <input name="color" required placeholder="Rosa">
+    </div>
+
+    <div class="gmf-field">
+      <label>Talla</label>
+      <div class="gmf-fixed">S</div>
+    </div>
+  </div>
+
+  <div class="gmf-grid">
+    <div class="gmf-field">
+      <label>Tipo de prenda</label>
+      <div class="gmf-fixed">Blusa</div>
+    </div>
+
+    <div class="gmf-field">
+      <label>Vista de inspecci&oacute;n</label>
+      <div class="gmf-fixed">Frente</div>
+    </div>
+  </div>
+
+  <div class="gmf-field">
+    <label>Descripci&oacute;n</label>
+    <textarea
+      name="description"
+      placeholder="Caracter&iacute;sticas o informaci&oacute;n relevante del modelo."
+    ></textarea>
+  </div>
+
+  <div class="gmf-field">
+    <label>Im&aacute;genes de referencia</label>
+    <input
+      name="reference_images"
+      type="file"
+      accept="image/jpeg,image/png,image/webp"
+      multiple
+      required
+    >
+    <small>Puede seleccionar hasta 8 fotograf&iacute;as.</small>
+  </div>
+
+  <button class="gmf-button" type="submit">
+    Guardar como borrador
+  </button>
+</form>
+</section>
+
+{% endblock %}

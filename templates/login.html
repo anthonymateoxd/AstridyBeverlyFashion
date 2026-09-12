@@ -12,9 +12,7 @@
     <div class="tiny-line"></div>
     <p class="overline">Sistema de Gestión</p>
     <h1>Control de Calidad</h1>
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
-    {% endwith %}
+
     <form method="post">
       <label>Usuario</label>
       <input type="text" name="username" placeholder="Ingrese su identificador" required>
@@ -23,7 +21,7 @@
       <button type="submit">Acceder</button>
     </form>
     <p class="restricted">Acceso restringido<br>Solo personal autorizado</p>
-    <p class="hint">Demo: admin / admin123</p>
+
   </section>
 </body>
 </html>

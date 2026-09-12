@@ -1,55 +1,184 @@
 <!doctype html>
 <html lang="es">
-  <head>
-    <meta charset="utf-8" />
+<head>
+    <meta charset="utf-8">
+
     <title>{{ title or 'Control de Calidad' }}</title>
+
     <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1"
-    />
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
     <link
-      rel="stylesheet"
-      href="{{ url_for('static', filename='css/styles.css') }}"
-    />
-  </head>
-  <body class="app-body">
+        rel="stylesheet"
+        href="{{ url_for('static', filename='css/styles.css') }}"
+    >
+
+    <style>
+        .global-flash {
+            margin: 0 0 18px 0;
+            padding: 12px 15px;
+            border-radius: 9px;
+            font-weight: 600;
+        }
+
+        .global-flash.success {
+            background: #e6f4ea;
+            color: #236a3b;
+        }
+
+        .global-flash.error {
+            background: #f7e5e5;
+            color: #8d2929;
+        }
+
+        .sidebar-role {
+            padding: 5px 14px 14px;
+            font-size: .78rem;
+            opacity: .7;
+        }
+    </style>
+</head>
+
+<body class="app-body">
+
     <aside class="sidebar">
-      <div class="brand">
-        <img
-          src="{{ url_for('static', filename='img/logo.png') }}"
-          alt="Astrid y Beverly"
-        />
-      </div>
-      <nav>
-        <a
-          class="{% if request.endpoint == 'dashboard' %}active{% endif %}"
-          href="{{ url_for('dashboard') }}"
-          >▣ Dashboard</a
-        >
-                <a
-          class="{% if request.endpoint in ['batches', 'start_batch'] %}active{% endif %}"
-          href="{{ url_for('batches') }}"
-          >Lotes</a
-        >
-<a href="{{ url_for('station') }}">▣ Estación automática</a>
-        <a
-          class="{% if request.endpoint == 'inspection' %}active{% endif %}"
-          href="{{ url_for('inspection') }}"
-          >◉ Inspección en vivo</a
-        >
-        <a
-          class="{% if request.endpoint == 'records' %}active{% endif %}"
-          href="{{ url_for('records') }}"
-          >▤ Registro de prendas</a
-        >
-        <a
-          class="{% if request.endpoint in ['informes', 'informe_excel', 'informe_pdf'] %}active{% endif %}"
-          href="{{ url_for('informes') }}"
-          >▦ Informes</a
-        >
-        <a href="{{ url_for('logout') }}">↳ Salir</a>
-      </nav>
+
+        <div class="brand">
+            <img
+                src="{{ url_for('static', filename='img/logo.png') }}"
+                alt="Astrid y Beverly"
+            >
+        </div>
+
+        {% set current_role = session.get('role', '') %}
+
+        <div class="sidebar-role">
+
+            {% if current_role == 'ADMIN' %}
+                Administrador
+
+            {% elif current_role == 'MODEL_MANAGER' %}
+                Encargado de modelos
+
+            {% elif current_role == 'QUALITY_MANAGER' %}
+                Gestor de calidad
+
+            {% endif %}
+
+        </div>
+
+        <nav>
+
+            <a
+                class="{% if request.endpoint == 'dashboard' %}active{% endif %}"
+                href="{{ url_for('dashboard') }}"
+            >
+                Panel principal
+            </a>
+
+
+            <a
+                class="{% if request.endpoint in [
+                    'garment_models_page',
+                    'garment_model_create',
+                    'garment_model_detail',
+                    'garment_model_submit',
+                    'garment_model_approve',
+                    'garment_model_reject'
+                ] %}active{% endif %}"
+                href="{{ url_for('garment_models_page') }}"
+            >
+                Modelos de prenda
+            </a>
+
+
+            <a
+                class="{% if request.endpoint in [
+                    'batches',
+                    'start_batch',
+                    'batch_review'
+                ] %}active{% endif %}"
+                href="{{ url_for('batches') }}"
+            >
+                Lotes
+            </a>
+
+
+            {% if current_role in ['ADMIN', 'QUALITY_MANAGER'] %}
+
+            <a
+                class="{% if request.endpoint == 'station' %}active{% endif %}"
+                href="{{ url_for('station') }}"
+            >
+                Estación automática
+            </a>
+
+            <a
+                class="{% if request.endpoint == 'inspection' %}active{% endif %}"
+                href="{{ url_for('inspection') }}"
+            >
+                Inspección en vivo
+            </a>
+
+            {% endif %}
+
+
+            <a
+                class="{% if request.endpoint == 'records' %}active{% endif %}"
+                href="{{ url_for('records') }}"
+            >
+                Historial de inspecciones
+            </a>
+
+
+            <a
+                class="{% if request.endpoint in [
+                    'informes',
+                    'informe_excel',
+                    'informe_pdf'
+                ] %}active{% endif %}"
+                href="{{ url_for('informes') }}"
+            >
+                Informes
+            </a>
+
+
+            {% if current_role == 'ADMIN' %}
+
+            <a
+                class="{% if request.endpoint in [
+                    'users_admin',
+                    'user_change_role',
+                    'user_toggle_status'
+                ] %}active{% endif %}"
+                href="{{ url_for('users_admin') }}"
+            >
+                Usuarios
+            </a>
+
+            {% endif %}
+
+
+            <a href="{{ url_for('logout') }}">
+                Salir
+            </a>
+
+        </nav>
+
     </aside>
-    <main class="main">{% block content %}{% endblock %}</main>
-  </body>
+
+
+    <main class="main">
+
+
+
+
+        {% block content %}
+        {% endblock %}
+
+    </main>
+
+</body>
 </html>

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block content %}
+
+<style>
+.gm-head{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:24px}
+.gm-button{display:inline-block;background:#111;color:#fff;padding:12px 16px;text-decoration:none;border:0;cursor:pointer;font-weight:700}
+.gm-card{background:#fff;border:1px solid #e6ded2;border-radius:10px;padding:22px;margin-bottom:14px}
+.gm-top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}
+.gm-code{font-size:13px;letter-spacing:1px;color:#776c61}
+.gm-name{font-size:22px;font-weight:700;margin:4px 0 10px}
+.gm-meta{display:flex;gap:22px;flex-wrap:wrap}
+.gm-badge{display:inline-block;padding:6px 10px;border-radius:20px;font-size:12px;font-weight:700}
+.gm-ok{background:#e5f4e9;color:#23683a}
+.gm-warn{background:#fff2d8;color:#8b6115}
+.gm-bad{background:#f6e2e2;color:#922f2f}
+.gm-neutral{background:#eeeae4;color:#5e574f}
+.gm-link{color:#111;font-weight:700}
+</style>
+
+<div class="gm-head">
+  <div>
+    <h1>Modelos de prenda</h1>
+    <p>Cat&aacute;logo de modelos de blusa disponibles para el control de calidad.</p>
+  </div>
+
+  {% if role in ['ADMIN', 'MODEL_MANAGER'] %}
+  <a class="gm-button" href="{{ url_for('garment_model_create') }}">
+    + Nuevo modelo
+  </a>
+  {% endif %}
+</div>
+
+{% for model in models %}
+<article class="gm-card">
+  <div class="gm-top">
+    <div>
+      <div class="gm-code">{{ model.code }}</div>
+      <div class="gm-name">{{ model.name }}</div>
+
+      <div class="gm-meta">
+        <span>Color: <strong>{{ model.color }}</strong></span>
+        <span>Talla: <strong>{{ model.size }}</strong></span>
+        <span>Vista: <strong>{{ model.inspection_side }}</strong></span>
+        <span>Creado por: <strong>{{ model.creator_name }}</strong></span>
+      </div>
+    </div>
+
+    <div>
+      {% if model.status == 'APROBADO' %}
+        <span class="gm-badge gm-ok">APROBADO</span>
+      {% elif model.status == 'PENDIENTE' %}
+        <span class="gm-badge gm-warn">PENDIENTE</span>
+      {% elif model.status == 'RECHAZADO' %}
+        <span class="gm-badge gm-bad">RECHAZADO</span>
+      {% else %}
+        <span class="gm-badge gm-neutral">{{ model.status }}</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <p>
+    {% if model.ai_ready %}
+      <span class="gm-badge gm-ok">
+        IA {{ model.ai_version }} &middot; Lista para inspecci&oacute;n
+      </span>
+    {% else %}
+      <span class="gm-badge gm-warn">
+        Preparaci&oacute;n de IA pendiente
+      </span>
+    {% endif %}
+  </p>
+
+  <a
+    class="gm-link"
+    href="{{ url_for('garment_model_detail', model_id=model.id) }}"
+  >
+    Ver modelo
+  </a>
+</article>
+
+{% else %}
+<div class="gm-card">
+  No hay modelos disponibles.
+</div>
+{% endfor %}
+
+{% endblock %}

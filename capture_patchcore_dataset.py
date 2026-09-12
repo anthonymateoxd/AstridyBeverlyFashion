@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import time
@@ -18,7 +18,15 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
-DATASET_NAME = "BLUSA_002_S_ROSA_FRONT"
+DEFAULT_DATASET_NAME = "BLUSA_002_S_ROSA_FRONT"
+
+DATASET_NAME = (
+    os.getenv(
+        "PATCHCORE_DATASET_NAME",
+        DEFAULT_DATASET_NAME,
+    ).strip()
+    or DEFAULT_DATASET_NAME
+)
 
 TOTAL_IMAGES = 40
 TRAIN_IMAGES = 32
@@ -462,7 +470,7 @@ def main() -> None:
             "Verifica que app.py esté detenido y que la cámara esté disponible."
         )
 
-    window_name = "Captura PatchCore - BLUSA_002_ROSA_FRONT"
+    window_name = f"Captura PatchCore - {DATASET_NAME}"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
     paused = False
@@ -586,4 +594,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

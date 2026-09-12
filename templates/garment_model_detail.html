@@ -1,0 +1,258 @@
+﻿{% extends "base.html" %}
+{% block content %}
+
+<style>
+.gmd-top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}
+.gmd-card{background:#fff;border:1px solid #e6ded2;border-radius:10px;padding:24px;margin-bottom:20px}
+.gmd-info{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+.gmd-label{display:block;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:#776c61;margin-bottom:4px}
+.gmd-images{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.gmd-images img{width:100%;height:230px;object-fit:cover;border-radius:7px;border:1px solid #e6ded2}
+.gmd-button{display:inline-block;background:#111;color:#fff;border:0;padding:12px 17px;font-weight:700;cursor:pointer;text-decoration:none}
+.gmd-button.ok{background:#286d3d}
+.gmd-button.bad{background:#8d3030}
+.gmd-badge{display:inline-block;padding:7px 11px;border-radius:20px;font-size:12px;font-weight:700}
+.gmd-ready{background:#e5f4e9;color:#23683a}
+.gmd-wait{background:#fff2d8;color:#8b6115}
+.gmd-neutral{background:#efefef;color:#444}
+.gmd-reason{background:#f7e6e6;border-left:4px solid #9b3939;padding:15px;margin-top:16px}
+.gmd-reject textarea{width:100%;box-sizing:border-box;min-height:90px;padding:10px;margin:10px 0}
+.gmd-ai-list{display:grid;gap:14px;margin-top:18px}
+.gmd-ai-item{border:1px solid #e6ded2;border-radius:8px;padding:18px}
+.gmd-ai-head{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:15px}
+.gmd-ai-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}
+.gmd-path{word-break:break-all;font-family:monospace;font-size:12px}
+.gmd-muted{color:#776c61}
+@media(max-width:900px){
+  .gmd-info,.gmd-ai-grid{grid-template-columns:1fr 1fr}
+  .gmd-images{grid-template-columns:1fr}
+}
+</style>
+
+<div class="gmd-top">
+  <div>
+    <p>{{ model.code }}</p>
+    <h1>{{ model.name }}</h1>
+  </div>
+  <strong>{{ model.status }}</strong>
+</div>
+
+<section class="gmd-card">
+  <div class="gmd-info">
+    <div>
+      <span class="gmd-label">Tipo</span>
+      Blusa
+    </div>
+
+    <div>
+      <span class="gmd-label">Color</span>
+      {{ model.color }}
+    </div>
+
+    <div>
+      <span class="gmd-label">Talla</span>
+      {{ model.size }}
+    </div>
+
+    <div>
+      <span class="gmd-label">Vista</span>
+      {{ model.inspection_side }}
+    </div>
+  </div>
+
+  {% if model.description %}
+  <p>{{ model.description }}</p>
+  {% endif %}
+
+  <p>
+    Creado por <strong>{{ model.creator_name }}</strong>
+  </p>
+
+  {% if model.ai_ready %}
+  <span class="gmd-badge gmd-ready">
+    {{ model.ai_model_type }} {{ model.ai_version }}
+    &middot; Lista para inspecci&oacute;n
+  </span>
+  {% else %}
+  <span class="gmd-badge gmd-wait">
+    Preparaci&oacute;n de IA pendiente
+  </span>
+  {% endif %}
+
+  {% if model.rejection_reason %}
+  <div class="gmd-reason">
+    <strong>Motivo del rechazo</strong>
+    <div>{{ model.rejection_reason }}</div>
+  </div>
+  {% endif %}
+</section>
+
+<section class="gmd-card">
+  <h2>Im&aacute;genes de referencia</h2>
+
+  {% if images %}
+  <div class="gmd-images">
+    {% for image in images %}
+    <img
+      src="{{ url_for('static', filename=image.image_path) }}"
+      alt="Referencia del modelo"
+    >
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="gmd-muted">
+    No hay im&aacute;genes de referencia registradas.
+  </p>
+  {% endif %}
+</section>
+
+{% if model.status == 'APROBADO' %}
+<section class="gmd-card">
+  <h2>Preparaci&oacute;n de IA</h2>
+
+  {% if not ai_versions %}
+  <p>
+    Este modelo todav&iacute;a no tiene versiones de IA.
+  </p>
+  {% endif %}
+
+  {% if can_prepare_ai and not ai_in_progress %}
+  <p>
+    Cree una nueva versi&oacute;n para preparar su dataset
+    y posteriormente entrenar PatchCore.
+  </p>
+
+  <form
+    method="post"
+    action="{{ url_for('garment_ai_prepare', model_id=model.id) }}"
+  >
+    <button class="gmd-button" type="submit">
+      Preparar nueva versi&oacute;n
+    </button>
+  </form>
+  {% elif ai_in_progress %}
+  <p class="gmd-muted">
+    Ya existe una versi&oacute;n de IA en proceso.
+  </p>
+  {% endif %}
+
+  {% if ai_versions %}
+  <div class="gmd-ai-list">
+    {% for ai in ai_versions %}
+    <article class="gmd-ai-item">
+
+      <div class="gmd-ai-head">
+        <div>
+          <strong>{{ ai.version }} &middot; {{ ai.model_type }}</strong>
+        </div>
+
+        {% if ai.active and ai.status == 'ACTIVO' %}
+        <span class="gmd-badge gmd-ready">
+          ACTIVA
+        </span>
+        {% elif ai.status == 'PREPARACION' %}
+        <span class="gmd-badge gmd-wait">
+          PREPARACI&Oacute;N
+        </span>
+        {% else %}
+        <span class="gmd-badge gmd-neutral">
+          {{ ai.status }}
+        </span>
+        {% endif %}
+      </div>
+
+      <div class="gmd-ai-grid">
+
+        <div>
+          <span class="gmd-label">Dataset</span>
+          {% if ai.dataset_name %}
+            {{ ai.dataset_name }}
+          {% else %}
+            Hist&oacute;rico sin dataset registrado
+          {% endif %}
+        </div>
+
+        <div>
+          <span class="gmd-label">Im&aacute;genes normales</span>
+          {{ ai.normal_images_count if ai.normal_images_count is not none else 'Sin registro' }}
+        </div>
+
+        <div>
+          <span class="gmd-label">Responsable</span>
+          {{ ai.creator_name or 'Hist&oacute;rico' }}
+        </div>
+
+      </div>
+
+      <div style="margin-top:15px">
+        <span class="gmd-label">Checkpoint</span>
+
+        {% if ai.checkpoint_path %}
+        <div class="gmd-path">
+          {{ ai.checkpoint_path }}
+        </div>
+        {% else %}
+        <strong>Pendiente de entrenamiento</strong>
+        {% endif %}
+      </div>
+
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if can_manage and model.status in ['BORRADOR', 'RECHAZADO'] %}
+<section class="gmd-card">
+  <h2>Enviar a aprobaci&oacute;n</h2>
+
+  <p>
+    Cuando la informaci&oacute;n sea correcta, env&iacute;e el modelo
+    para que un administrador lo revise.
+  </p>
+
+  <form
+    method="post"
+    action="{{ url_for('garment_model_submit', model_id=model.id) }}"
+  >
+    <button class="gmd-button" type="submit">
+      Enviar a aprobaci&oacute;n
+    </button>
+  </form>
+</section>
+{% endif %}
+
+{% if role == 'ADMIN' and model.status == 'PENDIENTE' %}
+<section class="gmd-card">
+  <h2>Revisi&oacute;n administrativa</h2>
+
+  <form
+    method="post"
+    action="{{ url_for('garment_model_approve', model_id=model.id) }}"
+  >
+    <button class="gmd-button ok" type="submit">
+      Aprobar modelo
+    </button>
+  </form>
+
+  <form
+    class="gmd-reject"
+    method="post"
+    action="{{ url_for('garment_model_reject', model_id=model.id) }}"
+  >
+    <textarea
+      name="rejection_reason"
+      required
+      minlength="5"
+      placeholder="Indique el motivo del rechazo..."
+    ></textarea>
+
+    <button class="gmd-button bad" type="submit">
+      Rechazar modelo
+    </button>
+  </form>
+</section>
+{% endif %}
+
+{% endblock %}

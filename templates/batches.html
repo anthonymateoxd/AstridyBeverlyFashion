@@ -2,293 +2,1012 @@
 {% block content %}
 
 <style>
-  .batch-grid {
-    display: grid;
-    grid-template-columns: 360px minmax(0, 1fr);
-    gap: 24px;
-  }
+.lot-layout{
+  display:grid;
+  grid-template-columns:380px minmax(0,1fr);
+  gap:24px
+}
+.lot-panel{
+  background:#fff;
+  border:1px solid #e6ded2;
+  border-radius:8px;
+  padding:24px
+}
+.lot-panel h2{margin-top:0}
+.lot-field{margin-top:18px}
+.lot-field label{
+  display:block;
+  margin-bottom:6px;
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:1px;
+  text-transform:uppercase
+}
+.lot-field input,
+.lot-field select{
+  width:100%;
+  box-sizing:border-box;
+  padding:12px;
+  border:1px solid #d8d0c5;
+  background:#fff
+}
+.lot-hint{
+  margin-top:6px;
+  color:#786d62;
+  font-size:12px
+}
+.lot-auto{
+  margin-top:18px;
+  padding:13px;
+  background:#f5f1eb;
+  border-left:3px solid #111
+}
+.lot-btn{
+  display:inline-block;
+  margin-top:18px;
+  padding:12px 16px;
+  border:0;
+  background:#111;
+  color:#fff;
+  font-weight:700;
+  text-decoration:none;
+  cursor:pointer
+}
+.lot-card{
+  padding:18px 0;
+  border-bottom:1px solid #eee6dc
+}
+.lot-card:last-child{border-bottom:0}
+.lot-top{
+  display:flex;
+  justify-content:space-between;
+  gap:20px
+}
+.lot-code{
+  font-size:20px;
+  font-weight:700
+}
+.lot-meta{
+  margin-top:5px;
+  color:#756b61;
+  font-size:12px
+}
+.lot-status{
+  margin-top:5px;
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:1px
+}
+.lot-stats{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:10px;
+  margin-top:14px
+}
+.lot-stat{
+  background:#f7f4ef;
+  padding:12px
+}
+.lot-stat strong{
+  display:block;
+  font-size:21px
+}
+.lot-stat span{
+  font-size:11px;
+  color:#766b60
+}
+.lot-progress{
+  height:7px;
+  margin-top:12px;
+  background:#eee8df
+}
+.lot-progress div{
+  height:100%;
+  background:#111
+}
+.lot-active{
+  padding:14px;
+  margin-bottom:20px;
+  background:#eef8f0;
+  border-left:4px solid #2f8f46
+}
+.lot-disabled{
+  display:inline-block;
+  margin-top:12px;
+  color:#8a7b6e;
+  font-size:12px
+}
+@media(max-width:1050px){
+  .lot-layout{grid-template-columns:1fr}
+}
 
-  .batch-form,
-  .batch-list {
-    background: #fff;
-    border: 1px solid #e6ded2;
-    border-radius: 8px;
-    padding: 24px;
-  }
+/* PRODUCTION PLAN */
 
-  .batch-form h2,
-  .batch-list h2 {
-    margin-top: 0;
-  }
+.production-plan{
+  background:#fff;
+  border:1px solid #e6ded2;
+  border-radius:8px;
+  padding:24px;
+  margin-bottom:24px;
+}
 
-  .batch-form label {
-    display: block;
-    margin-top: 18px;
-    margin-bottom: 6px;
-    font-size: 12px;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-  }
+.production-plan h2{
+  margin:0 0 16px;
+}
 
-  .batch-form input {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 13px;
-    border: 1px solid #d8d0c5;
-    background: #fff;
-  }
+.production-plan-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:14px;
+}
 
-  .batch-form button,
-  .batch-action {
-    display: inline-block;
-    margin-top: 20px;
-    border: 0;
-    background: #111;
-    color: #fff;
-    padding: 13px 18px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    cursor: pointer;
-    text-decoration: none;
-  }
+.production-plan-item{
+  background:#f7f4ef;
+  border-radius:7px;
+  padding:16px;
+}
 
-  .batch-card {
-    padding: 18px 0;
-    border-bottom: 1px solid #eee6dc;
-  }
+.production-plan-item strong{
+  display:block;
+  font-size:22px;
+  margin-bottom:5px;
+}
 
-  .batch-card:last-child {
-    border-bottom: 0;
-  }
+.production-plan-item span{
+  display:block;
+  font-size:11px;
+  color:#766b60;
+  letter-spacing:.8px;
+  text-transform:uppercase;
+}
 
-  .batch-card-top {
-    display: flex;
-    justify-content: space-between;
-    gap: 20px;
-  }
+.production-plan-note{
+  margin-top:14px;
+  color:#756b61;
+  font-size:12px;
+}
 
-  .batch-code {
-    font-size: 20px;
-    font-weight: 700;
-  }
+.production-plan-warning{
+  margin-top:14px;
+  padding:12px 14px;
+  background:#fff4d9;
+  border-left:3px solid #c99727;
+  color:#715312;
+}
 
-  .batch-status {
-    font-size: 12px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
+@media(max-width:800px){
+  .production-plan-grid{
+    grid-template-columns:1fr;
   }
+}
 
-  .batch-stats {
-    display: flex;
-    gap: 28px;
-    margin-top: 14px;
-  }
 
-  .batch-stat strong {
-    display: block;
-    font-size: 22px;
-  }
+/* SMART PRODUCTION PLANNING V1 */
 
-  .batch-stat span {
-    font-size: 12px;
-    color: #766b60;
-  }
+.smart-quantity{
+  padding:16px;
+  background:#f5f1eb;
+  border-left:4px solid #222;
+}
 
-  .batch-progress {
-    height: 8px;
-    margin-top: 16px;
-    background: #eee8df;
-    overflow: hidden;
-  }
+.smart-quantity strong{
+  display:block;
+  font-size:24px;
+  margin-bottom:4px;
+}
 
-  .batch-progress > div {
-    height: 100%;
-    background: #111;
-  }
+.smart-quantity-note{
+  margin-top:5px;
+  font-size:12px;
+  color:#756b61;
+}
 
-  .active-note {
-    padding: 14px;
-    margin-bottom: 20px;
-    background: #eef8f0;
-    border-left: 4px solid #2f8f46;
-  }
+.smart-edit-btn{
+  margin-top:9px;
+  padding:0;
+  border:0;
+  background:transparent;
+  color:#554c44;
+  text-decoration:underline;
+  font-size:11px;
+  font-weight:700;
+  cursor:pointer;
+}
 
-  @media (max-width: 1050px) {
-    .batch-grid {
-      grid-template-columns: 1fr;
-    }
-  }
+.smart-extra{
+  margin-top:10px;
+  padding:12px;
+  background:#fff4d9;
+  border-left:3px solid #c99727;
+  color:#715312;
+  font-size:12px;
+}
+
+.smart-covered{
+  padding:16px;
+  background:#eef8f0;
+  border-left:4px solid #2f8f46;
+}
+
+.smart-covered strong{
+  display:block;
+  margin-bottom:5px;
+}
+
+.lot-btn:disabled{
+  opacity:.45;
+  cursor:not-allowed;
+}
+
+
+
+/* BATCHES_COMPACT_UI_V1 */
+
+.page-header{
+  margin-bottom:18px;
+}
+
+.production-plan{
+  padding:18px;
+  margin-bottom:18px;
+}
+
+.production-plan h2{
+  margin-bottom:12px;
+}
+
+.production-plan-item{
+  padding:14px;
+}
+
+.production-plan-item strong{
+  font-size:24px;
+}
+
+.lot-layout{
+  gap:18px;
+}
+
+.lot-panel{
+  padding:20px;
+}
+
+.lot-panel > h2{
+  margin-bottom:14px;
+}
+
+.lot-field{
+  margin-top:14px;
+}
+
+.lot-card{
+  padding:15px 0;
+}
+
+.lot-code{
+  font-size:18px;
+}
+
+.lot-meta{
+  font-size:13px;
+  margin-top:4px;
+}
+
+.lot-status{
+  margin-top:7px;
+}
+
+.lot-btn{
+  margin-top:10px;
+}
+
+.lot-stats{
+  margin-top:12px;
+}
+
+.lot-stat{
+  padding:10px 12px;
+}
+
+.lot-stat strong{
+  font-size:20px;
+}
+
+.lot-progress{
+  margin-top:10px;
+}
+
+.production-plan-warning{
+  display:none;
+}
+
+
+
+
+/* ACCIDENTAL_BATCH_DELETE_UI_V2 */
+
+.lot-delete-form{
+  margin:7px 0 0;
+  text-align:right;
+}
+
+.lot-delete-link{
+  padding:2px 0;
+  border:0;
+  background:transparent;
+  color:#a23b3b;
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:.8px;
+  text-transform:uppercase;
+  cursor:pointer;
+}
+
+.lot-delete-link:hover{
+  text-decoration:underline;
+  color:#711f1f;
+}
+
+
 </style>
 
+
 <header class="page-header">
-  <div>
-    <h1>Lotes de producción</h1>
-    <p>Inspección automatizada de blusas por lote</p>
-  </div>
+ <div>
+  <h1>Planificaci&oacute;n de lotes</h1>
+
+ </div>
 </header>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
-  {% if messages %}
-    {% for category, message in messages %}
-      <div class="station-message {{ category }}">
-        {{ message }}
-      </div>
-    {% endfor %}
-  {% endif %}
-{% endwith %}
+
+
+
+
+
+<section class="production-plan">
+
+ <h2>Producci&oacute;n de hoy</h2>
+
+ {% if production_plan.has_goal %}
+
+ <div class="production-plan-grid">
+
+   <div class="production-plan-item">
+    <strong>
+     {{ production_plan.target_garments }}
+     {{ 'prenda' if production_plan.target_garments == 1 else 'prendas' }}
+    </strong>
+    <span>Objetivo</span>
+   </div>
+
+   <div class="production-plan-item">
+    <strong>
+     {{ production_plan.planned_garments }}
+     {{ 'prenda' if production_plan.planned_garments == 1 else 'prendas' }}
+    </strong>
+    <span>
+     Planificado en
+     {{ production_plan.planned_batches }}
+     {{ 'lote' if production_plan.planned_batches == 1 else 'lotes' }}
+    </span>
+   </div>
+
+   <div class="production-plan-item">
+    <strong>
+     {{ production_plan.remaining_garments }}
+     {{ 'prenda' if production_plan.remaining_garments == 1 else 'prendas' }}
+    </strong>
+    <span>
+     Pendiente
+     {% if production_plan.estimated_remaining_batches %}
+      &middot;
+      {{ production_plan.estimated_remaining_batches }}
+      {{ 'lote estimado' if production_plan.estimated_remaining_batches == 1 else 'lotes estimados' }}
+     {% endif %}
+    </span>
+   </div>
+
+  </div>
+
+ {% if production_plan.batches_excess or production_plan.garments_excess %}
+
+ {% endif %}
+
+ {% else %}
+
+ <div class="production-plan-note">
+  No existe un objetivo de producci&oacute;n configurado para hoy.
+  Puede crear lotes, pero no se podr&aacute; comparar la
+  planificaci&oacute;n con el objetivo diario.
+ </div>
+
+ {% endif %}
+
+</section>
+
 
 {% if active_batch %}
-<div class="active-note">
-  <strong>Lote activo:</strong>
-  {{ active_batch['code'] }}
-  ?
-  {{ active_batch['processed_quantity'] }}
-  /
-  {{ active_batch['planned_quantity'] }}
-  blusas procesadas.
-  <a href="{{ url_for('station') }}">Ir a la estación</a>
+
+<div class="lot-active">
+
+ <strong>Lote activo:</strong>
+ Lote #{{ active_batch.id }}
+
+ &middot;
+
+ {{ active_batch.processed_quantity }}
+ /
+ {{ active_batch.planned_quantity }}
+ procesadas
+
+ {% if active_batch.garment_model_code %}
+  &middot;
+  {{ active_batch.garment_model_code }}
+ {% endif %}
+
+ <a href="{{ url_for('station') }}">
+  Ir a la estaci&oacute;n
+ </a>
+
 </div>
+
 {% endif %}
 
-<section class="batch-grid">
 
-  <article class="batch-form">
-    <h2>Nuevo lote</h2>
+<section class="lot-layout">
 
-    <p>
-      Registra la cantidad de blusas que debe inspeccionar el sistema.
-    </p>
 
-    <form method="post">
-      <label for="code">Código del lote</label>
+{% if can_create %}
+
+<article class="lot-panel">
+
+ <h2>Nuevo lote</h2>
+
+
+
+
+ <form id="batchCreateForm" method="post">
+
+  <div class="lot-field">
+
+   <label for="garment_model_id">
+    Modelo de prenda
+   </label>
+
+   <select
+    id="garment_model_id"
+    name="garment_model_id"
+    required
+   >
+
+    <option value="">
+     Seleccione un modelo
+    </option>
+
+    {% for model in available_models %}
+
+    <option
+       value="{{ model.id }}"
+       {% if available_models|length == 1 %}selected{% endif %}
+      >
+     {{ model.code }}
+     &mdash;
+     {{ model.name }}
+    </option>
+
+    {% endfor %}
+
+   </select>
+
+   {% if available_models %}
+
+
+
+   {% else %}
+
+   <div class="lot-hint">
+    No existe ning&uacute;n modelo aprobado con IA activa.
+   </div>
+
+   {% endif %}
+
+  </div>
+
+
+  <div class="lot-field">
+
+    <label for="inspection_line_id">
+     L&iacute;nea de inspecci&oacute;n
+    </label>
+
+    <select
+     id="inspection_line_id"
+     name="inspection_line_id"
+     required
+    >
+     <option value="">
+      Seleccione una l&iacute;nea
+     </option>
+
+     {% for line in available_lines %}
+     <option
+       value="{{ line.id }}"
+       {% if available_lines|length == 1 %}selected{% endif %}
+      >
+      {{ line.name }}
+     </option>
+     {% endfor %}
+    </select>
+
+    {% if available_lines %}
+
+    {% else %}
+    <div class="lot-hint">
+     No existe ninguna l&iacute;nea disponible para inspecci&oacute;n.
+    </div>
+    {% endif %}
+
+   </div>
+
+
+   <div class="lot-field">
+
+    <label for="planned_quantity">
+     Cantidad del siguiente lote
+    </label>
+
+    <input
+     type="hidden"
+     id="quantity_override"
+     name="quantity_override"
+     value="0"
+    >
+
+    {% if production_plan.has_goal
+          and production_plan.remaining_garments > 0 %}
+
+    <div class="smart-quantity">
+
+     <strong>
+      {{ production_plan.suggested_quantity }}
+      {{ 'prenda' if production_plan.suggested_quantity == 1 else 'prendas' }}
+     </strong>
+
+     <div class="smart-quantity-note">
+      Calculado autom&aacute;ticamente.
+      Faltan
+      {{ production_plan.remaining_garments }}
+      prendas para completar la planificaci&oacute;n del d&iacute;a.
+     </div>
+
+     <input
+      id="planned_quantity"
+      name="planned_quantity"
+      type="number"
+      min="1"
+      max="5000"
+      required
+      readonly
+      value="{{ production_plan.suggested_quantity }}"
+      style="margin-top:12px"
+     >
+
+     <button
+      id="customQuantityBtn"
+      class="smart-edit-btn"
+      type="button"
+     >
+      Usar otra cantidad
+     </button>
+
+     <div
+      id="customQuantityWarning"
+      class="smart-extra"
+      hidden
+     >
+      Utilice una cantidad diferente solo cuando producci&oacute;n
+      necesite apartarse de la planificaci&oacute;n autom&aacute;tica.
+     </div>
+
+    </div>
+
+
+    {% elif production_plan.has_goal %}
+
+    <div class="smart-covered">
+
+     <strong>
+      Objetivo cubierto.
+     </strong>
+
+     No necesita crear otro lote para cumplir
+     la producci&oacute;n de hoy.
+
+     <button
+      id="extraProductionBtn"
+      class="smart-edit-btn"
+      type="button"
+     >
+      Producci&oacute;n adicional
+     </button>
+
+     <div
+      id="extraProductionFields"
+      hidden
+      style="margin-top:12px"
+     >
+
       <input
-        id="code"
-        name="code"
-        type="text"
-        placeholder="Opcional · se genera automáticamente"
-      />
+       id="planned_quantity"
+       name="planned_quantity"
+       type="number"
+       min="1"
+       max="5000"
+       value="100"
+       disabled
+      >
 
-      <label for="planned_quantity">
-        Cantidad de blusas
-      </label>
-
-      <input
-        id="planned_quantity"
-        name="planned_quantity"
-        type="number"
-        min="1"
-        max="5000"
-        required
-        placeholder="100"
-      />
-
-      <button type="submit">
-        Crear lote
-      </button>
-    </form>
-  </article>
-
-  <article class="batch-list">
-    <h2>Historial de lotes</h2>
-
-    {% for batch in batches %}
-
-      {% set processed = batch['processed_quantity']|int %}
-      {% set planned = batch['planned_quantity']|int %}
-      {% set progress = ((processed / planned) * 100) if planned else 0 %}
-
-      <div class="batch-card">
-
-        <div class="batch-card-top">
-          <div>
-            <div class="batch-code">
-              {{ batch['code'] }}
-            </div>
-
-            <div class="batch-status">
-              {% if batch['status'] == 'REVISION_PENDIENTE' %}
-              REVISIÓN PENDIENTE
-            {% elif batch['status'] == 'EN_INSPECCION' %}
-              EN INSPECCIÓN
-            {% elif batch['status'] == 'PREPARACION' %}
-              PREPARACIÓN
-            {% else %}
-              {{ batch['status']|replace('_', ' ') }}
-            {% endif %}
-            </div>
-          </div>
-
-          {% if batch['status'] == 'PREPARACION' %}
-            <form
-              method="post"
-              action="{{ url_for('start_batch', batch_id=batch['id']) }}"
-            >
-              <button class="batch-action" type="submit">
-                Iniciar inspección
-              </button>
-            </form>
-          {% elif batch['status'] == 'EN_INSPECCION' %}
-            <a
-              class="batch-action"
-              href="{{ url_for('station') }}"
-            >
-              Continuar
-            </a>
-
-          {% elif batch['status'] == 'REVISION_PENDIENTE' %}
-            <a
-              class="batch-action"
-              href="{{
-                url_for(
-                  'batch_review',
-                  batch_id=batch['id']
-                )
-              }}"
-            >
-              Revisar alertas
-            </a>
-          {% endif %}
-        </div>
-
-        <div class="batch-stats">
-          <div class="batch-stat">
-            <strong>
-              {{ processed }}/{{ planned }}
-            </strong>
-            <span>Procesadas</span>
-          </div>
-
-          <div class="batch-stat">
-            <strong>
-              {{ batch['auto_approved'] }}
-            </strong>
-            <span>Aprobadas automáticamente</span>
-          </div>
-
-          <div class="batch-stat">
-            <strong>
-              {{ batch['alerts'] }}
-            </strong>
-            <span>Alertas</span>
-          </div>
-        </div>
-
-        <div class="batch-progress">
-          <div style="width: {{ [progress, 100]|min }}%;"></div>
-        </div>
-
+      <div class="smart-extra">
+       Esta cantidad quedar&aacute; fuera del objetivo
+       configurado para hoy.
       </div>
+
+     </div>
+
+    </div>
+
 
     {% else %}
 
-      <p>
-        Todavía no existen lotes registrados.
-      </p>
+    <input
+     id="planned_quantity"
+     name="planned_quantity"
+     type="number"
+     min="1"
+     max="5000"
+     required
+     value="100"
+    >
 
-    {% endfor %}
-  </article>
+    <div class="lot-hint">
+     No existe un objetivo diario.
+     Se sugiere iniciar con 100 prendas.
+    </div>
+
+    {% endif %}
+
+   </div>
+
+
+   <button
+   class="lot-btn"
+   type="submit"
+   {% if not available_models or not available_lines %}disabled{% endif %}
+  >
+   Crear lote
+  </button>
+
+ </form>
+
+</article>
+
+{% endif %}
+
+
+<article class="lot-panel">
+
+ <h2>Lotes de hoy</h2>
+
+
+
+ {% for batch in batches %}
+
+  {% set processed = batch.processed_quantity|int %}
+  {% set planned = batch.planned_quantity|int %}
+  {% set progress = ((processed / planned) * 100) if planned else 0 %}
+
+
+  <div class="lot-card">
+
+   <div class="lot-top">
+
+    <div>
+
+     <div class="lot-code">
+      Lote #{{ batch.id }}
+     </div>
+
+     <div class="lot-meta">
+
+      {% if batch.garment_model_code %}
+
+       {{ batch.garment_model_code }}
+       &mdash;
+       {{ batch.garment_model_name }}
+
+      {% else %}
+
+       Lote hist&oacute;rico sin modelo asignado
+
+      {% endif %}
+
+     </div>
+
+     <div class="lot-meta">
+       <strong>L&iacute;nea:</strong>
+
+       {% if batch.inspection_line_name %}
+        {{ batch.inspection_line_name }}
+
+       {% else %}
+        Hist&oacute;rico sin l&iacute;nea asignada
+       {% endif %}
+      </div>
+
+
+     <div class="lot-status">
+
+      {% if batch.status == 'REVISION_PENDIENTE' %}
+       REVISI&Oacute;N PENDIENTE
+
+      {% elif batch.status == 'EN_INSPECCION' %}
+       EN INSPECCI&Oacute;N
+
+      {% elif batch.status == 'PREPARACION' %}
+       PREPARACI&Oacute;N
+
+      {% else %}
+       {{ batch.status|replace('_',' ') }}
+      {% endif %}
+
+     </div>
+
+    </div>
+
+
+    <div>
+
+     {% if batch.status == 'PREPARACION' %}
+
+      {% if batch.garment_model_id and batch.ai_model_id and batch.inspection_line_id %}
+
+       <form
+        method="post"
+        action="{{ url_for('start_batch', batch_id=batch.id) }}"
+       >
+        <button class="lot-btn" type="submit">
+         Iniciar inspecci&oacute;n
+        </button>
+       </form>
+
+        {# ACCIDENTAL_BATCH_DELETE_UI_V2 #}
+        {% if session.get('role') == 'ADMIN' %}
+
+        <form
+         class="lot-delete-form"
+         method="post"
+         action="{{ url_for('delete_accidental_batch', batch_id=batch.id) }}"
+         onsubmit="return confirm('?Eliminar este lote? Esta acci?n solo aplica a lotes sin iniciar.');"
+        >
+         <button
+          class="lot-delete-link"
+          type="submit"
+         >
+          Eliminar
+         </button>
+        </form>
+
+        {% endif %}
+
+
+      {% else %}
+
+       <span class="lot-disabled">
+        Lote sin trazabilidad completa no iniciable
+       </span>
+
+      {% endif %}
+
+     {% elif batch.status == 'EN_INSPECCION' %}
+
+      <a class="lot-btn" href="{{ url_for('station') }}">
+       Continuar
+      </a>
+
+     {% elif batch.status == 'REVISION_PENDIENTE' %}
+
+      <a
+       class="lot-btn"
+       href="{{ url_for('batch_review', batch_id=batch.id) }}"
+      >
+       Revisar alertas
+      </a>
+
+     {% endif %}
+
+    </div>
+
+   </div>
+
+
+   <div class="lot-stats">
+
+    <div class="lot-stat">
+     <strong>{{ processed }}/{{ planned }}</strong>
+     <span>Inspeccionadas</span>
+    </div>
+
+    <div class="lot-stat">
+     <strong>{{ batch.auto_approved }}</strong>
+     <span>Sin alerta</span>
+    </div>
+
+    <div class="lot-stat">
+     <strong>{{ batch.alerts }}</strong>
+     <span>Alertas</span>
+    </div>
+
+   </div>
+
+
+   <div class="lot-progress">
+    <div style="width:{{ [progress,100]|min }}%"></div>
+   </div>
+
+  </div>
+
+ {% else %}
+
+  <p>
+   Todav&iacute;a no existen lotes registrados.
+  </p>
+
+ {% endfor %}
+
+</article>
 
 </section>
+
+
+<script>
+document.addEventListener(
+  "DOMContentLoaded",
+  function () {
+
+    const quantityInput =
+      document.getElementById(
+        "planned_quantity"
+      );
+
+    const overrideInput =
+      document.getElementById(
+        "quantity_override"
+      );
+
+    const customButton =
+      document.getElementById(
+        "customQuantityBtn"
+      );
+
+    const customWarning =
+      document.getElementById(
+        "customQuantityWarning"
+      );
+
+    const extraButton =
+      document.getElementById(
+        "extraProductionBtn"
+      );
+
+    const extraFields =
+      document.getElementById(
+        "extraProductionFields"
+      );
+
+    const submitButton =
+      document.getElementById(
+        "batchSubmitBtn"
+      );
+
+    const suggested =
+      {{ production_plan.suggested_quantity }};
+
+
+    if (
+      customButton &&
+      quantityInput &&
+      overrideInput
+    ) {
+
+      customButton.addEventListener(
+        "click",
+        function () {
+
+          const custom =
+            overrideInput.value !== "1";
+
+          overrideInput.value =
+            custom ? "1" : "0";
+
+          quantityInput.readOnly =
+            !custom;
+
+          if (custom) {
+
+            customButton.textContent =
+              "Volver a cantidad autom\u00e1tica";
+
+            if (customWarning) {
+              customWarning.hidden = false;
+            }
+
+            quantityInput.focus();
+            quantityInput.select();
+
+          } else {
+
+            quantityInput.value =
+              suggested;
+
+            customButton.textContent =
+              "Usar otra cantidad";
+
+            if (customWarning) {
+              customWarning.hidden = true;
+            }
+          }
+
+        }
+      );
+    }
+
+
+    if (
+      extraButton &&
+      extraFields &&
+      quantityInput &&
+      overrideInput &&
+      submitButton
+    ) {
+
+      extraButton.addEventListener(
+        "click",
+        function () {
+
+          const enabled =
+            overrideInput.value !== "1";
+
+          overrideInput.value =
+            enabled ? "1" : "0";
+
+          extraFields.hidden =
+            !enabled;
+
+          quantityInput.disabled =
+            !enabled;
+
+          quantityInput.required =
+            enabled;
+
+          submitButton.disabled =
+            !enabled;
+
+          extraButton.textContent =
+            enabled
+              ? "Cancelar producci\u00f3n adicional"
+              : "Planificar producci\u00f3n adicional";
+
+          if (enabled) {
+            quantityInput.focus();
+            quantityInput.select();
+          }
+
+        }
+      );
+    }
+
+  }
+);
+</script>
 
 {% endblock %}
