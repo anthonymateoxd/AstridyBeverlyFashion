@@ -350,6 +350,327 @@
     }
 }
 
+
+
+/* RECORDS_MOBILE_FIX_V1 */
+
+@media (max-width: 700px) {
+
+  .reg-wrap,
+  .reg-card,
+  .lot-box {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .reg-head h1 {
+    font-size: 30px;
+    line-height: 1.05;
+    overflow-wrap: anywhere;
+  }
+
+  .reg-periods {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .reg-period-btn {
+    width: 100%;
+    min-width: 0;
+    flex: none;
+    padding: 11px 8px;
+    white-space: normal;
+  }
+
+  .reg-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .reg-field {
+    min-width: 0;
+  }
+
+  .reg-submit {
+    width: 100%;
+  }
+
+  .lot-top,
+  .lot-top > div {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .lot-code {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    font-size: 28px;
+    line-height: 1.05;
+  }
+
+  .lot-model {
+    overflow-wrap: anywhere;
+  }
+
+  .lot-numbers {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .lot-number {
+    min-width: 0;
+    padding: 14px 10px;
+    box-sizing: border-box;
+  }
+
+  .lot-number strong {
+    font-size: 24px;
+  }
+
+  .lot-number span {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: normal;
+    line-height: 1.2;
+    letter-spacing: .7px;
+  }
+
+  .lot-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    align-items: flex-start;
+  }
+
+  .lot-actions a,
+  .lot-actions button {
+    width: auto;
+    max-width: 100%;
+    white-space: normal;
+    text-align: center;
+  }
+
+  .reg-inspection-card {
+    grid-template-columns: 1fr;
+  }
+
+  .reg-inspection-image,
+  .reg-inspection-no-image {
+    width: 100%;
+    height: auto;
+    min-height: 220px;
+  }
+}
+
+
+
+/* RECORDS_MOBILE_FIX_V2 */
+
+@media (max-width: 700px) {
+
+  /* CONTENEDORES */
+  .reg-wrap,
+  .reg-card,
+  .lot-box,
+  .reg-inspection-grid,
+  .reg-inspection-card {
+    min-width: 0 !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  .reg-card {
+    overflow: hidden;
+  }
+
+  /* METRICAS DEL LOTE: 2 X 3 */
+  .lot-numbers {
+    display: grid !important;
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+    gap: 10px !important;
+    width: 100% !important;
+  }
+
+  .lot-number {
+    width: auto !important;
+    min-width: 0 !important;
+    padding: 14px 10px !important;
+    box-sizing: border-box !important;
+    overflow: hidden;
+  }
+
+  .lot-number span {
+    font-size: 9px !important;
+    line-height: 1.15 !important;
+    letter-spacing: .6px !important;
+    overflow-wrap: anywhere;
+  }
+
+  /* ACCIONES DEL LOTE */
+  .lot-actions {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+    width: 100% !important;
+  }
+
+  .lot-actions a,
+  .lot-actions button {
+    flex: 0 1 auto;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    white-space: normal !important;
+  }
+
+  /* REVISION HUMANA */
+  .reviewers {
+    display: block !important;
+    width: 100% !important;
+    border-collapse: initial !important;
+  }
+
+  .reviewers thead {
+    display: none !important;
+  }
+
+  .reviewers tbody {
+    display: block !important;
+    width: 100% !important;
+  }
+
+  .reviewers tr {
+    display: block !important;
+    width: 100% !important;
+    padding: 8px 0 !important;
+    border-bottom: 1px solid #eee6dc;
+  }
+
+  .reviewers td {
+    display: grid !important;
+    grid-template-columns:
+      minmax(118px, 42%) minmax(0, 1fr) !important;
+    gap: 10px !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+    padding: 7px 0 !important;
+    border: 0 !important;
+    align-items: start;
+  }
+
+  .reviewers td::before {
+    color: #796e63;
+    font-size: 9px;
+    line-height: 1.2;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+
+  .reviewers td:nth-child(1)::before {
+    content: "Responsable";
+  }
+
+  .reviewers td:nth-child(2)::before {
+    content: "Decisiones";
+  }
+
+  .reviewers td:nth-child(3)::before {
+    content: "Defectos confirmados";
+  }
+
+  .reviewers td:nth-child(4)::before {
+    content: "Alertas descartadas";
+  }
+
+  /* CABECERA DE PRENDAS / ALERTAS */
+  .detail-head {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 10px !important;
+    width: 100% !important;
+  }
+
+  .detail-head > div {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .detail-head h2 {
+    margin-bottom: 4px;
+  }
+
+  .detail-head > a.reg-action {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin-left: 0 !important;
+    box-sizing: border-box !important;
+    text-align: center !important;
+    white-space: normal !important;
+  }
+
+  /* TARJETA DE PRENDA */
+  .reg-inspection-grid {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    width: 100% !important;
+  }
+
+  .reg-inspection-card {
+    display: block !important;
+    width: 100% !important;
+    grid-template-columns: none !important;
+    padding: 14px !important;
+    overflow: hidden;
+  }
+
+  .reg-inspection-card > div {
+    width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  .reg-inspection-card > div:first-child {
+    margin-bottom: 16px;
+  }
+
+  .reg-inspection-card a {
+    display: block;
+    width: 100%;
+  }
+
+  .reg-inspection-image,
+  .reg-inspection-no-image {
+    display: block;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: 280px;
+    margin: 0 auto;
+    object-fit: contain;
+  }
+
+  .reg-inspection-title {
+    font-size: 22px !important;
+    line-height: 1.1;
+    overflow-wrap: anywhere;
+  }
+
+  .reg-inspection-line,
+  .reg-inspection-line small {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+}
+
 </style>
 
 <div class="reg-wrap">
@@ -395,14 +716,6 @@
    data-period="month"
   >
    Este mes
-  </button>
-
-  <button
-   type="button"
-   class="reg-period-btn"
-   data-period="last7"
-  >
-   &Uacute;ltimos 7 d&iacute;as
   </button>
 
   <button

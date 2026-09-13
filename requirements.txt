@@ -9,3 +9,4 @@ python-dotenv==1.0.1
 anomalib==2.5.0
 openpyxl==3.1.5
 reportlab==4.4.3
+kornia-rs==0.1.10

@@ -70,6 +70,230 @@
  .ana-grid,.ana-production{grid-template-columns:1fr}
  .ana-filters{grid-template-columns:repeat(2,1fr)}
 }
+
+
+/* REPORTS_MOBILE_CARDS_V1 */
+
+@media (max-width: 700px) {
+
+  .ana-wrap {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .ana-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+
+  .ana-head h1 {
+    font-size: 30px;
+    line-height: 1.05;
+  }
+
+  .ana-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+
+  .ana-btn {
+    box-sizing: border-box;
+    text-align: center;
+  }
+
+  .ana-card {
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 16px;
+    overflow: hidden;
+  }
+
+  .ana-filters {
+    grid-template-columns: 1fr !important;
+  }
+
+  .ana-quick {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .ana-main-kpis {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .ana-review {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .ana-review-title {
+    grid-column: 1 / -1;
+  }
+
+  .ana-grid,
+  .ana-production {
+    grid-template-columns: 1fr !important;
+  }
+
+  .ana-title {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .ana-values {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* TABLAS GRANDES -> TARJETAS */
+
+  .ana-model-table,
+  .ana-lot-table {
+    display: block !important;
+    width: 100% !important;
+    border-collapse: initial !important;
+  }
+
+  .ana-model-table thead,
+  .ana-lot-table thead {
+    display: none !important;
+  }
+
+  .ana-model-table tbody,
+  .ana-lot-table tbody {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 12px;
+    width: 100%;
+  }
+
+  .ana-model-table tr,
+  .ana-lot-table tr {
+    display: block !important;
+    width: 100%;
+    box-sizing: border-box;
+
+    padding: 14px;
+
+    border: 1px solid #e5ddd2;
+    border-radius: 8px;
+
+    background: #fff;
+  }
+
+  .ana-model-table td,
+  .ana-lot-table td {
+    display: grid !important;
+    grid-template-columns:
+      minmax(105px, 38%)
+      minmax(0, 1fr) !important;
+
+    gap: 10px;
+
+    width: 100%;
+    box-sizing: border-box;
+
+    padding: 7px 0 !important;
+
+    border: 0 !important;
+
+    overflow-wrap: anywhere;
+  }
+
+  .ana-model-table td::before,
+  .ana-lot-table td::before {
+    color: #897b6f;
+
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1.2;
+
+    letter-spacing: .8px;
+    text-transform: uppercase;
+  }
+
+  /* RENDIMIENTO POR MODELO */
+
+  .ana-model-table td:nth-child(1)::before {
+    content: "Modelo";
+  }
+
+  .ana-model-table td:nth-child(2)::before {
+    content: "Inspeccionadas";
+  }
+
+  .ana-model-table td:nth-child(3)::before {
+    content: "Rechazadas";
+  }
+
+  .ana-model-table td:nth-child(4)::before {
+    content: "Tasa rechazo";
+  }
+
+  .ana-model-table td:nth-child(5)::before {
+    content: "Comparacion";
+  }
+
+  .ana-model-table td:nth-child(6) {
+    display: block !important;
+    padding-top: 11px !important;
+  }
+
+  /* CALIDAD POR LOTE */
+
+  .ana-lot-table td:nth-child(1)::before {
+    content: "Lote";
+  }
+
+  .ana-lot-table td:nth-child(2)::before {
+    content: "Modelo";
+  }
+
+  .ana-lot-table td:nth-child(3)::before {
+    content: "Avance";
+  }
+
+  .ana-lot-table td:nth-child(4)::before {
+    content: "Rechazadas";
+  }
+
+  .ana-lot-table td:nth-child(5)::before {
+    content: "% rechazo";
+  }
+
+  .ana-lot-table td:nth-child(6)::before {
+    content: "Pendientes";
+  }
+
+  .ana-lot-table td:nth-child(7) {
+    display: block !important;
+    padding-top: 11px !important;
+  }
+
+  .ana-model-table td:last-child .ana-link,
+  .ana-lot-table td:last-child .ana-link {
+    display: block;
+
+    width: 100%;
+    box-sizing: border-box;
+
+    padding: 10px;
+
+    border: 1px solid #111;
+
+    text-align: center;
+    text-decoration: none;
+  }
+
+  .ana-bar {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
 </style>
 
 
@@ -407,7 +631,7 @@
 
 {% if model_summary %}
 
-<table class="ana-table">
+<table class="ana-table ana-model-table">
 
 <thead>
 <tr>
@@ -493,7 +717,7 @@
 
 {% if lot_summary %}
 
-<table class="ana-table">
+<table class="ana-table ana-lot-table">
 
 <thead>
 <tr>

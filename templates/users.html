@@ -145,6 +145,181 @@
         font-size: .9rem;
     }
 }
+
+
+/* USERS_MOBILE_CARDS_V1 */
+
+@media (max-width: 700px) {
+
+  .users-page {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .users-header h1 {
+    font-size: 30px;
+    line-height: 1.05;
+    overflow-wrap: anywhere;
+  }
+
+  .users-card {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+
+    box-sizing: border-box;
+
+    padding: 16px;
+    overflow: hidden;
+  }
+
+  .users-table {
+    display: block !important;
+    width: 100% !important;
+    border-collapse: initial !important;
+  }
+
+  .users-table thead {
+    display: none !important;
+  }
+
+  .users-table tbody {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 12px;
+
+    width: 100%;
+  }
+
+  .users-table tr {
+    display: block !important;
+
+    width: 100%;
+    box-sizing: border-box;
+
+    padding: 14px;
+
+    border: 1px solid #ececec;
+    border-radius: 8px;
+
+    background: #fff;
+  }
+
+  .users-table td {
+    display: grid !important;
+
+    grid-template-columns:
+      minmax(82px, 32%)
+      minmax(0, 1fr) !important;
+
+    gap: 10px;
+
+    width: 100%;
+    box-sizing: border-box;
+
+    padding: 7px 0 !important;
+
+    border: 0 !important;
+
+    overflow-wrap: anywhere;
+  }
+
+  .users-table td::before {
+    color: #82766b;
+
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1.2;
+
+    letter-spacing: .8px;
+    text-transform: uppercase;
+  }
+
+  .users-table td:nth-child(1)::before {
+    content: "Persona";
+  }
+
+  .users-table td:nth-child(2)::before {
+    content: "Usuario";
+  }
+
+  .users-table td:nth-child(3)::before {
+    content: "Rol";
+  }
+
+  .users-table td:nth-child(4)::before {
+    content: "Estado";
+  }
+
+  .users-table td:nth-child(5)::before {
+    content: "Accion";
+  }
+
+  .role-form {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+
+    width: 100%;
+    min-width: 0;
+  }
+
+  .role-form select {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .role-form .user-button {
+    width: 100%;
+  }
+
+  .users-table td > form {
+    max-width: 100%;
+  }
+
+  .users-table td:nth-child(5) form,
+  .users-table td:nth-child(5) .user-button {
+    width: 100%;
+  }
+}
+
+
+
+/* USERS_TABLET_FIX_V1 */
+
+@media (max-width: 1200px) and (min-width: 701px) {
+
+  .users-page {
+    max-width: 900px;
+  }
+
+  .users-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .users-card {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .users-table {
+    width: 100%;
+    table-layout: auto;
+  }
+
+  .role-form {
+    flex-wrap: wrap;
+  }
+
+  .role-form select {
+    min-width: 140px;
+    max-width: 100%;
+  }
+}
+
 </style>
 
 <div class="users-page">

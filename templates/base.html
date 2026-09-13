@@ -43,7 +43,19 @@
 
 <body class="app-body">
 
-    <aside class="sidebar">
+    <!-- MOBILE_NAV_V1 -->
+    <button
+      class="mobile-menu-toggle"
+      id="mobileMenuToggle"
+      type="button"
+      aria-controls="appSidebar"
+      aria-expanded="false"
+      aria-label="Abrir men&uacute;"
+    >
+      &#9776;
+    </button>
+
+    <aside class="sidebar" id="appSidebar">
 
         <div class="brand">
             <img
@@ -170,6 +182,12 @@
     </aside>
 
 
+    <div
+      class="sidebar-backdrop"
+      id="sidebarBackdrop"
+      aria-hidden="true"
+    ></div>
+
     <main class="main">
 
 
@@ -180,5 +198,54 @@
 
     </main>
 
-</body>
+
+    <script>
+      (() => {
+        const body = document.body;
+        const toggle = document.getElementById("mobileMenuToggle");
+        const sidebar = document.getElementById("appSidebar");
+        const backdrop = document.getElementById("sidebarBackdrop");
+
+        if (!toggle || !sidebar || !backdrop) {
+          return;
+        }
+
+        const setOpen = (open) => {
+          body.classList.toggle("mobile-menu-open", open);
+          toggle.setAttribute("aria-expanded", open ? "true" : "false");
+          toggle.setAttribute(
+            "aria-label",
+            open ? "Cerrar menu" : "Abrir menu"
+          );
+        };
+
+        toggle.addEventListener("click", () => {
+          setOpen(!body.classList.contains("mobile-menu-open"));
+        });
+
+        backdrop.addEventListener("click", () => {
+          setOpen(false);
+        });
+
+        sidebar.querySelectorAll("a").forEach((link) => {
+          link.addEventListener("click", () => {
+            setOpen(false);
+          });
+        });
+
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") {
+            setOpen(false);
+          }
+        });
+
+        window.addEventListener("resize", () => {
+          if (window.innerWidth > 768) {
+            setOpen(false);
+          }
+        });
+      })();
+    </script>
+
+  </body>
 </html>
