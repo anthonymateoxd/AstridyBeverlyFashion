@@ -25,6 +25,24 @@ os.environ.setdefault(
 
 PATCHCORE_CKPT = os.getenv("PATCHCORE_CKPT", "").strip()
 
+PATCHCORE_IMAGE_SIZE = int(
+    os.getenv("PATCHCORE_IMAGE_SIZE", "384")
+)
+
+PATCHCORE_SCORE_THRESHOLD = float(
+    os.getenv("PATCHCORE_SCORE_THRESHOLD", "55.20")
+)
+
+if PATCHCORE_IMAGE_SIZE <= 0:
+    raise ValueError(
+        "PATCHCORE_IMAGE_SIZE debe ser mayor que cero."
+    )
+
+if not 0.0 <= PATCHCORE_SCORE_THRESHOLD <= 100.0:
+    raise ValueError(
+        "PATCHCORE_SCORE_THRESHOLD debe estar entre 0 y 100."
+    )
+
 PATCHCORE_PIXEL_THRESHOLD = float(
     os.getenv("PATCHCORE_PIXEL_THRESHOLD", "0.72")
 )
@@ -37,7 +55,10 @@ patchcore_inspector = None
 
 if PATCHCORE_CKPT:
     try:
-        patchcore_inspector = PatchCoreInspector(PATCHCORE_CKPT)
+        patchcore_inspector = PatchCoreInspector(
+            PATCHCORE_CKPT,
+            image_size=PATCHCORE_IMAGE_SIZE,
+        )
         print("[PATCHCORE] Modelo preparado para inspección.")
     except Exception as error:
         print(f"[PATCHCORE] No se pudo preparar el modelo: {error}")
@@ -4115,7 +4136,7 @@ def detect_defect(image_path):
                 except Exception:
                     pass
 
-            is_anomaly = bool(
+            model_label = bool(
                 prediction["is_anomaly"]
             )
 
@@ -4123,7 +4144,8 @@ def detect_defect(image_path):
                 prediction["score"]
             )
 
-            # Algunos modelos devuelven 0-1 y otros una escala mayor.
+            # Se normaliza el score a la escala porcentual utilizada
+            # durante la calibración de V2.1.
             confidence = (
                 raw_score * 100
                 if raw_score <= 1
@@ -4133,6 +4155,12 @@ def detect_defect(image_path):
             confidence = round(
                 max(0.0, min(confidence, 100.0)),
                 2,
+            )
+
+            # La decisión de producción utiliza el threshold calibrado.
+            # El pred_label interno se conserva únicamente para diagnóstico.
+            is_anomaly = (
+                confidence >= PATCHCORE_SCORE_THRESHOLD
             )
 
             annotated_roi, zone, anomaly_count = localize_patchcore_anomaly(
@@ -4183,7 +4211,9 @@ def detect_defect(image_path):
 
             print(
                 f"[PATCHCORE] Estado={status}, "
-                f"pred_label={int(is_anomaly)}, "
+                f"decision={int(is_anomaly)}, "
+                f"model_label={int(model_label)}, "
+                f"threshold={PATCHCORE_SCORE_THRESHOLD:.2f}, "
                 f"raw_score={raw_score:.6f}, "
                 f"confianza_mostrada={confidence}%, "
                 f"zona={zone}"

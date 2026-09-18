@@ -28,7 +28,11 @@ def _to_scalar(value) -> float:
 
 
 class PatchCoreInspector:
-    def __init__(self, checkpoint_path: str):
+    def __init__(
+        self,
+        checkpoint_path: str,
+        image_size: int = 256,
+    ):
         checkpoint = Path(checkpoint_path).resolve()
 
         if not checkpoint.exists():
@@ -37,6 +41,15 @@ class PatchCoreInspector:
             )
 
         self.checkpoint_path = str(checkpoint)
+
+        image_size = int(image_size)
+
+        if image_size <= 0:
+            raise ValueError(
+                "La resolución PatchCore debe ser mayor que cero."
+            )
+
+        self.image_size = (image_size, image_size)
 
         # Debe conservar la misma configuración del entrenamiento.
         self.model = Patchcore(
@@ -54,6 +67,7 @@ class PatchCoreInspector:
         )
 
         print(f"[PATCHCORE] Checkpoint configurado: {self.checkpoint_path}")
+        print(f"[PATCHCORE] Resolución configurada: {self.image_size}")
 
     def inspect(self, image_path: str) -> dict:
         image = Path(image_path).resolve()
@@ -65,7 +79,7 @@ class PatchCoreInspector:
 
         dataset = PredictDataset(
             path=image,
-            image_size=(256, 256),
+            image_size=self.image_size,
         )
 
         predictions = self.engine.predict(

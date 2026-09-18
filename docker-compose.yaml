@@ -51,7 +51,9 @@ services:
       ROI_Y1: '${ROI_Y1}'
       ROI_X2: '${ROI_X2}'
       ROI_Y2: '${ROI_Y2}'
-      PATCHCORE_CKPT: '/app/patchcore_results/Patchcore/BLUSA_002_S_ROSA_FRONT/v1/weights/lightning/model.ckpt'
+      PATCHCORE_CKPT: '/app/patchcore_results/Patchcore/BLUSA_002_S_ROSA_FRONT_V21_BASELINE_384/v0/weights/lightning/model.ckpt'
+      PATCHCORE_IMAGE_SIZE: '${PATCHCORE_IMAGE_SIZE:-384}'
+      PATCHCORE_SCORE_THRESHOLD: '${PATCHCORE_SCORE_THRESHOLD:-55.20}'
       PATCHCORE_PIXEL_THRESHOLD: '${PATCHCORE_PIXEL_THRESHOLD}'
       PATCHCORE_MAX_BOX_RATIO: '${PATCHCORE_MAX_BOX_RATIO}'
 
