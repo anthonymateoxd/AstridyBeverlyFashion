@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 
 {% block content %}
 
@@ -325,7 +325,7 @@
 <div class="users-page">
 
     <div class="users-header">
-        <h1>Administración de usuarios</h1>
+        <h1>AdministraciÃ³n de usuarios</h1>
         <p>
             Gestione las cuentas y responsabilidades del personal
             que utiliza el sistema de control de calidad.
@@ -365,7 +365,7 @@
                 </div>
 
                 <div class="user-field">
-                    <label for="password">Contraseña</label>
+                    <label for="password">ContraseÃ±a</label>
                     <input
                         id="password"
                         name="password"
@@ -411,7 +411,7 @@
                         <th>Usuario</th>
                         <th>Rol</th>
                         <th>Estado</th>
-                        <th>Acción</th>
+                        <th>AcciÃ³n</th>
                     </tr>
                 </thead>
 
@@ -427,7 +427,7 @@
 
                             {% if user.id == session.get("user_id") %}
                             <div>
-                                <small>Sesión actual</small>
+                                <small>SesiÃ³n actual</small>
                             </div>
                             {% endif %}
                         </td>
@@ -554,3 +554,4 @@
 </div>
 
 {% endblock %}
+

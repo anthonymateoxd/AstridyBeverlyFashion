@@ -56,3 +56,12 @@ textile_quality_db_antes_*.sql
 # Dataset de entrenamiento
 
 # Resultados/modelos pesados de PatchCore
+dashboard_source/
+dashboard_source.zip
+tesis_audit/
+tesis_audit.zip
+templates/*_backup.html
+static/css/*_backup.css
+desktop.ini
+pdf_tables_actual.txt
+records_actual.txt

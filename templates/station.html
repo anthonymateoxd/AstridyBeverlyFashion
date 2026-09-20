@@ -1,4 +1,4 @@
-{% extends "base.html" %} {% block content %}
+﻿{% extends "base.html" %} {% block content %}
 <style>
   .station-page {
     min-height: calc(100vh - 80px);
@@ -250,22 +250,22 @@
 <div class="station-page">
   <header class="page-header station-header">
     <div>
-      <h1>Estación de inspección</h1>
-      <p>Modo automático y manual de control de calidad visual</p>
+      <h1>EstaciÃ³n de inspecciÃ³n</h1>
+      <p>Modo automÃ¡tico y manual de control de calidad visual</p>
     </div>
 
     <span
       id="stationModeBadge"
       class="live-badge"
-      >● Modo manual</span
+      >â— Modo manual</span
     >
   </header>
 
   <section class="station-layout">
     <article class="station-camera-card">
       <div class="station-camera-topbar">
-        <span>Cámara en vivo</span>
-        <span>Área de inspección activa</span>
+        <span>CÃ¡mara en vivo</span>
+        <span>Ãrea de inspecciÃ³n activa</span>
         <div class="camera-status-tools">
           <span id="cameraText">Sistema listo</span>
 
@@ -283,20 +283,20 @@
       <div class="station-camera-frame">
         <img
           src="{{ url_for('video_feed') }}"
-          alt="Cámara de estación de inspección"
+          alt="CÃ¡mara de estaciÃ³n de inspecciÃ³n"
         / id="cameraFeed">
 
         <div class="station-scan-line"></div>
 
         <div class="station-overlay-bottom">
-          <span style="display: none;">Visión artificial · Control de calidad textil</span>
-          <span id="autoStateText" style="display: none;">Automático detenido</span>
+          <span style="display: none;">VisiÃ³n artificial Â· Control de calidad textil</span>
+          <span id="autoStateText" style="display: none;">AutomÃ¡tico detenido</span>
         </div>
       </div>
     </article>
 
     <aside class="station-control-card">
-      <h2>Control de inspección</h2>
+      <h2>Control de inspecciÃ³n</h2>
 
       {% if active_batch %}
       <div class="station-info">
@@ -328,7 +328,7 @@
         </p>
 
         <p>
-          <strong>Aprobadas automáticamente:</strong>
+          <strong>Aprobadas automÃ¡ticamente:</strong>
           <span id="batchApproved">
             {{ active_batch['auto_approved'] }}
           </span>
@@ -357,11 +357,11 @@
         class="station-camera-alert"
       >
         <strong id="cameraAlertTitle">
-          Comprobando cámara
+          Comprobando cÃ¡mara
         </strong>
 
         <span id="cameraAlertMessage">
-          Verificando conexión con la cámara de inspección.
+          Verificando conexiÃ³n con la cÃ¡mara de inspecciÃ³n.
         </span>
       </div>
 
@@ -381,7 +381,7 @@
           type="button"
           disabled
         >
-          Iniciar automático
+          Iniciar automÃ¡tico
         </button>
 
         <button
@@ -389,7 +389,7 @@
           type="button"
           class="secondary"
         >
-          Detener automático
+          Detener automÃ¡tico
         </button>
 
         {% if active_batch %}
@@ -418,12 +418,12 @@
 
       <div class="station-info">
         <p>
-          <strong>Modo manual:</strong> registra una inspección cuando el
+          <strong>Modo manual:</strong> registra una inspecciÃ³n cuando el
           operario lo indique.
         </p>
         <p>
-          <strong>Modo automático:</strong> registra inspecciones cuando detecta
-          movimiento o cambio en la zona de cámara.
+          <strong>Modo automÃ¡tico:</strong> registra inspecciones cuando detecta
+          movimiento o cambio en la zona de cÃ¡mara.
         </p>
       </div>
 
@@ -431,18 +431,18 @@
         id="stationMessage"
         class="station-message"
       >
-        Esperando acción del sistema.
+        Esperando acciÃ³n del sistema.
       </div>
 
       <div class="station-last-result">
-        <h3>Último resultado</h3>
+        <h3>Ãšltimo resultado</h3>
 
-        <p><strong>ID:</strong> <span id="lastCode">—</span></p>
-        <p><strong>Estado:</strong> <span id="lastStatus">—</span></p>
-        <p><strong>Defecto:</strong> <span id="lastDefect">—</span></p>
-        <p><strong>Confianza:</strong> <span id="lastConfidence">—</span></p>
-        <p><strong>Zona:</strong> <span id="lastZone">—</span></p>
-        <p><strong>Fecha:</strong> <span id="lastDate">—</span></p>
+        <p><strong>ID:</strong> <span id="lastCode">â€”</span></p>
+        <p><strong>Estado:</strong> <span id="lastStatus">â€”</span></p>
+        <p><strong>Defecto:</strong> <span id="lastDefect">â€”</span></p>
+        <p><strong>Confianza:</strong> <span id="lastConfidence">â€”</span></p>
+        <p><strong>Zona:</strong> <span id="lastZone">â€”</span></p>
+        <p><strong>Fecha:</strong> <span id="lastDate">â€”</span></p>
       </div>
     </aside>
   </section>
@@ -578,7 +578,7 @@
     );
 
     if (connected) {
-      cameraText.textContent = '● CÁMARA CONECTADA';
+      cameraText.textContent = 'â— CÃMARA CONECTADA';
       cameraText.classList.add('connected');
 
       cameraAlert.classList.add('hidden');
@@ -595,31 +595,31 @@
     cameraAlert.classList.remove('hidden');
 
     if (state === 'CHECKING') {
-      cameraText.textContent = '● COMPROBANDO';
+      cameraText.textContent = 'â— COMPROBANDO';
       cameraText.classList.add('checking');
 
       cameraAlertTitle.textContent =
-        'Comprobando cámara';
+        'Comprobando cÃ¡mara';
 
       cameraAlertMessage.textContent =
         camera?.message ||
-        'Verificando conexión con la cámara.';
+        'Verificando conexiÃ³n con la cÃ¡mara.';
 
       return;
     }
 
-    cameraText.textContent = '● SIN SEÑAL';
+    cameraText.textContent = 'â— SIN SEÃ‘AL';
     cameraText.classList.add('disconnected');
 
     cameraAlertTitle.textContent =
-      'Cámara no disponible';
+      'CÃ¡mara no disponible';
 
     cameraAlertMessage.textContent =
       camera?.message ||
-      'No se recibe video de la cámara de inspección.';
+      'No se recibe video de la cÃ¡mara de inspecciÃ³n.';
 
     autoStateText.textContent =
-      'Cámara desconectada';
+      'CÃ¡mara desconectada';
   }
 
   function setMessage(text, type = 'normal') {
@@ -630,20 +630,20 @@
   function setLastResult(result) {
     if (!result) return;
 
-    document.getElementById('lastCode').textContent = result.code || '—';
-    document.getElementById('lastStatus').textContent = result.status || '—';
+    document.getElementById('lastCode').textContent = result.code || 'â€”';
+    document.getElementById('lastStatus').textContent = result.status || 'â€”';
     document.getElementById('lastDefect').textContent =
-      result.defect_type || '—';
+      result.defect_type || 'â€”';
 
     const confidence =
       result.confidence !== null && result.confidence !== undefined
         ? result.confidence + '%'
-        : '—';
+        : 'â€”';
 
     document.getElementById('lastConfidence').textContent = confidence;
-    document.getElementById('lastZone').textContent = result.zone || '—';
+    document.getElementById('lastZone').textContent = result.zone || 'â€”';
     document.getElementById('lastDate').textContent =
-      result.created_at || '—';
+      result.created_at || 'â€”';
   }
 
   function updateBatchFromResult(result) {
@@ -688,7 +688,7 @@
 
   async function manualInspect() {
     manualBtn.disabled = true;
-    setMessage('Ejecutando inspección manual...', 'normal');
+    setMessage('Ejecutando inspecciÃ³n manual...', 'normal');
 
     try {
       const response = await fetch("{{ url_for('station_manual_inspect') }}", {
@@ -703,19 +703,19 @@
         updateBatchFromResult(data.result);
       } else {
         setMessage(
-          data.message || 'No se pudo ejecutar la inspección.',
+          data.message || 'No se pudo ejecutar la inspecciÃ³n.',
           'error',
         );
       }
     } catch (error) {
-      setMessage('Error de conexión con el servidor.', 'error');
+      setMessage('Error de conexiÃ³n con el servidor.', 'error');
     }
 
     manualBtn.disabled = false;
   }
 
   async function startAuto() {
-    setMessage('Iniciando modo automático...', 'normal');
+    setMessage('Iniciando modo automÃ¡tico...', 'normal');
 
     try {
       const response = await fetch("{{ url_for('station_auto_start') }}", {
@@ -725,23 +725,23 @@
       const data = await response.json();
 
       if (data.ok) {
-        stationModeBadge.textContent = '● Modo automático';
+        stationModeBadge.textContent = 'â— Modo automÃ¡tico';
         stationModeBadge.classList.remove('offline');
-        autoStateText.textContent = 'Automático activo';
+        autoStateText.textContent = 'AutomÃ¡tico activo';
         setMessage(data.message, 'success');
       } else {
         setMessage(
-          data.message || 'No se pudo iniciar el modo automático.',
+          data.message || 'No se pudo iniciar el modo automÃ¡tico.',
           'error',
         );
       }
     } catch (error) {
-      setMessage('Error de conexión con el servidor.', 'error');
+      setMessage('Error de conexiÃ³n con el servidor.', 'error');
     }
   }
 
   async function stopAuto() {
-    setMessage('Deteniendo modo automático...', 'normal');
+    setMessage('Deteniendo modo automÃ¡tico...', 'normal');
 
     try {
       const response = await fetch("{{ url_for('station_auto_stop') }}", {
@@ -751,18 +751,18 @@
       const data = await response.json();
 
       if (data.ok) {
-        stationModeBadge.textContent = '● Modo manual';
+        stationModeBadge.textContent = 'â— Modo manual';
         stationModeBadge.classList.remove('offline');
-        autoStateText.textContent = 'Automático detenido';
+        autoStateText.textContent = 'AutomÃ¡tico detenido';
         setMessage(data.message, 'success');
       } else {
         setMessage(
-          data.message || 'No se pudo detener el modo automático.',
+          data.message || 'No se pudo detener el modo automÃ¡tico.',
           'error',
         );
       }
     } catch (error) {
-      setMessage('Error de conexión con el servidor.', 'error');
+      setMessage('Error de conexiÃ³n con el servidor.', 'error');
     }
   }
 
@@ -777,13 +777,13 @@
       updateCameraState(data.camera);
 
       if (data.automatic) {
-        stationModeBadge.textContent = '● Modo automático';
+        stationModeBadge.textContent = 'â— Modo automÃ¡tico';
         stationModeBadge.classList.remove('offline');
-        autoStateText.textContent = 'Automático activo';
+        autoStateText.textContent = 'AutomÃ¡tico activo';
       } else {
-        stationModeBadge.textContent = '● Modo manual';
+        stationModeBadge.textContent = 'â— Modo manual';
         stationModeBadge.classList.remove('offline');
-        autoStateText.textContent = 'Automático detenido';
+        autoStateText.textContent = 'AutomÃ¡tico detenido';
       }
 
       if (data.last_result) {
@@ -904,10 +904,10 @@
         setMessage(data.last_error, 'error');
       }
     } catch (error) {
-      stationModeBadge.textContent = '● Sin conexión';
+      stationModeBadge.textContent = 'â— Sin conexiÃ³n';
       stationModeBadge.classList.add('offline');
       autoStateText.textContent = 'Servidor no disponible';
-      setMessage('No se pudo consultar el estado de la estación.', 'error');
+      setMessage('No se pudo consultar el estado de la estaciÃ³n.', 'error');
     }
   }
 
@@ -957,3 +957,4 @@
   setInterval(refreshAutoStatus, 3000);
 </script>
 {% endblock %}
+

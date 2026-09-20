@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="es">
 <head>
     <meta charset="utf-8">
@@ -59,7 +59,7 @@
 
         <div class="brand">
             <img
-                src="{{ url_for('static', filename='img/logo.png') }}"
+                src="{{ url_for('static', filename='img/logo.jpg') }}"
                 alt="Astrid y Beverly"
             >
         </div>
@@ -124,14 +124,14 @@
                 class="{% if request.endpoint == 'station' %}active{% endif %}"
                 href="{{ url_for('station') }}"
             >
-                Estación automática
+                EstaciÃ³n automÃ¡tica
             </a>
 
             <a
                 class="{% if request.endpoint == 'inspection' %}active{% endif %}"
                 href="{{ url_for('inspection') }}"
             >
-                Inspección en vivo
+                InspecciÃ³n en vivo
             </a>
 
             {% endif %}
@@ -249,3 +249,4 @@
 
   </body>
 </html>
+

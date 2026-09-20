@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
 
 <style>
@@ -943,25 +943,19 @@
 
  <div class="lot-actions">
 
-  <a class="primary"
+  <a class="{% if show_mode == 'all' %}primary{% endif %}"
+     href="{{ url_for('records', batch_id=lot.batch_id, show='all') }}">
+   Todas las prendas ({{ lot.inspected or 0 }})
+  </a>
+
+  <a class="{% if show_mode == 'accepted' %}primary{% endif %}"
+     href="{{ url_for('records', batch_id=lot.batch_id, show='accepted') }}">
+   Aceptadas ({{ lot.passed or 0 }})
+  </a>
+
+  <a class="{% if show_mode == 'rejected' %}primary{% endif %}"
      href="{{ url_for('records', batch_id=lot.batch_id, show='rejected') }}">
    Rechazadas ({{ lot.rejected or 0 }})
-  </a>
-
-  <a href="{{ url_for('records', batch_id=lot.batch_id, show='alerts') }}">
-   Todas las alertas ({{ lot.alerts or 0 }})
-  </a>
-
-  <a href="{{ url_for('records', batch_id=lot.batch_id, show='reviewed') }}">
-   Revisadas ({{
-    (lot.rejected or 0)
-    +
-    (lot.discarded or 0)
-   }})
-  </a>
-
-  <a href="{{ url_for('records', batch_id=lot.batch_id, show='pending') }}">
-   Pendientes ({{ lot.pending or 0 }})
   </a>
 
  </div>
@@ -1025,14 +1019,11 @@
   {% if show_mode == 'rejected' %}
    <h2>Prendas rechazadas</h2>
 
-  {% elif show_mode == 'reviewed' %}
-   <h2>Prendas revisadas</h2>
-
-  {% elif show_mode == 'pending' %}
-   <h2>Alertas pendientes</h2>
+  {% elif show_mode == 'accepted' %}
+   <h2>Prendas aceptadas</h2>
 
   {% else %}
-   <h2>Alertas detectadas</h2>
+   <h2>Todas las prendas</h2>
 
   {% endif %}
 
@@ -1040,10 +1031,6 @@
 
  {% if batch_id %}
 
- <a class="reg-action"
-    href="{{ url_for('records', batch_id=batch_id) }}">
-  Volver al lote
- </a>
 
   {# RECORDS_REVIEW_BATCH_V3 #}
   {% if session.get('role') in ['ADMIN', 'QUALITY_MANAGER'] %}
@@ -1074,23 +1061,25 @@
 
  <div>
 
-  {% if row.image_result %}
+  {% if row.image_result or row.image_original %}
+
+  {% set inspection_image = row.image_result or row.image_original %}
 
   <a
-   href="{{ url_for('static', filename=row.image_result) }}"
+   href="{{ url_for('static', filename=inspection_image) }}"
    target="_blank"
   >
    <img
     class="reg-inspection-image"
-    src="{{ url_for('static', filename=row.image_result) }}"
-    alt="Evidencia de inspecci&oacute;n"
+    src="{{ url_for('static', filename=inspection_image) }}"
+    alt="Imagen de la prenda inspeccionada"
    >
   </a>
 
   {% else %}
 
   <div class="reg-inspection-no-image">
-   Sin evidencia
+   Sin imagen registrada
   </div>
 
   {% endif %}
@@ -1137,9 +1126,19 @@
    <strong>Decisi&oacute;n final</strong>
 
    <small>
+    {% if row.ai_decision == 'NORMAL' or row.status == 'Aprobado' %}
+    <span class="result-badge passed">
+     Aceptada
+    </span>
+    {% elif row.review_status == 'ALERTA_DESCARTADA' %}
+    <span class="result-badge passed">
+     Aceptada - alerta descartada
+    </span>
+    {% else %}
     <span class="result-badge {{ row.decision_class }}">
      {{ row.decision_label }}
     </span>
+    {% endif %}
    </small>
 
   </div>
@@ -1361,3 +1360,4 @@ document.addEventListener("DOMContentLoaded", function () {
 </script>
 
 {% endblock %}
+

@@ -7892,7 +7892,7 @@ def records():
     model_id = request.args.get("model_id", "").strip()
     reviewer_id = request.args.get("reviewer_id", "").strip()
     result_filter = request.args.get("result", "").strip()
-    show_mode = request.args.get("show", "").strip().lower()
+    show_mode = request.args.get("show", "all").strip().lower() or "all"
 
     has_explicit_filters = any([
         q,
@@ -8361,11 +8361,17 @@ def records():
         "rejected",
         "pending",
         "all",
+        "accepted",
     ):
         detail_conditions = list(conditions)
         detail_params = list(params)
 
-        if show_mode == "alerts":
+        if show_mode == "accepted":
+            detail_conditions.append(
+                passed_condition
+            )
+
+        elif show_mode == "alerts":
             detail_conditions.append(
                 alert_condition
             )
@@ -8418,6 +8424,7 @@ def records():
                 i.reviewed_by,
                 i.reviewed_at,
                 i.review_notes,
+                i.image_original,
                 i.image_result,
 
                 b.id AS batch_id,
@@ -8436,7 +8443,6 @@ def records():
             {detail_where}
 
             ORDER BY i.id DESC
-            LIMIT 100
             """,
             tuple(detail_params),
         )
@@ -10149,7 +10155,16 @@ def informe_excel():
     from datetime import datetime as dt_datetime
     from zoneinfo import ZoneInfo
 
+    from pathlib import Path
+
     from openpyxl import Workbook
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.drawing.spreadsheet_drawing import (
+        OneCellAnchor,
+        AnchorMarker,
+    )
+    from openpyxl.drawing.xdr import XDRPositiveSize2D
+    from openpyxl.utils.units import pixels_to_EMU
     from openpyxl.styles import (
         Alignment,
         Border,
@@ -10224,13 +10239,164 @@ def informe_excel():
 
     workbook = Workbook()
 
-    summary_sheet = workbook.active
+    # --------------------------------------------------------
+    # Portada institucional
+    # --------------------------------------------------------
+    cover_sheet = workbook.active
+    cover_sheet.title = "Portada"
+    cover_sheet.sheet_view.showGridLines = False
 
-    summary_sheet.title = (
+    summary_sheet = workbook.create_sheet(
         "Resumen ejecutivo"
     )
 
     summary_sheet.sheet_view.showGridLines = False
+
+    logo_path = (
+        Path(app.root_path)
+        / "static"
+        / "img"
+        / "brand"
+        / "astrid_beverly_logo.jpg"
+    )
+
+    # Dimensiones de la portada.
+    for column in range(2, 9):
+        cover_sheet.column_dimensions[
+            get_column_letter(column)
+        ].width = 16
+
+    cover_sheet.row_dimensions[2].height = 115
+
+    if logo_path.exists():
+        excel_logo = XLImage(
+            str(logo_path)
+        )
+
+        original_width = float(
+            excel_logo.width or 1
+        )
+        original_height = float(
+            excel_logo.height or 1
+        )
+
+        target_width = 250
+
+        excel_logo.width = target_width
+        excel_logo.height = (
+            target_width
+            * original_height
+            / original_width
+        )
+
+        # Posicion precisa: entre las columnas D y E.
+        # Esto permite centrar el logo sin moverlo una columna completa.
+        excel_logo.anchor = OneCellAnchor(
+            _from=AnchorMarker(
+                col=3,
+                colOff=pixels_to_EMU(90),
+                row=1,
+                rowOff=0,
+            ),
+            ext=XDRPositiveSize2D(
+                cx=pixels_to_EMU(
+                    int(excel_logo.width)
+                ),
+                cy=pixels_to_EMU(
+                    int(excel_logo.height)
+                ),
+            ),
+        )
+
+        cover_sheet.add_image(
+            excel_logo
+        )
+
+    cover_sheet.merge_cells(
+        "B10:H10"
+    )
+    cover_sheet["B10"] = (
+        "ASTRID & BEVERLY FASHION"
+    )
+    cover_sheet["B10"].font = Font(
+        name="Times New Roman",
+        size=22,
+        bold=True,
+    )
+    cover_sheet["B10"].alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+    )
+
+    cover_sheet.merge_cells(
+        "B12:H12"
+    )
+    cover_sheet["B12"] = (
+        "Informe de Producci\u00f3n y Control de Calidad"
+    )
+    cover_sheet["B12"].font = Font(
+        name="Times New Roman",
+        size=16,
+        bold=True,
+    )
+    cover_sheet["B12"].alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+    )
+
+    cover_sheet.merge_cells(
+        "B14:H14"
+    )
+    cover_sheet["B14"] = (
+        "Per\u00edodo: "
+        + str(data["date_from"])
+        + " al "
+        + str(data["date_to"])
+    )
+    cover_sheet["B14"].font = Font(
+        name="Times New Roman",
+        size=12,
+    )
+    cover_sheet["B14"].alignment = Alignment(
+        horizontal="center",
+    )
+
+    cover_sheet.merge_cells(
+        "B15:H15"
+    )
+    cover_sheet["B15"] = (
+        "Generado: "
+        + generated_at.strftime(
+            "%d/%m/%Y %H:%M"
+        )
+    )
+    cover_sheet["B15"].font = Font(
+        name="Times New Roman",
+        size=10,
+        italic=True,
+    )
+    cover_sheet["B15"].alignment = Alignment(
+        horizontal="center",
+    )
+
+    cover_sheet.merge_cells(
+        "B18:H18"
+    )
+    cover_sheet["B18"] = (
+        "Sistema de Control de Calidad mediante Visi\u00f3n Artificial"
+    )
+    cover_sheet["B18"].font = Font(
+        name="Times New Roman",
+        size=10,
+        italic=True,
+    )
+    cover_sheet["B18"].alignment = Alignment(
+        horizontal="center",
+    )
+
+    cover_sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    cover_sheet.page_setup.fitToWidth = 1
+    cover_sheet.page_setup.fitToHeight = 1
 
     black_fill = PatternFill(
         "solid",
@@ -12051,6 +12217,38 @@ def informe_excel():
         filter_range=rejected_sheet.dimensions,
     )
 
+    # --------------------------------------------------------
+    # Configuraci?n de impresi?n
+    # --------------------------------------------------------
+    for sheet in workbook.worksheets:
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
+
+        sheet.page_setup.orientation = "landscape"
+        sheet.page_setup.paperSize = (
+            sheet.PAPERSIZE_LETTER
+        )
+        sheet.page_setup.fitToWidth = 1
+
+        # La portada debe caber en una sola hoja.
+        if sheet.title == "Portada":
+            sheet.page_setup.fitToHeight = 1
+            sheet.print_area = "A1:I22"
+            sheet.print_options.horizontalCentered = True
+            sheet.print_options.verticalCentered = True
+        else:
+            # Las tablas pueden ocupar varias p?ginas verticales,
+            # pero nunca varias p?ginas a lo ancho.
+            sheet.page_setup.fitToHeight = 0
+
+        sheet.page_margins.left = 0.25
+        sheet.page_margins.right = 0.25
+        sheet.page_margins.top = 0.40
+        sheet.page_margins.bottom = 0.40
+        sheet.page_margins.header = 0.15
+        sheet.page_margins.footer = 0.15
+
+        sheet.sheet_view.showGridLines = False
+
     buffer = io.BytesIO()
 
     workbook.save(
@@ -12083,6 +12281,7 @@ def informe_excel():
 def informe_pdf():
     from flask import send_file
 
+    from pathlib import Path
     from datetime import datetime as dt_datetime
     from zoneinfo import ZoneInfo
     from xml.sax.saxutils import escape
@@ -12093,7 +12292,7 @@ def informe_pdf():
         TA_LEFT,
     )
     from reportlab.lib.pagesizes import (
-        A4,
+        letter,
         landscape,
     )
     from reportlab.lib.styles import (
@@ -12127,13 +12326,21 @@ def informe_pdf():
 
     buffer = io.BytesIO()
 
-    page_size = landscape(A4)
+    page_size = landscape(letter)
 
-    margin_x = 14 * mm
+    margin_x = 22 * mm
 
     content_width = (
         page_size[0]
         - (2 * margin_x)
+    )
+
+    logo_path = (
+        Path(app.root_path)
+        / "static"
+        / "img"
+        / "brand"
+        / "astrid_beverly_logo.jpg"
     )
 
     document = SimpleDocTemplate(
@@ -12141,7 +12348,7 @@ def informe_pdf():
         pagesize=page_size,
         rightMargin=margin_x,
         leftMargin=margin_x,
-        topMargin=12 * mm,
+        topMargin=25 * mm,
         bottomMargin=16 * mm,
         title=(
             "Informe de producci\u00f3n y calidad"
@@ -12767,6 +12974,9 @@ def informe_pdf():
         Spacer(1, 8)
     )
 
+    # Desempeno por modelo inicia en pagina nueva.
+    elements.append(PageBreak())
+
     elements.append(
         section_header(
             "Desempe\u00f1o por modelo"
@@ -13182,9 +13392,75 @@ def informe_pdf():
 
         canvas.restoreState()
 
+    def add_first_page(
+        canvas,
+        doc,
+    ):
+        # Primero conserva el pie de pagina normal.
+        add_page_footer(
+            canvas,
+            doc,
+        )
+
+        canvas.saveState()
+
+        if logo_path.exists():
+            canvas.drawImage(
+                str(logo_path),
+                margin_x,
+                page_size[1] - (22 * mm),
+                width=24 * mm,
+                height=18 * mm,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+
+        canvas.setFillColor(
+            colors.HexColor("#111111")
+        )
+
+        canvas.setFont(
+            "Helvetica-Bold",
+            9,
+        )
+
+        canvas.drawString(
+            margin_x + (29 * mm),
+            page_size[1] - (10 * mm),
+            "Astrid y Beverly Fashion",
+        )
+
+        canvas.setFont(
+            "Helvetica",
+            7.5,
+        )
+
+        canvas.setFillColor(
+            colors.HexColor("#6B625A")
+        )
+
+        canvas.drawString(
+            margin_x + (29 * mm),
+            page_size[1] - (15 * mm),
+            "Informe de producci\u00f3n y control de calidad",
+        )
+
+        canvas.setStrokeColor(
+            colors.HexColor("#D8D0C6")
+        )
+
+        canvas.line(
+            margin_x,
+            page_size[1] - (23 * mm),
+            page_size[0] - margin_x,
+            page_size[1] - (23 * mm),
+        )
+
+        canvas.restoreState()
+
     document.build(
         elements,
-        onFirstPage=add_page_footer,
+        onFirstPage=add_first_page,
         onLaterPages=add_page_footer,
     )
 
