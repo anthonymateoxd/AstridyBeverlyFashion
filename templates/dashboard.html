@@ -1,1347 +1,718 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
 
 <style>
-.ops-header{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:24px}
-.ops-sub{margin-top:5px;color:#776c61}
-.ops-status{padding:10px 15px;border-radius:8px;font-weight:800;letter-spacing:1px;font-size:13px}
-.ops-status.META_CUMPLIDA,.ops-status.EN_TIEMPO{background:#e5f4e9;color:#176b36}
-.ops-status.EN_RIESGO{background:#fff0cf;color:#916313}
-.ops-status.ATRASADO{background:#f7dede;color:#992d2d}
-.ops-status.SIN_META,.ops-status.PENDIENTE{background:#ece8e2;color:#625a52}
-.goal-card{background:#fff;border:1px solid #e6ded2;border-radius:10px;padding:24px;margin-bottom:22px}
-.goal-top{display:flex;justify-content:space-between;gap:20px;align-items:center}
-.goal-values{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-top:22px}
-.metric strong{display:block;font-size:32px}
-.metric span{font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:#776c61}
-.progress{height:12px;background:#eee8df;margin-top:20px;overflow:hidden;border-radius:8px}
-.progress>div{height:100%;background:#202020}
-.ops-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-bottom:22px}
-.ops-card{background:#fff;border:1px solid #e6ded2;border-radius:10px;padding:24px}
-.ops-card h2{margin-top:0}
-.info-row{display:flex;justify-content:space-between;gap:18px;padding:10px 0;border-bottom:1px solid #eee8df}
-.info-row:last-child{border-bottom:0}
-.quality-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:18px}
-.quality-item{background:#f8f6f2;padding:16px;border-radius:8px}
-.quality-item strong{display:block;font-size:27px}
-.goal-form{display:grid;grid-template-columns:repeat(4,1fr) auto;gap:12px;align-items:end;margin-top:20px;padding-top:20px;border-top:1px solid #eee8df}
-.goal-form label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
-.goal-form input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #d8d0c5}
-.goal-form button{background:#111;color:#fff;border:0;padding:12px 17px;font-weight:700;cursor:pointer}
-
-.goal-form .goal-mode-btn{
-  margin-top:7px;
-  padding:0;
-  background:transparent;
-  color:#5f554c;
-  border:0;
-  text-decoration:underline;
-  font-size:11px;
-  font-weight:600;
-  cursor:pointer
-}
-.goal-form .goal-mode-hint{
-  display:block;
-  margin-top:5px;
-  font-size:11px;
-  color:#82776d
-}
-.goal-form input.goal-auto-input{
-  background:#f3f0eb;
-  color:#4f4841;
-  cursor:not-allowed
-}
-.batch-progress-small{height:6px;background:#eee8df;margin-top:8px}
-.batch-progress-small div{height:100%;background:#222}
-@media(max-width:1000px){.goal-values,.quality-grid{grid-template-columns:1fr 1fr}.ops-grid{grid-template-columns:1fr}.goal-form{grid-template-columns:1fr 1fr}}
-
-/* DASHBOARD SYMMETRY V2 */
-
-.goal-card{
-  padding:28px 30px;
-  box-sizing:border-box;
+:root{
+  --dash-navy:#10224a;
+  --dash-blue:#1186d8;
+  --dash-pink:#ef2d7d;
+  --dash-yellow:#ffd21f;
+  --dash-green:#11985e;
+  --dash-ink:#172033;
+  --dash-muted:#68758a;
+  --dash-line:#e6ebf1;
+  --dash-soft:#f6f8fb;
+  --dash-card:#ffffff;
 }
 
-/* KPI SUPERIORES */
-.goal-values{
-  display:grid;
-  grid-template-columns:repeat(4,minmax(0,1fr));
-  gap:20px;
-  align-items:stretch;
+/* Solo afecta al dashboard. No cambia otras pantallas. */
+body.app-body{
+  background:#f7f9fc;
+  font-family:Inter,Segoe UI,Arial,sans-serif;
+  color:var(--dash-ink);
 }
 
-.metric{
-  min-width:0;
-  min-height:120px;
-  box-sizing:border-box;
-  border:1px solid #e6ded2;
-  border-radius:10px;
+.sidebar{
+  width:220px;
   padding:22px 18px;
-  display:flex;
-  flex-direction:column;
-  justify-content:center;
-  align-items:center;
-  text-align:center;
+  border-right:1px solid #edf0f4;
+  box-shadow:none;
 }
 
-.metric strong{
-  display:block;
-  font-size:32px;
-  line-height:1.05;
-  margin:0 0 6px;
+.brand{
+  margin:0 0 24px;
+  padding:0 6px 18px;
+  border-bottom:1px solid #eef1f5;
 }
 
-.metric span{
-  display:block;
-  min-height:28px;
-  font-size:12px;
-  line-height:1.25;
-  letter-spacing:1.2px;
-  text-transform:uppercase;
-  color:#776c61;
+.brand img{
+  width:155px;
+  height:98px;
 }
 
-/* BARRA DE PROGRESO */
-.progress{
-  height:12px;
-  margin-top:24px;
-  border-radius:8px;
-  overflow:hidden;
+.sidebar-role{
+  padding:0 14px 12px !important;
+  color:#5d6778;
+  opacity:1 !important;
+  font-size:13px !important;
+  font-weight:600;
 }
 
-/* CONFIGURACION DE META */
-.goal-form{
-  display:grid;
-  grid-template-columns:
-    repeat(4,minmax(0,1fr))
-    minmax(170px,190px);
-  gap:16px;
-  align-items:start;
-  margin-top:24px;
-  padding-top:24px;
-  border-top:1px solid #eee8df;
-}
-
-.goal-field{
-  min-width:0;
-}
-
-.goal-label-row{
-  height:22px;
+.sidebar nav a{
+  position:relative;
   display:flex;
   align-items:center;
-  justify-content:space-between;
-  gap:8px;
-  margin-bottom:7px;
-}
-
-.goal-label-row label{
-  margin:0;
-  line-height:1;
-  white-space:nowrap;
-}
-
-.goal-control{
-  display:block;
-  width:100%;
-  height:52px;
-  box-sizing:border-box;
+  min-height:44px;
+  margin:4px 0;
   padding:0 14px;
-  border:1px solid #d8d0c5;
-  background:#fff;
-  font:inherit;
+  border-radius:8px;
+  color:#243858;
+  font-size:14px;
+  font-weight:600;
+  transition:background .16s ease,color .16s ease;
 }
 
-.goal-control:focus{
-  outline:2px solid #202020;
-  outline-offset:1px;
+.sidebar nav a::before{
+  content:"";
+  width:4px;
+  height:0;
+  position:absolute;
+  left:-18px;
+  top:50%;
+  transform:translateY(-50%);
+  border-radius:0 4px 4px 0;
+  background:var(--dash-yellow);
+  transition:height .16s ease;
 }
 
-.goal-control.goal-auto-input{
-  background:#f3f0eb;
-  color:#514a43;
-  cursor:not-allowed;
+.sidebar nav a:hover{
+  color:var(--dash-navy);
+  background:#f5f7fa;
 }
 
-.goal-hint-slot{
-  height:24px;
-  box-sizing:border-box;
-  margin-top:6px;
+.sidebar nav a.active{
+  color:var(--dash-navy);
+  background:#fff8d9;
+}
+
+.sidebar nav a.active::before{height:44px}
+
+.main{
+  margin-left:220px;
+  width:calc(100% - 220px);
+  padding:26px 32px 36px;
+}
+
+.dashboard-shell{max-width:1480px;margin:0 auto}
+
+.dashboard-topbar{
   display:flex;
   align-items:flex-start;
-  font-size:11px;
-  line-height:1.25;
-  color:#82776d;
-}
-
-.goal-mode-btn{
-  flex:0 0 auto;
-  margin:0 !important;
-  padding:0 !important;
-  background:transparent !important;
-  border:0 !important;
-  color:#5f554c !important;
-  font-size:10px !important;
-  line-height:1 !important;
-  letter-spacing:.6px;
-  text-transform:uppercase;
-  text-decoration:underline;
-  font-weight:700 !important;
-  cursor:pointer;
-}
-
-.goal-submit-wrap{
-  padding-top:29px;
-}
-
-.goal-save-btn{
-  width:100%;
-  height:52px;
-  box-sizing:border-box;
-  padding:0 16px !important;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  white-space:nowrap;
-}
-
-/* TARJETAS INFERIORES */
-.ops-grid{
-  display:grid;
-  grid-template-columns:
-    repeat(2,minmax(0,1fr));
+  justify-content:space-between;
   gap:24px;
-  align-items:stretch;
   margin-bottom:24px;
 }
 
-.ops-card{
-  min-width:0;
-  height:100%;
-  box-sizing:border-box;
-  padding:28px;
-  display:flex;
-  flex-direction:column;
-}
-
-.ops-card h2{
-  margin:0 0 20px;
-  line-height:1.15;
-}
-
-.info-row{
-  min-height:46px;
-  box-sizing:border-box;
-  display:flex;
-  align-items:center;
-}
-
-.quality-grid{
-  display:grid;
-  grid-template-columns:repeat(3,minmax(0,1fr));
-  gap:16px;
-  align-items:stretch;
-}
-
-.quality-item{
-  height:100%;
-  box-sizing:border-box;
-}
-
-/* RESPONSIVE */
-@media(max-width:1180px){
-  .goal-form{
-    grid-template-columns:
-      repeat(2,minmax(0,1fr));
-  }
-
-  .goal-submit-wrap{
-    padding-top:0;
-  }
-
-  .goal-save-btn{
-    width:100%;
-  }
-}
-
-@media(max-width:900px){
-  .goal-values{
-    grid-template-columns:
-      repeat(2,minmax(0,1fr));
-  }
-
-  .ops-grid{
-    grid-template-columns:1fr;
-  }
-}
-
-@media(max-width:620px){
-  .goal-values,
-  .goal-form,
-  .quality-grid{
-    grid-template-columns:1fr;
-  }
-
-  .goal-card,
-  .ops-card{
-    padding:20px;
-  }
-}
-
-
-/* GOAL META ACTIONS FIX */
-
-.goal-meta-actions{
-  min-height:42px;
-  margin-top:7px;
-  display:flex;
-  flex-direction:column;
-  align-items:flex-start;
-  justify-content:flex-start;
-  gap:4px;
-}
-
-.goal-meta-actions .goal-mode-btn{
-  display:inline-block;
-  width:auto;
-  max-width:100%;
-  margin:0 !important;
-  padding:0 !important;
-  white-space:normal;
-  text-align:left;
-  line-height:1.2 !important;
-}
-
-.goal-meta-actions .goal-mode-hint{
-  display:block;
+.dashboard-greeting h1{
   margin:0;
-  font-size:11px;
-  line-height:1.25;
-  color:#82776d;
+  color:var(--dash-navy);
+  font-size:34px;
+  line-height:1.08;
+  font-weight:800;
+  letter-spacing:-.8px;
 }
 
-.goal-label-row{
-  overflow:visible;
+.dashboard-greeting p{
+  margin:7px 0 0;
+  color:#71809a;
+  font-size:17px;
 }
 
-
-
-/* LIVE PRODUCTION V3 */
-
-.goal-defined{
-  margin-top:24px;
-  padding:20px 22px;
-  border-top:1px solid #eee8df;
-  background:#f8f6f2;
-}
-
-.goal-defined-top{
+.dashboard-user-meta{
   display:flex;
-  justify-content:space-between;
   align-items:center;
-  gap:20px;
+  gap:18px;
+  min-width:max-content;
 }
 
-.goal-defined-title{
+.dashboard-date{
+  padding-right:18px;
+  border-right:1px solid #dde3eb;
+  text-align:right;
+  color:#33445f;
   font-size:13px;
-  font-weight:800;
-  letter-spacing:.7px;
-  text-transform:uppercase;
+  line-height:1.45;
 }
 
-.goal-defined-note{
-  margin-top:5px;
-  color:#766c63;
-  font-size:12px;
-}
+.dashboard-date strong{display:block;color:var(--dash-navy);font-size:14px}
 
-.goal-adjust-btn{
-  flex:0 0 auto;
-  border:1px solid #222;
-  background:#fff;
-  color:#222;
-  min-height:44px;
-  padding:0 18px;
-  font-weight:800;
-  cursor:pointer;
-}
-
-.goal-adjust-form{
-  display:none;
-}
-
-.goal-adjust-form.visible{
+.dashboard-avatar{
+  width:46px;
+  height:46px;
   display:grid;
-}
-
-.goal-adjust-reason{
-  grid-column:1 / -1;
-}
-
-.goal-adjust-reason textarea{
-  width:100%;
-  min-height:76px;
-  box-sizing:border-box;
-  padding:12px 14px;
-  border:1px solid #d8d0c5;
-  resize:vertical;
-  font:inherit;
-}
-
-.live-model-list{
-  display:flex;
-  flex-direction:column;
-  gap:12px;
-}
-
-.live-model{
-  padding:15px 16px;
-  background:#f8f6f2;
-  border-left:4px solid #222;
-}
-
-.live-model-head{
-  display:flex;
-  justify-content:space-between;
-  align-items:flex-start;
-  gap:16px;
-}
-
-.live-model-name{
+  place-items:center;
+  border-radius:50%;
+  background:#edf2f8;
+  color:var(--dash-navy);
   font-weight:800;
-}
-
-.live-model-share{
-  font-weight:800;
-  white-space:nowrap;
-}
-
-.live-model-stats{
-  display:grid;
-  grid-template-columns:
-    repeat(4,minmax(0,1fr));
-  gap:8px;
-  margin-top:12px;
-}
-
-.live-stat{
-  padding:9px;
-  background:#fff;
-  text-align:center;
-}
-
-.live-stat strong{
-  display:block;
   font-size:18px;
 }
 
-.live-stat span{
-  display:block;
-  margin-top:3px;
-  font-size:10px;
-  line-height:1.2;
-  color:#766c63;
-  text-transform:uppercase;
+.dashboard-user-name{
+  color:var(--dash-navy);
+  font-size:14px;
+  font-weight:800;
 }
 
-.latest-result{
-  margin-top:8px;
-  padding:16px;
-  background:#f8f6f2;
-}
-
-.latest-result strong{
-  display:block;
-}
-
-.latest-result .info-row{
-  min-height:40px;
-}
-
-@media(max-width:760px){
-  .live-model-stats{
-    grid-template-columns:
-      repeat(2,minmax(0,1fr));
-  }
-
-  .goal-defined-top{
-    align-items:flex-start;
-    flex-direction:column;
-  }
-}
-
-
-
-
-/* DASHBOARD_LIVE_VISUAL_V1 */
-
-.live-head{
- display:flex;
- justify-content:space-between;
- align-items:center;
- gap:18px;
- margin-bottom:18px;
-}
-
-.live-head h2{
- margin:0;
-}
-
-.live-indicator{
- font-size:11px;
- font-weight:700;
- letter-spacing:1px;
- text-transform:uppercase;
- color:#187443;
-}
-
-.live-main{
- padding:20px;
- border:1px solid #e6ded2;
- border-radius:8px;
- background:#f8f6f2;
-}
-
-.live-title{
- font-size:22px;
- font-weight:700;
- margin-bottom:8px;
-}
-
-.live-model{
- margin-top:8px;
- font-size:17px;
- font-weight:700;
-}
-
-.live-meta{
- margin-top:6px;
- color:#70665d;
- line-height:1.45;
-}
-
-.live-actions{
- display:flex;
- flex-wrap:wrap;
- gap:10px;
- margin-top:16px;
-}
-
-.live-action{
- display:inline-block;
- padding:11px 15px;
- background:#111;
- color:#fff;
- text-decoration:none;
- font-size:12px;
- font-weight:700;
- letter-spacing:.7px;
- text-transform:uppercase;
-}
-
-.live-action.secondary{
- background:#fff;
- color:#111;
- border:1px solid #111;
-}
-
-.live-state-grid{
- display:grid;
- grid-template-columns:repeat(3,minmax(0,1fr));
- gap:12px;
- margin-top:16px;
-}
-
-.live-state{
- padding:14px;
- background:#f8f6f2;
- border-radius:7px;
-}
-
-.live-state strong{
- display:block;
- font-size:27px;
- margin-bottom:3px;
-}
-
-.live-state span{
- font-size:10px;
- color:#766b60;
- letter-spacing:.7px;
- text-transform:uppercase;
-}
-
-.live-model-grid{
- display:grid;
- grid-template-columns:repeat(2,minmax(0,1fr));
- gap:14px;
- margin-top:18px;
-}
-
-.live-model-card{
- padding:17px;
- border:1px solid #e6ded2;
- border-radius:8px;
- background:#fff;
-}
-
-.live-model-name{
- font-size:17px;
- font-weight:700;
-}
-
-.live-model-size{
- margin-top:4px;
- color:#756b61;
- font-size:13px;
-}
-
-.live-model-stats{
- display:grid;
- grid-template-columns:repeat(4,minmax(0,1fr));
- gap:8px;
- margin-top:14px;
-}
-
-.live-model-stat{
- padding:10px;
- background:#f8f6f2;
- border-radius:5px;
-}
-
-.live-model-stat strong{
- display:block;
- font-size:18px;
-}
-
-.live-model-stat span{
- display:block;
- margin-top:3px;
- font-size:9px;
- color:#756b61;
- text-transform:uppercase;
- letter-spacing:.5px;
-}
-
-.live-empty{
- color:#756b61;
-}
-
-@media(max-width:1000px){
-
- .live-model-grid{
-  grid-template-columns:1fr;
- }
-
- .live-model-stats{
-  grid-template-columns:repeat(2,1fr);
- }
-}
-
-@media(max-width:650px){
-
- .live-state-grid{
-  grid-template-columns:1fr;
- }
-}
-
-
-
-/* DASHBOARD_CLARITY_FIX_V1 */
-
-#dashboardModelsProduction{
-  grid-column:1 / -1;
-}
-
-#dashboardModelsProduction > p{
-  max-width:760px;
+.dashboard-kpis{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:18px;
   margin-bottom:20px;
 }
 
-#dashboardModelsProduction .live-model-grid{
-  grid-template-columns:1fr;
+.dashboard-kpi{
+  min-height:118px;
+  display:flex;
+  align-items:center;
+  gap:18px;
+  padding:22px 24px;
+  background:var(--dash-card);
+  border:1px solid var(--dash-line);
+  border-radius:14px;
+  box-shadow:0 8px 24px rgba(29,48,76,.045);
 }
 
-#dashboardModelsProduction .live-model-card{
-  width:100%;
-  box-sizing:border-box;
-  padding:22px;
+.kpi-icon{
+  width:54px;
+  height:54px;
+  flex:0 0 54px;
+  display:grid;
+  place-items:center;
+  border-radius:50%;
+}
+.kpi-icon svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.kpi-pink{background:#fde8f1;color:var(--dash-pink)}
+.kpi-blue{background:#e8f4fd;color:var(--dash-blue)}
+.kpi-yellow{background:#fff7d9;color:#d69a00}
+
+.dashboard-kpi strong{
+  display:block;
+  margin:0 0 5px;
+  color:var(--dash-navy);
+  font-size:32px;
+  line-height:1;
+  font-weight:800;
+}
+.dashboard-kpi span{
+  display:block;
+  color:#52627b;
+  font-size:12px;
+  line-height:1.25;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.2px;
 }
 
-#dashboardModelsProduction .live-model-name{
-  font-size:22px;
-  line-height:1.2;
+.dash-card{
+  background:var(--dash-card);
+  border:1px solid var(--dash-line);
+  border-radius:14px;
+  box-shadow:0 8px 24px rgba(29,48,76,.045);
 }
 
-#dashboardModelsProduction .live-model-size{
-  margin-top:5px;
+.goal-card{
+  padding:24px 26px 22px;
+  margin-bottom:20px;
+}
+
+.section-title-row{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:20px;
+  margin-bottom:22px;
+}
+
+.section-title-wrap{display:flex;gap:14px;min-width:0}
+.section-icon{
+  width:42px;height:42px;flex:0 0 42px;
+  display:grid;place-items:center;border-radius:50%;
+  background:#fde8f1;color:var(--dash-pink)
+}
+.section-icon.blue{background:#e8f4fd;color:var(--dash-blue)}
+.section-icon svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+
+.section-title-row h2{
+  margin:0;
+  color:var(--dash-navy);
+  font-size:25px;
+  line-height:1.1;
+  font-weight:800;
+  letter-spacing:-.25px;
+}
+.section-title-row p{
+  margin:6px 0 0;
+  color:#71809a;
   font-size:14px;
 }
 
-#dashboardModelsProduction .live-model-stats{
-  grid-template-columns:
-    repeat(4,minmax(120px,1fr));
-  gap:12px;
+.ops-status{
+  display:inline-flex;
+  align-items:center;
+  min-height:34px;
+  padding:0 13px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:800;
+  letter-spacing:.45px;
+  text-transform:uppercase;
+  white-space:nowrap;
+}
+.ops-status.META_CUMPLIDA,.ops-status.EN_TIEMPO{background:#e5f6ed;color:#087b45}
+.ops-status.EN_RIESGO{background:#fff4d6;color:#9b6900}
+.ops-status.ATRASADO{background:#fde8e8;color:#b02d36}
+.ops-status.SIN_META,.ops-status.PENDIENTE{background:#eef1f5;color:#657184}
+
+.goal-form{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr)) minmax(210px,240px);
+  gap:18px;
+  align-items:start;
+  margin:0;
+  padding:0;
+  border:0;
+}
+.goal-field{min-width:0}
+.goal-label-row{min-height:20px;display:flex;align-items:center;margin-bottom:7px}
+.goal-label-row label,
+.goal-adjust-reason label{
+  margin:0;
+  color:#364866;
+  font-size:11px;
+  line-height:1;
+  font-weight:800;
+  letter-spacing:.55px;
+}
+.goal-control{
+  width:100%;
+  height:48px;
+  padding:0 14px;
+  border:1px solid #cfd8e4;
+  border-radius:7px;
+  background:#fff;
+  color:#14213d;
+  font-family:inherit;
+  font-size:16px;
+}
+.goal-control:focus{outline:2px solid #b6daf5;outline-offset:1px;border-color:#62aee2}
+.goal-control.goal-auto-input{background:#f5f6f8;color:#334158;cursor:not-allowed}
+.goal-meta-actions,.goal-hint-slot{min-height:28px;margin-top:6px}
+.goal-meta-actions{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+.goal-mode-btn{
+  margin:0;padding:0;background:transparent!important;border:0!important;
+  color:#126dad!important;font-size:10px!important;line-height:1.2!important;
+  letter-spacing:.25px;text-decoration:underline;font-weight:800!important;cursor:pointer
+}
+.goal-mode-hint,.goal-hint-slot{color:#7d8898;font-size:10px;line-height:1.3}
+.goal-submit-wrap{padding-top:27px}
+.goal-save-btn{
+  width:100%;height:48px;padding:0 18px!important;border-radius:7px;
+  background:var(--dash-yellow)!important;color:#172033!important;
+  font-family:inherit;font-size:12px;font-weight:900!important;letter-spacing:.6px;
+  box-shadow:none
+}
+.goal-save-btn:hover{filter:brightness(.98)}
+
+.goal-defined{
+  border:1px solid #e7ebf0;
+  border-radius:10px;
+  background:#fafbfd;
+  padding:18px 20px;
+}
+.goal-defined-top{display:flex;align-items:center;justify-content:space-between;gap:18px}
+.goal-defined-title{color:var(--dash-navy);font-size:17px;font-weight:800}
+.goal-defined-note{margin-top:5px;color:#71809a;font-size:12px}
+.goal-adjust-btn{
+  min-height:42px;padding:0 16px;border-radius:7px;
+  background:#fff!important;color:var(--dash-navy)!important;
+  border:1px solid #cfd8e4!important;font-family:inherit;font-size:11px;font-weight:800!important
+}
+.goal-adjust-form{display:none;margin-top:18px;padding-top:18px;border-top:1px solid #e5eaf0}
+.goal-adjust-form.visible{display:grid}
+.goal-adjust-reason{grid-column:1/-1}
+.goal-adjust-reason textarea{
+  width:100%;min-height:90px;margin-top:8px;padding:12px 14px;
+  border:1px solid #cfd8e4;border-radius:7px;background:#fff;font-family:inherit
 }
 
-#dashboardModelsProduction .live-model-stat{
-  min-height:88px;
+.progress{height:8px;margin:20px 0 0;border-radius:99px;background:#edf0f4;overflow:hidden}
+.progress>div{height:100%;background:var(--dash-navy);border-radius:99px}
+
+.dashboard-main-grid{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  gap:20px;
+  margin-bottom:20px;
+}
+
+.ops-card{padding:22px 24px;min-width:0}
+.ops-card h2{margin:0;color:var(--dash-navy);font-size:24px;font-weight:800;letter-spacing:-.3px}
+
+.day-state-empty{
+  min-height:230px;
   display:flex;
   flex-direction:column;
   align-items:center;
   justify-content:center;
   text-align:center;
-  padding:14px 12px;
+  border:1px solid #edf0f4;
+  border-radius:10px;
+  background:#fbfcfd;
+}
+.empty-icon{
+  width:72px;height:72px;display:grid;place-items:center;margin-bottom:18px;
+  border-radius:50%;background:#f0f3f7;color:#9aa7b9
+}
+.empty-icon svg{width:34px;height:34px;fill:none;stroke:currentColor;stroke-width:1.7}
+.day-state-empty strong{color:var(--dash-navy);font-size:20px}
+.day-state-empty p{max-width:420px;margin:8px 0 0;color:#71809a;font-size:14px;line-height:1.5}
+
+.day-progress-layout{display:grid;grid-template-columns:170px 1fr;gap:24px;align-items:center}
+.day-progress-circle{
+  width:155px;height:155px;border-radius:50%;display:grid;place-items:center;
+  background:conic-gradient(var(--dash-navy) calc(var(--progress)*1%),#eef1f5 0);
+  position:relative
+}
+.day-progress-circle::before{content:"";position:absolute;inset:14px;border-radius:50%;background:#fff}
+.day-progress-circle div{position:relative;text-align:center}
+.day-progress-circle strong{display:block;color:var(--dash-navy);font-size:30px}
+.day-progress-circle span{display:block;margin-top:3px;color:#71809a;font-size:11px}
+.info-row{min-height:44px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid #edf0f4;color:#5d6c82;font-size:13px}
+.info-row:last-child{border-bottom:0}
+.info-row strong{color:var(--dash-navy);font-size:14px}
+
+.live-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
+.live-indicator{
+  display:inline-flex;align-items:center;gap:7px;padding:7px 11px;border-radius:999px;
+  background:#e6f6ee;color:#0b7c48;font-size:10px;font-weight:900;letter-spacing:.3px;text-transform:uppercase
+}
+.live-indicator::before{content:"";width:8px;height:8px;border-radius:50%;background:#0ea863}
+.live-main{min-height:140px;padding:20px;border:1px solid #edf0f4;border-radius:10px;background:#fbfcfd}
+.live-title{margin:0 0 8px;color:var(--dash-navy);font-size:22px;font-weight:800}
+.live-model{color:#3b4c66;font-size:15px;font-weight:700}
+.live-meta{margin-top:8px;color:#71809a;font-size:13px}
+.live-quick-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:15px}
+.live-quick{padding:13px;border:1px solid #e8edf3;border-radius:8px;background:#fff}
+.live-quick span{display:block;color:#75839a;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.3px}
+.live-quick strong{display:block;margin-top:6px;color:var(--dash-navy);font-size:18px}
+.live-quick small{display:block;margin-top:3px;color:#8490a2;font-size:10px}
+.live-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}
+.live-action{display:inline-flex;align-items:center;min-height:38px;padding:0 14px;border-radius:6px;background:var(--dash-blue);color:#fff;text-decoration:none;font-size:11px;font-weight:800}
+.live-action.secondary{background:#fff;color:var(--dash-navy);border:1px solid #cfd8e4}
+
+.live-state-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px}
+.live-state{padding:14px;border:1px solid #e8edf3;border-radius:8px;background:#fff}
+.live-state strong{display:block;color:var(--dash-navy);font-size:21px}
+.live-state span{display:block;margin-top:4px;color:#78869b;font-size:9px;line-height:1.2;text-transform:uppercase;font-weight:700}
+
+.dashboard-secondary-grid{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:20px}
+.quality-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:18px}
+.quality-item{padding:16px;border:1px solid #e8edf3;border-radius:9px;background:#fbfcfd}
+.quality-item strong{display:block;color:var(--dash-navy);font-size:25px}
+.quality-item span{display:block;margin-top:6px;color:#75839a;font-size:10px;text-transform:uppercase;font-weight:700;line-height:1.25}
+
+.live-model-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}
+.live-model-card{padding:15px;border:1px solid #e8edf3;border-radius:9px;background:#fbfcfd}
+.live-model-name{color:var(--dash-navy);font-size:14px;font-weight:800}
+.live-model-size{margin-top:4px;color:#8290a4;font-size:11px}
+.live-model-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:12px}
+.live-model-stat{padding:8px;border-radius:7px;background:#fff;border:1px solid #edf0f4}
+.live-model-stat strong{display:block;color:var(--dash-navy);font-size:17px}
+.live-model-stat span{display:block;margin-top:4px;color:#7e8a9d;font-size:8px;line-height:1.15;text-transform:uppercase}
+.live-empty{padding:22px;border:1px dashed #dbe2ea;border-radius:9px;color:#8290a4;text-align:center;background:#fbfcfd}
+
+.dashboard-footer{
+  display:flex;align-items:center;justify-content:space-between;gap:18px;
+  padding:20px 6px 4px;color:#7b8799;font-size:11px
+}
+.dashboard-footer strong{color:#394861}
+.brand-stripes{display:flex;align-items:center;gap:0}
+.brand-stripes i{display:block;width:28px;height:3px}
+.brand-stripes i:nth-child(1){background:var(--dash-yellow)}
+.brand-stripes i:nth-child(2){background:var(--dash-pink)}
+.brand-stripes i:nth-child(3){background:var(--dash-blue)}
+
+@media(max-width:1180px){
+  .dashboard-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .goal-form{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .goal-submit-wrap{padding-top:0}
+  .dashboard-secondary-grid{grid-template-columns:1fr}
 }
 
-#dashboardModelsProduction .live-model-stat strong{
-  font-size:28px;
-  line-height:1;
+@media(max-width:980px){
+  .dashboard-main-grid{grid-template-columns:1fr}
+  .dashboard-topbar{flex-direction:column}
+  .dashboard-user-meta{width:100%;justify-content:flex-end}
+  .live-model-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 
-#dashboardModelsProduction .live-model-stat span{
-  margin-top:8px;
-  font-size:10px;
-  line-height:1.2;
-  white-space:normal;
-}
-
-
-/* PRODUCCION ACTUAL MAS COMPACTA */
-
-#dashboardCurrentProduction .live-main{
-  padding:18px 20px;
-}
-
-#dashboardCurrentProduction .live-title{
-  font-size:24px;
-  margin:0 0 12px;
-}
-
-#dashboardCurrentProduction .live-model{
-  font-size:18px;
-  margin:0;
-}
-
-#dashboardCurrentProduction .live-meta{
-  margin-top:8px;
-  line-height:1.35;
-}
-
-.live-quick-grid{
-  display:grid;
-  grid-template-columns:
-    repeat(3,minmax(0,1fr));
-  gap:12px;
-  margin-top:16px;
-}
-
-.live-quick{
-  padding:15px;
-  background:#fff;
-  border:1px solid #e6ded2;
-  border-radius:7px;
-}
-
-.live-quick span{
-  display:block;
-  font-size:10px;
-  letter-spacing:.8px;
-  text-transform:uppercase;
-  color:#7a6f65;
-}
-
-.live-quick strong{
-  display:block;
-  margin-top:6px;
-  font-size:20px;
-  line-height:1.25;
-}
-
-.live-quick small{
-  display:block;
-  margin-top:4px;
-  color:#746a60;
-  font-size:12px;
-}
-
-#dashboardCurrentProduction .live-actions{
-  margin-top:18px;
-}
-
-@media(max-width:900px){
-
-  #dashboardModelsProduction
-  .live-model-stats{
-    grid-template-columns:
-      repeat(2,minmax(0,1fr));
-  }
-
-  .live-quick-grid{
-    grid-template-columns:1fr;
-  }
+@media(max-width:760px){
+  .main{margin-left:0;width:100%;padding:76px 18px 28px}
+  .dashboard-greeting h1{font-size:28px}
+  .dashboard-user-meta{justify-content:flex-start;flex-wrap:wrap}
+  .dashboard-date{text-align:left}
+  .dashboard-kpis{grid-template-columns:1fr}
+  .goal-form{grid-template-columns:1fr}
+  .dashboard-secondary-grid{grid-template-columns:1fr}
+  .day-progress-layout{grid-template-columns:1fr}
+  .day-progress-circle{margin:0 auto}
 }
 
 @media(max-width:520px){
-
-  #dashboardModelsProduction
-  .live-model-stats{
-    grid-template-columns:1fr;
-  }
+  .goal-card,.ops-card{padding:18px}
+  .dashboard-greeting h1{font-size:25px}
+  .dashboard-user-meta{display:none}
+  .section-title-row{flex-direction:column}
+  .dashboard-kpi{padding:18px}
+  .live-state-grid,.quality-grid,.live-model-grid{grid-template-columns:1fr}
 }
-
 </style>
 
-<div style="display:flex;justify-content:flex-end;margin-bottom:18px;">
-  <div class="ops-status {{ operational.status }}">
-    {{ operational.status_label|upper }}
-  </div>
-</div>
+<div class="dashboard-shell">
 
-
-<section class="goal-card">
-
-  {% if goal %}
-  <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
-    <strong>{{ operational.progress }}%</strong>
-  </div>
-  {% endif %}
-
-
-  <div class="goal-values">
-
-    <div class="metric">
-      <strong id="dashInspected">
-       {{ stats.inspected }}
-       {% if goal %}/{{ goal.target_garments }}{% endif %}
-      </strong>
-      <span>Prendas inspeccionadas</span>
-     </div>
-
-    <div class="metric">
-      <strong id="dashReviewLots">0</strong>
-      <span>Lotes pendientes de revisi&oacute;n</span>
-     </div>
-
-    <div class="metric">
-      <strong id="dashRemainingGarments">
-       {% if goal %}
-        {{ operational.remaining_garments }}
-       {% else %}
-        &mdash;
-       {% endif %}
-      </strong>
-      <span>Prendas pendientes</span>
-     </div>
-
-    <div class="metric">
-      <strong id="dashPendingAlerts">
-       {{ stats.pending_alerts }}
-      </strong>
-      <span>Alertas pendientes hoy</span>
-     </div>
-
-  </div>
-
-
-  {% if goal %}
-  <div class="progress">
-    <div style="width:{{ operational.progress }}%"></div>
-  </div>
-  {% endif %}
-
-
-  {% if role == 'ADMIN' %}
-
-  {% if not goal %}
-
-  <form
-    class="goal-form"
-    method="post"
-    action="{{ url_for('dashboard_daily_goal') }}"
-  >
-
-    <input
-      type="hidden"
-      name="goal_action"
-      value="create"
-    >
-
-    <div class="goal-field">
-      <div class="goal-label-row">
-        <label for="targetBatches">
-          Objetivo de lotes
-        </label>
-      </div>
-
-      <input
-        class="goal-control"
-        type="number"
-        id="targetBatches"
-        name="target_batches"
-        min="1"
-        required
-        value="3"
-      >
-
-      <div class="goal-hint-slot">
-        &nbsp;
-      </div>
+  <header class="dashboard-topbar">
+    <div class="dashboard-greeting">
+      <h1>¡Hola, {{ session.get('username', 'Administrador') }}!</h1>
+      <p>Bienvenido al sistema de control de calidad</p>
     </div>
 
-
-    <div class="goal-field">
-
-      <div class="goal-label-row">
-        <label for="targetGarments">
-          Objetivo de prendas
-        </label>
+    <div class="dashboard-user-meta">
+      <div class="dashboard-date">
+        <strong>{{ now_gt.strftime('%d/%m/%Y') }}</strong>
+        {{ now_gt.strftime('%I:%M:%S %p') }}
       </div>
-
-      <input
-        class="goal-control"
-        type="number"
-        id="targetGarments"
-        name="target_garments"
-        min="1"
-        required
-        value="300"
-      >
-
-      <div class="goal-meta-actions">
-
-        <button
-          id="goalModeBtn"
-          class="goal-mode-btn"
-          type="button"
-        >
-          Usar cantidad espec&iacute;fica
-        </button>
-
-        <span
-          id="goalModeHint"
-          class="goal-mode-hint"
-        >
-          100 prendas por lote
-        </span>
-
+      <div class="dashboard-avatar">{{ session.get('username', 'A')[:1]|upper }}</div>
+      <div class="dashboard-user-name">
+        {% if role == 'ADMIN' %}Administrador{% elif role == 'MODEL_MANAGER' %}Encargado de modelos{% else %}Gestor de calidad{% endif %}
       </div>
     </div>
+  </header>
 
-
-    <div class="goal-field">
-      <div class="goal-label-row">
-        <label for="shiftStart">
-          Inicio del turno
-        </label>
+  <section class="dashboard-kpis" aria-label="Resumen operativo">
+    <article class="dashboard-kpi">
+      <div class="kpi-icon kpi-pink">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4 4.5 6 3 10l3 1.5V20h12v-8.5L21 10l-1.5-4L16 4c-1 1.2-2.3 1.8-4 1.8S9 5.2 8 4Z"/></svg>
       </div>
-
-      <input
-        class="goal-control"
-        id="shiftStart"
-        type="time"
-        name="shift_start"
-        required
-        value="08:00"
-      >
-
-      <div class="goal-hint-slot">
-        &nbsp;
-      </div>
-    </div>
-
-
-    <div class="goal-field">
-      <div class="goal-label-row">
-        <label for="shiftEnd">
-          Fin del turno
-        </label>
-      </div>
-
-      <input
-        class="goal-control"
-        id="shiftEnd"
-        type="time"
-        name="shift_end"
-        required
-        value="17:00"
-      >
-
-      <div class="goal-hint-slot">
-        &nbsp;
-      </div>
-    </div>
-
-
-    <div class="goal-submit-wrap">
-      <button
-        class="goal-save-btn"
-        type="submit"
-      >
-        Definir objetivo
-      </button>
-    </div>
-
-  </form>
-
-
-  {% else %}
-
-  <div class="goal-defined">
-
-    <div class="goal-defined-top">
-
       <div>
-        <div class="goal-defined-title">
-          Objetivo de hoy definido
-        </div>
+        <strong id="dashInspected">{{ stats.inspected }}{% if goal %} / {{ goal.target_garments }}{% endif %}</strong>
+        <span>Prendas inspeccionadas</span>
+      </div>
+    </article>
 
-        <div class="goal-defined-note">
-          {{ goal.target_batches }} lote{% if goal.target_batches != 1 %}s{% endif %}
-          &middot;
-          {{ goal.target_garments }} prendas
-          &middot;
-          {{ operational.shift_start.strftime('%H:%M') }}
-          -
-          {{ operational.shift_end.strftime('%H:%M') }}
-        </div>
+    <article class="dashboard-kpi">
+      <div class="kpi-icon kpi-blue">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 7 4-7 4-7-4 7-4Z"/><path d="m5 7 7 4 7-4v8l-7 4-7-4V7Z"/></svg>
+      </div>
+      <div>
+        <strong id="dashReviewLots">0</strong>
+        <span>Lotes pendientes de revisión</span>
+      </div>
+    </article>
 
-        <div class="goal-defined-note">
-          La producci&oacute;n inspeccionada no se reinicia
-          al ajustar el objetivo.
+    <article class="dashboard-kpi">
+      <div class="kpi-icon kpi-yellow">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>
+      </div>
+      <div>
+        <strong id="dashRemainingGarments">{% if goal %}{{ operational.remaining_garments }}{% else %}&mdash;{% endif %}</strong>
+        <span>Prendas pendientes</span>
+      </div>
+    </article>
+
+    <article class="dashboard-kpi">
+      <div class="kpi-icon kpi-pink">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>
+      </div>
+      <div>
+        <strong id="dashPendingAlerts">{{ stats.pending_alerts }}</strong>
+        <span>Alertas pendientes hoy</span>
+      </div>
+    </article>
+  </section>
+
+  <section class="dash-card goal-card">
+    <div class="section-title-row">
+      <div class="section-title-wrap">
+        <div class="section-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><path d="M12 4V1M20 12h3"/></svg>
+        </div>
+        <div>
+          <h2>Objetivo de la jornada</h2>
+          <p>Configure el objetivo diario para calcular ritmo, tiempo restante y riesgo de incumplimiento.</p>
         </div>
       </div>
-
-      <button
-        id="showGoalAdjustBtn"
-        type="button"
-        class="goal-adjust-btn"
-      >
-        Ajustar objetivo
-      </button>
-
+      <div class="ops-status {{ operational.status }}">{{ operational.status_label|upper }}</div>
     </div>
 
-
-    <form
-      id="goalAdjustForm"
-      class="goal-form goal-adjust-form"
-      method="post"
-      action="{{ url_for('dashboard_daily_goal') }}"
-    >
-
-      <input
-        type="hidden"
-        name="goal_action"
-        value="adjust"
-      >
-
+    {% if not goal and role == 'ADMIN' %}
+    <form class="goal-form" method="post" action="{{ url_for('dashboard_daily_goal') }}">
+      <input type="hidden" name="goal_action" value="create">
 
       <div class="goal-field">
-        <div class="goal-label-row">
-          <label for="targetBatches">
-            Objetivo de lotes
-          </label>
-        </div>
-
-        <input
-          class="goal-control"
-          type="number"
-          id="targetBatches"
-          name="target_batches"
-          min="1"
-          required
-          value="{{ goal.target_batches }}"
-        >
-
-        <div class="goal-hint-slot">
-          &nbsp;
-        </div>
+        <div class="goal-label-row"><label for="targetBatches">Objetivo de lotes</label></div>
+        <input class="goal-control" type="number" id="targetBatches" name="target_batches" min="1" required value="3">
+        <div class="goal-hint-slot">&nbsp;</div>
       </div>
 
-
       <div class="goal-field">
-
-        <div class="goal-label-row">
-          <label for="targetGarments">
-            Objetivo de prendas
-          </label>
-        </div>
-
-        <input
-          class="goal-control"
-          type="number"
-          id="targetGarments"
-          name="target_garments"
-          min="1"
-          required
-          value="{{ goal.target_garments }}"
-        >
-
+        <div class="goal-label-row"><label for="targetGarments">Objetivo de prendas</label></div>
+        <input class="goal-control" type="number" id="targetGarments" name="target_garments" min="1" required value="300">
         <div class="goal-meta-actions">
-
-          <button
-            id="goalModeBtn"
-            class="goal-mode-btn"
-            type="button"
-          >
-            Usar cantidad espec&iacute;fica
-          </button>
-
-          <span
-            id="goalModeHint"
-            class="goal-mode-hint"
-          >
-            100 prendas por lote
-          </span>
-
+          <button id="goalModeBtn" class="goal-mode-btn" type="button">Usar cantidad específica</button>
+          <span id="goalModeHint" class="goal-mode-hint">100 prendas por lote</span>
         </div>
       </div>
-
 
       <div class="goal-field">
-        <div class="goal-label-row">
-          <label for="shiftStart">
-            Inicio del turno
-          </label>
-        </div>
-
-        <input
-          class="goal-control"
-          id="shiftStart"
-          type="time"
-          name="shift_start"
-          required
-          value="{{ operational.shift_start.strftime('%H:%M') }}"
-        >
+        <div class="goal-label-row"><label for="shiftStart">Inicio del turno</label></div>
+        <input class="goal-control" id="shiftStart" type="time" name="shift_start" required value="08:00">
+        <div class="goal-hint-slot">&nbsp;</div>
       </div>
-
 
       <div class="goal-field">
-        <div class="goal-label-row">
-          <label for="shiftEnd">
-            Fin del turno
-          </label>
-        </div>
-
-        <input
-          class="goal-control"
-          id="shiftEnd"
-          type="time"
-          name="shift_end"
-          required
-          value="{{ operational.shift_end.strftime('%H:%M') }}"
-        >
+        <div class="goal-label-row"><label for="shiftEnd">Fin del turno</label></div>
+        <input class="goal-control" id="shiftEnd" type="time" name="shift_end" required value="17:00">
+        <div class="goal-hint-slot">&nbsp;</div>
       </div>
 
-
-      <div class="goal-submit-wrap">
-        <button
-          class="goal-save-btn"
-          type="submit"
-        >
-          Guardar ajuste
-        </button>
-      </div>
-
-
-      <div class="goal-adjust-reason">
-
-        <label for="adjustmentReason">
-          Motivo del ajuste
-        </label>
-
-        <textarea
-          id="adjustmentReason"
-          name="adjustment_reason"
-          minlength="10"
-          maxlength="500"
-          required
-          placeholder="Explique por qu&eacute; debe modificarse el objetivo del d&iacute;a."
-        ></textarea>
-
-      </div>
-
+      <div class="goal-submit-wrap"><button class="goal-save-btn" type="submit">Definir objetivo →</button></div>
     </form>
 
-  </div>
+    {% elif goal and role == 'ADMIN' %}
+    <div class="goal-defined">
+      <div class="goal-defined-top">
+        <div>
+          <div class="goal-defined-title">Objetivo de hoy definido</div>
+          <div class="goal-defined-note">{{ goal.target_batches }} lote{% if goal.target_batches != 1 %}s{% endif %} · {{ goal.target_garments }} prendas · {{ operational.shift_start.strftime('%H:%M') }} - {{ operational.shift_end.strftime('%H:%M') }}</div>
+          <div class="goal-defined-note">La producción inspeccionada no se reinicia al ajustar el objetivo.</div>
+        </div>
+        <button id="showGoalAdjustBtn" type="button" class="goal-adjust-btn">Ajustar objetivo</button>
+      </div>
 
-  {% endif %}
+      <form id="goalAdjustForm" class="goal-form goal-adjust-form" method="post" action="{{ url_for('dashboard_daily_goal') }}">
+        <input type="hidden" name="goal_action" value="adjust">
 
-{% endif %}
+        <div class="goal-field">
+          <div class="goal-label-row"><label for="targetBatches">Objetivo de lotes</label></div>
+          <input class="goal-control" type="number" id="targetBatches" name="target_batches" min="1" required value="{{ goal.target_batches }}">
+          <div class="goal-hint-slot">&nbsp;</div>
+        </div>
 
-</section>
+        <div class="goal-field">
+          <div class="goal-label-row"><label for="targetGarments">Objetivo de prendas</label></div>
+          <input class="goal-control" type="number" id="targetGarments" name="target_garments" min="1" required value="{{ goal.target_garments }}">
+          <div class="goal-meta-actions">
+            <button id="goalModeBtn" class="goal-mode-btn" type="button">Usar cantidad específica</button>
+            <span id="goalModeHint" class="goal-mode-hint">100 prendas por lote</span>
+          </div>
+        </div>
 
+        <div class="goal-field">
+          <div class="goal-label-row"><label for="shiftStart">Inicio del turno</label></div>
+          <input class="goal-control" id="shiftStart" type="time" name="shift_start" required value="{{ operational.shift_start.strftime('%H:%M') }}">
+        </div>
 
-<div class="ops-grid">
+        <div class="goal-field">
+          <div class="goal-label-row"><label for="shiftEnd">Fin del turno</label></div>
+          <input class="goal-control" id="shiftEnd" type="time" name="shift_end" required value="{{ operational.shift_end.strftime('%H:%M') }}">
+        </div>
 
-  <section class="ops-card">
-    <h2>Estado de la jornada</h2>
+        <div class="goal-submit-wrap"><button class="goal-save-btn" type="submit">Guardar ajuste</button></div>
+
+        <div class="goal-adjust-reason">
+          <label for="adjustmentReason">Motivo del ajuste</label>
+          <textarea id="adjustmentReason" name="adjustment_reason" minlength="10" maxlength="500" required placeholder="Explique por qué debe modificarse el objetivo del día."></textarea>
+        </div>
+      </form>
+    </div>
+
+    {% elif goal %}
+      <div class="goal-defined">
+        <div class="goal-defined-title">Objetivo de hoy</div>
+        <div class="goal-defined-note">{{ goal.target_batches }} lote{% if goal.target_batches != 1 %}s{% endif %} · {{ goal.target_garments }} prendas · {{ operational.shift_start.strftime('%H:%M') }} - {{ operational.shift_end.strftime('%H:%M') }}</div>
+      </div>
+    {% endif %}
 
     {% if goal %}
-
-    <div class="info-row">
-      <span>Tiempo restante</span>
-      <strong>
-        {{ operational.remaining_minutes // 60 }} h
-        {{ operational.remaining_minutes % 60 }} min
-      </strong>
-    </div>
-
-    <div class="info-row">
-      <span>Ritmo actual</span>
-      <strong>{{ operational.current_rate }} prendas/h</strong>
-    </div>
-
-    <div class="info-row">
-      <span>Ritmo necesario</span>
-      <strong>{{ operational.required_rate }} prendas/h</strong>
-    </div>
-
-    <div class="info-row">
-      <span>Lotes pendientes</span>
-      <strong>{{ operational.remaining_batches }}</strong>
-    </div>
-
-    {% if operational.estimated_finish %}
-    <div class="info-row">
-      <span>Finalizaci&oacute;n estimada</span>
-      <strong>
-        {{ operational.estimated_finish.strftime('%H:%M') }}
-      </strong>
-    </div>
-    {% endif %}
-
-    {% else %}
-
-    <p>
-      Configure el objetivo diario para calcular ritmo,
-      tiempo restante y riesgo de incumplimiento.
-    </p>
-
+      <div class="progress"><div style="width:{{ operational.progress }}%"></div></div>
     {% endif %}
   </section>
 
-
-
-<section
- class="ops-card"
- id="dashboardCurrentProduction"
->
-
- <div class="live-head">
-
-  <h2>
-   Producci&oacute;n en este momento
-  </h2>
-
-  <span
-   id="dashboardLiveIndicator"
-   class="live-indicator"
-  >
-   Consultando
-  </span>
-
- </div>
-
- <div
-  id="dashboardLiveMain"
-  class="live-main"
- >
-  Consultando estado actual...
- </div>
-
- <div class="live-state-grid">
-
-  <div class="live-state">
-   <strong id="livePreparing">0</strong>
-   <span>En preparaci&oacute;n</span>
-  </div>
-
-  <div class="live-state">
-   <strong id="liveInspecting">0</strong>
-   <span>En inspecci&oacute;n</span>
-  </div>
-
-  <div class="live-state">
-   <strong id="liveReviewPending">0</strong>
-   <span>Pendientes de revisi&oacute;n</span>
-  </div>
-
- </div>
-
-</section>
-
-
-</div>
-
-
-<div class="ops-grid">
-
-  <section class="ops-card">
-
-    <h2>Calidad de hoy</h2>
-
-    <div class="quality-grid">
-
-      <div class="quality-item">
-        <strong>{{ stats.alerts }}</strong>
-        <span>Alertas detectadas</span>
+  <div class="dashboard-main-grid">
+    <section class="dash-card ops-card">
+      <div class="section-title-row">
+        <div class="section-title-wrap">
+          <div class="section-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M9 20V5M14 20v-8M19 20V2"/></svg>
+          </div>
+          <div><h2>Estado de la jornada</h2><p>Avance general hacia el objetivo del día.</p></div>
+        </div>
       </div>
 
-      <div class="quality-item">
-        <strong>
-          {{ stats.confirmed_defects }}
-        </strong>
-        <span>Defectos confirmados</span>
+      {% if goal %}
+      <div class="day-progress-layout">
+        <div class="day-progress-circle" style="--progress:{{ operational.progress }}">
+          <div><strong>{{ operational.progress }}%</strong><span>Avance del objetivo</span></div>
+        </div>
+        <div>
+          <div class="info-row"><span>Tiempo restante</span><strong>{{ operational.remaining_minutes // 60 }} h {{ operational.remaining_minutes % 60 }} min</strong></div>
+          <div class="info-row"><span>Ritmo actual</span><strong>{{ operational.current_rate }} prendas/h</strong></div>
+          <div class="info-row"><span>Ritmo necesario</span><strong>{{ operational.required_rate }} prendas/h</strong></div>
+          <div class="info-row"><span>Lotes pendientes</span><strong>{{ operational.remaining_batches }}</strong></div>
+          {% if operational.estimated_finish %}<div class="info-row"><span>Finalización estimada</span><strong>{{ operational.estimated_finish.strftime('%H:%M') }}</strong></div>{% endif %}
+        </div>
+      </div>
+      {% else %}
+      <div class="day-state-empty">
+        <div class="empty-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h8l3 3v15H7z"/><path d="M15 3v4h4M10 12h5M10 16h5"/></svg></div>
+        <strong>Aún no hay actividad</strong>
+        <p>Configure el objetivo del turno para comenzar el seguimiento de la producción.</p>
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="dash-card ops-card" id="dashboardCurrentProduction">
+      <div class="live-head">
+        <div class="section-title-wrap">
+          <div class="section-icon blue"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17 9 12l4 3 7-8"/><path d="M16 7h4v4"/></svg></div>
+          <div><h2>Producción en este momento</h2><p>Estado actual de la línea de inspección.</p></div>
+        </div>
+        <span id="dashboardLiveIndicator" class="live-indicator">Consultando</span>
       </div>
 
-      <div class="quality-item">
-        <strong>
-          {{ stats.pending_alerts }}
-        </strong>
-        <span>Pendientes de revisi&oacute;n</span>
+      <div id="dashboardLiveMain" class="live-main">Consultando estado actual...</div>
+
+      <div class="live-state-grid">
+        <div class="live-state"><strong id="livePreparing">0</strong><span>En preparación</span></div>
+        <div class="live-state"><strong id="liveInspecting">0</strong><span>En inspección</span></div>
+        <div class="live-state"><strong id="liveReviewPending">0</strong><span>Pendientes de revisión</span></div>
       </div>
-
-    </div>
-
-    {% if stats.pending_alerts %}
-    <p style="margin-top:18px;color:#776c61;">
-      La calidad del d&iacute;a todav&iacute;a es provisional:
-      hay alertas pendientes de revisi&oacute;n.
-    </p>
-    {% endif %}
-
-  </section>
-
-
-
-<section
- class="ops-card"
- id="dashboardModelsProduction"
->
-
- <h2>
-  Prendas inspeccionadas hoy por modelo
- </h2>
-
- <p
-  style="margin-top:-8px;color:#756b61;"
- >
-  Resumen por modelo de las prendas inspeccionadas hoy.
- </p>
-
- <div
-  id="dashboardLiveModels"
-  class="live-model-grid"
- >
-  <div class="live-empty">
-   Consultando producci&oacute;n...
+    </section>
   </div>
- </div>
 
-</section>
+  <div class="dashboard-secondary-grid">
+    <section class="dash-card ops-card">
+      <h2>Calidad de hoy</h2>
+      <div class="quality-grid">
+        <div class="quality-item"><strong>{{ stats.alerts }}</strong><span>Alertas detectadas</span></div>
+        <div class="quality-item"><strong>{{ stats.confirmed_defects }}</strong><span>Defectos confirmados</span></div>
+        <div class="quality-item"><strong>{{ stats.pending_alerts }}</strong><span>Pendientes de revisión</span></div>
+      </div>
+      {% if stats.pending_alerts %}<p style="margin:16px 0 0;color:#75839a;font-size:12px;">La calidad del día todavía es provisional: hay alertas pendientes de revisión.</p>{% endif %}
+    </section>
 
+    <section class="dash-card ops-card" id="dashboardModelsProduction">
+      <h2>Prendas inspeccionadas hoy por modelo</h2>
+      <p style="margin:6px 0 0;color:#75839a;font-size:12px;">Resumen por modelo de las prendas inspeccionadas hoy.</p>
+      <div id="dashboardLiveModels" class="live-model-grid"><div class="live-empty">Consultando producción...</div></div>
+    </section>
+  </div>
+
+  <footer class="dashboard-footer">
+    <div><strong>Astrid & Beverly Fashion</strong> &nbsp;|&nbsp; Sistema de control de calidad</div>
+    <div style="display:flex;align-items:center;gap:12px;"><div class="brand-stripes"><i></i><i></i><i></i></div><span>El detalle de lucir bien</span></div>
+  </footer>
 
 </div>
 
@@ -1942,4 +1313,3 @@ document.addEventListener(
 </script>
 
 {% endblock %}
-
