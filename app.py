@@ -10176,6 +10176,47 @@ def informe_excel():
 
     data = get_informe_data()
 
+    # Trazabilidad del usuario que genera el informe Excel.
+    # Solo agrega metadatos al archivo; no modifica métricas ni cálculos.
+    excel_report_user = fetch_one(
+        "SELECT username, full_name, role FROM users WHERE id = %s",
+        (session.get("user_id"),),
+    ) or {}
+
+    excel_generated_by_username = (
+        excel_report_user.get("username")
+        or session.get("username")
+        or "usuario"
+    )
+
+    excel_generated_by_name = (
+        excel_report_user.get("full_name")
+        or excel_generated_by_username
+    )
+
+    excel_generated_by_role = normalize_role(
+        excel_report_user.get("role")
+        or session.get("role")
+    )
+
+    excel_generated_by_role_label = {
+        "ADMIN": "Administrador",
+        "MODEL_MANAGER": "Encargado de modelos",
+        "QUALITY_MANAGER": "Gestor de calidad",
+    }.get(
+        excel_generated_by_role,
+        excel_generated_by_role or "Sin rol",
+    )
+
+    if excel_generated_by_name != excel_generated_by_username:
+        excel_generated_by_display = (
+            f"{excel_generated_by_name} "
+            f"(@{excel_generated_by_username})"
+        )
+    else:
+        excel_generated_by_display = excel_generated_by_username
+
+
     insights = build_report_insights(
         data
     )
@@ -10266,7 +10307,7 @@ def informe_excel():
             get_column_letter(column)
         ].width = 16
 
-    cover_sheet.row_dimensions[2].height = 115
+    cover_sheet.row_dimensions[2].height = 165
 
     if logo_path.exists():
         excel_logo = XLImage(
@@ -10280,7 +10321,7 @@ def informe_excel():
             excel_logo.height or 1
         )
 
-        target_width = 250
+        target_width = 340
 
         excel_logo.width = target_width
         excel_logo.height = (
@@ -10294,7 +10335,7 @@ def informe_excel():
         excel_logo.anchor = OneCellAnchor(
             _from=AnchorMarker(
                 col=3,
-                colOff=pixels_to_EMU(90),
+                colOff=pixels_to_EMU(5),
                 row=1,
                 rowOff=0,
             ),
@@ -10376,8 +10417,27 @@ def informe_excel():
         italic=True,
     )
     cover_sheet["B15"].alignment = Alignment(
+
         horizontal="center",
     )
+
+    # Responsable que generó el archivo.
+    cover_sheet.merge_cells("B16:H16")
+    cover_sheet["B16"] = (
+        f"Generado por: {excel_generated_by_display} | "
+        f"Rol: {excel_generated_by_role_label}"
+    )
+    cover_sheet["B16"].font = Font(
+        name="Calibri",
+        size=10,
+        italic=True,
+        color="666666",
+    )
+    cover_sheet["B16"].alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+    )
+    cover_sheet.row_dimensions[16].height = 18
 
     cover_sheet.merge_cells(
         "B18:H18"
@@ -12324,6 +12384,44 @@ def informe_pdf():
         timezone_gt
     )
 
+
+    # Trazabilidad del usuario que genera el informe PDF.
+    # Se consulta el usuario autenticado sin modificar la sesión ni
+    # ninguna métrica, filtro o cálculo del informe.
+    current_report_user = fetch_one(
+        """
+        SELECT username, full_name, role
+        FROM users
+        WHERE id = %s
+        """,
+        (session.get("user_id"),),
+    ) or {}
+
+    generated_by_username = (
+        current_report_user.get("username")
+        or session.get("username")
+        or "usuario"
+    )
+
+    generated_by_name = (
+        current_report_user.get("full_name")
+        or generated_by_username
+    )
+
+    generated_by_role = normalize_role(
+        current_report_user.get("role")
+        or session.get("role")
+    )
+
+    generated_by_role_label = {
+        "ADMIN": "Administrador",
+        "MODEL_MANAGER": "Encargado de modelos",
+        "QUALITY_MANAGER": "Gestor de calidad",
+    }.get(
+        generated_by_role,
+        generated_by_role or "Sin rol",
+    )
+
     buffer = io.BytesIO()
 
     page_size = landscape(letter)
@@ -12734,6 +12832,33 @@ def informe_pdf():
                     "%d/%m/%Y %H:%M"
                 )
             ),
+            exact_style,
+        )
+    )
+
+    generated_by_text = (
+        "Generado por: "
+        + escape(str(generated_by_name))
+    )
+
+    if (
+        generated_by_username
+        and str(generated_by_username) != str(generated_by_name)
+    ):
+        generated_by_text += (
+            " (@"
+            + escape(str(generated_by_username))
+            + ")"
+        )
+
+    generated_by_text += (
+        " | Rol: "
+        + escape(str(generated_by_role_label))
+    )
+
+    elements.append(
+        Paragraph(
+            generated_by_text,
             exact_style,
         )
     )
