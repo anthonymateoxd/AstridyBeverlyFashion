@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="es">
 <head>
     <meta charset="utf-8">
@@ -16,32 +16,205 @@
     >
 
     <style>
+        :root {
+            --ui-navy: #0d2a66;
+            --ui-navy-soft: #24487f;
+            --ui-text: #10275a;
+            --ui-muted: #7080a1;
+            --ui-pink: #f43788;
+            --ui-pink-soft: #fde8f1;
+            --ui-blue: #1597dc;
+            --ui-blue-soft: #e7f4fc;
+            --ui-yellow: #ffc928;
+            --ui-yellow-soft: #fff5cf;
+            --ui-green: #11a765;
+            --ui-green-soft: #e5f7ed;
+            --ui-surface: #ffffff;
+            --ui-bg: #f6f8fb;
+            --ui-line: #e4e9f1;
+            --ui-shadow: 0 14px 34px rgba(22, 45, 82, .055);
+        }
+
+        body.app-body {
+            background: var(--ui-bg);
+            color: var(--ui-text);
+            font-family: Arial, Helvetica, sans-serif;
+        }
+
         .global-flash {
             margin: 0 0 18px 0;
             padding: 12px 15px;
-            border-radius: 9px;
-            font-weight: 600;
+            border-radius: 12px;
+            font-weight: 700;
+            font-family: Arial, Helvetica, sans-serif;
         }
 
         .global-flash.success {
-            background: #e6f4ea;
-            color: #236a3b;
+            background: var(--ui-green-soft);
+            color: #1f7b4d;
         }
 
         .global-flash.error {
-            background: #f7e5e5;
-            color: #8d2929;
+            background: #fbe8e8;
+            color: #963737;
+        }
+
+        .sidebar {
+            width: 250px !important;
+            padding: 22px 18px;
+            background: #fff;
+            border-right: 1px solid var(--ui-line);
+            box-shadow: 8px 0 30px rgba(34, 52, 80, .025);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .brand {
+            margin: 0 0 24px;
+            padding: 0 6px 18px;
+            border-bottom: 1px solid var(--ui-line);
+            text-align: left;
+        }
+
+        .brand img {
+            width: 155px;
+            height: 98px;
+            object-fit: contain;
+            display: block;
         }
 
         .sidebar-role {
-            padding: 5px 14px 14px;
-            font-size: .78rem;
-            opacity: .7;
+            padding: 0 14px 12px;
+            color: #6d7890;
+            font-size: 13px;
+            font-weight: 700;
+            font-family: Arial, Helvetica, sans-serif;
+            opacity: 1;
+        }
+
+        .sidebar nav {
+            display: block;
+        }
+
+        .sidebar nav a {
+            min-height: 44px !important;
+            display: flex;
+            align-items: center;
+            gap: 8px !important;
+            margin: 4px 0;
+            padding: 0 12px !important;
+            border-radius: 8px;
+            color: #163366;
+            background: transparent;
+            text-decoration: none;
+            font-size: 13px !important;
+            line-height: 1.2 !important;
+            font-weight: 600;
+            font-family: Arial, Helvetica, sans-serif !important;
+            transition: background .18s ease, color .18s ease, transform .18s ease;
+            width: 100%;
+            max-width: 100%;
+            overflow: hidden;
+        }
+
+        .sidebar nav a svg {
+            width: 20px;
+            height: 20px;
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 1.9;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            flex: 0 0 auto;
+        }
+
+
+        .sidebar nav a span {
+            min-width: 0;
+            flex: 1 1 auto;
+            white-space: nowrap;
+        }
+
+        .sidebar nav a:hover {
+            color: var(--ui-navy);
+            background: #f5f7fb;
+        }
+
+        .sidebar nav a.active {
+            position: relative;
+            color: var(--ui-navy);
+            background: linear-gradient(90deg, #fff6cf 0%, #fff9e8 100%);
+            font-weight: 800;
+        }
+
+        .sidebar nav a.active::before {
+            content: "";
+            position: absolute;
+            left: -18px;
+            top: 50%;
+            bottom: auto;
+            width: 4px;
+            height: 44px;
+            transform: translateY(-50%);
+            border-radius: 0 4px 4px 0;
+            background: var(--ui-yellow);
+        }
+
+        .sidebar-footer-brand {
+            margin-top: auto;
+            padding: 22px 14px 0;
+            border-top: 1px solid var(--ui-line);
+            color: #64728f;
+            font-family: Arial, Helvetica, sans-serif;
+        }
+
+        .sidebar-footer-brand strong {
+            display: block;
+            margin-bottom: 4px;
+            color: #33496f;
+            font-size: 12px;
+        }
+
+        .sidebar-footer-brand span {
+            display: block;
+            font-size: 11px;
+        }
+
+        .main {
+            margin-left: 250px !important;
+            width: calc(100% - 250px) !important;
+            padding: 26px 32px 36px;
+        }
+
+        .mobile-menu-toggle {
+            border-radius: 10px;
+            background: var(--ui-navy);
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                width: min(86vw, 290px) !important;
+                padding: 22px 18px;
+            }
+
+            .sidebar nav a span {
+                white-space: normal;
+            }
+
+            .sidebar nav a.active::before {
+                left: -18px;
+            }
+
+            .main {
+                margin-left: 0 !important;
+                width: 100% !important;
+                padding: 76px 18px 36px;
+            }
         }
     </style>
 </head>
 
-<body class="app-body">
+<body class="app-body {% block body_class %}{% endblock %}">
 
     <!-- MOBILE_NAV_V1 -->
     <button
@@ -50,7 +223,7 @@
       type="button"
       aria-controls="appSidebar"
       aria-expanded="false"
-      aria-label="Abrir men&uacute;"
+      aria-label="Abrir menú"
     >
       &#9776;
     </button>
@@ -60,36 +233,30 @@
         <div class="brand">
             <img
                 src="{{ url_for('static', filename='img/logo.jpg') }}"
-                alt="Astrid y Beverly"
+                alt="Astrid & Beverly Fashion"
             >
         </div>
 
         {% set current_role = session.get('role', '') %}
 
         <div class="sidebar-role">
-
             {% if current_role == 'ADMIN' %}
                 Administrador
-
             {% elif current_role == 'MODEL_MANAGER' %}
                 Encargado de modelos
-
             {% elif current_role == 'QUALITY_MANAGER' %}
                 Gestor de calidad
-
             {% endif %}
-
         </div>
 
         <nav>
-
             <a
                 class="{% if request.endpoint == 'dashboard' %}active{% endif %}"
                 href="{{ url_for('dashboard') }}"
             >
-                Panel principal
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-7h6v7"/></svg>
+                <span>Panel principal</span>
             </a>
-
 
             <a
                 class="{% if request.endpoint in [
@@ -102,9 +269,9 @@
                 ] %}active{% endif %}"
                 href="{{ url_for('garment_models_page') }}"
             >
-                Modelos de prenda
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4 5 5.5 2.5 9l3 2 1.5-1v10h10V10l1.5 1 3-2L19 5.5 16 4c-.8 1.3-2.1 2-4 2S8.8 5.3 8 4Z"/></svg>
+                <span>Modelos de prenda</span>
             </a>
-
 
             <a
                 class="{% if request.endpoint in [
@@ -114,36 +281,35 @@
                 ] %}active{% endif %}"
                 href="{{ url_for('batches') }}"
             >
-                Lotes
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 7 8-4 8 4-8 4-8-4Z"/><path d="m4 12 8 4 8-4M4 17l8 4 8-4"/></svg>
+                <span>Lotes</span>
             </a>
 
-
             {% if current_role in ['ADMIN', 'QUALITY_MANAGER'] %}
-
             <a
-                class="{% if request.endpoint == 'station' %}active{% endif %}"
+                class="nav-long {% if request.endpoint == 'station' %}active{% endif %}"
                 href="{{ url_for('station') }}"
             >
-                EstaciÃ³n automÃ¡tica
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4v-.2a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
+                <span>Estación automática</span>
             </a>
 
             <a
                 class="{% if request.endpoint == 'inspection' %}active{% endif %}"
                 href="{{ url_for('inspection') }}"
             >
-                InspecciÃ³n en vivo
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.7"/></svg>
+                <span>Inspección en vivo</span>
             </a>
-
             {% endif %}
 
-
             <a
-                class="{% if request.endpoint == 'records' %}active{% endif %}"
+                class="nav-long {% if request.endpoint == 'records' %}active{% endif %}"
                 href="{{ url_for('records') }}"
             >
-                Historial de inspecciones
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6Z"/><path d="M15 3v4h4M9 11h6M9 15h6M9 19h4"/></svg>
+                <span>Historial de inspecciones</span>
             </a>
-
 
             <a
                 class="{% if request.endpoint in [
@@ -153,12 +319,11 @@
                 ] %}active{% endif %}"
                 href="{{ url_for('informes') }}"
             >
-                Informes
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M9 20V4M14 20v-7M19 20V7M2 20h20"/></svg>
+                <span>Informes</span>
             </a>
 
-
             {% if current_role == 'ADMIN' %}
-
             <a
                 class="{% if request.endpoint in [
                     'users_admin',
@@ -167,20 +332,22 @@
                 ] %}active{% endif %}"
                 href="{{ url_for('users_admin') }}"
             >
-                Usuarios
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-4 3-6 7-6s6.4 2 7 6"/></svg>
+                <span>Usuarios</span>
             </a>
-
             {% endif %}
 
-
             <a href="{{ url_for('logout') }}">
-                Salir
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4H5v16h5M14 8l4 4-4 4M8 12h10"/></svg>
+                <span>Salir</span>
             </a>
-
         </nav>
 
+        <div class="sidebar-footer-brand">
+            <strong>Astrid &amp; Beverly Fashion</strong>
+            <span>El detalle de lucir bien</span>
+        </div>
     </aside>
-
 
     <div
       class="sidebar-backdrop"
@@ -189,15 +356,9 @@
     ></div>
 
     <main class="main">
-
-
-
-
         {% block content %}
         {% endblock %}
-
     </main>
-
 
     <script>
       (() => {
@@ -215,7 +376,7 @@
           toggle.setAttribute("aria-expanded", open ? "true" : "false");
           toggle.setAttribute(
             "aria-label",
-            open ? "Cerrar menu" : "Abrir menu"
+            open ? "Cerrar menú" : "Abrir menú"
           );
         };
 
@@ -249,4 +410,3 @@
 
   </body>
 </html>
-

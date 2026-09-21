@@ -1,259 +1,968 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
+{% block body_class %}model-detail-page{% endblock %}
 {% block content %}
 
+{% set role_label = (
+  'Administrador'
+  if role == 'ADMIN'
+  else 'Gestor de calidad'
+  if role == 'QUALITY_MANAGER'
+  else 'Encargado de modelos'
+  if role == 'MODEL_MANAGER'
+  else 'Usuario'
+) %}
+
+{% set status_class = 'detail-badge-neutral' %}
+{% if model.status == 'APROBADO' %}
+  {% set status_class = 'detail-badge-success' %}
+{% elif model.status == 'PENDIENTE' %}
+  {% set status_class = 'detail-badge-warning' %}
+{% elif model.status == 'RECHAZADO' %}
+  {% set status_class = 'detail-badge-danger' %}
+{% endif %}
+
 <style>
-.gmd-top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}
-.gmd-card{background:#fff;border:1px solid #e6ded2;border-radius:10px;padding:24px;margin-bottom:20px}
-.gmd-info{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
-.gmd-label{display:block;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:#776c61;margin-bottom:4px}
-.gmd-images{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
-.gmd-images img{width:100%;height:230px;object-fit:cover;border-radius:7px;border:1px solid #e6ded2}
-.gmd-button{display:inline-block;background:#111;color:#fff;border:0;padding:12px 17px;font-weight:700;cursor:pointer;text-decoration:none}
-.gmd-button.ok{background:#286d3d}
-.gmd-button.bad{background:#8d3030}
-.gmd-badge{display:inline-block;padding:7px 11px;border-radius:20px;font-size:12px;font-weight:700}
-.gmd-ready{background:#e5f4e9;color:#23683a}
-.gmd-wait{background:#fff2d8;color:#8b6115}
-.gmd-neutral{background:#efefef;color:#444}
-.gmd-reason{background:#f7e6e6;border-left:4px solid #9b3939;padding:15px;margin-top:16px}
-.gmd-reject textarea{width:100%;box-sizing:border-box;min-height:90px;padding:10px;margin:10px 0}
-.gmd-ai-list{display:grid;gap:14px;margin-top:18px}
-.gmd-ai-item{border:1px solid #e6ded2;border-radius:8px;padding:18px}
-.gmd-ai-head{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:15px}
-.gmd-ai-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}
-.gmd-path{word-break:break-all;font-family:monospace;font-size:12px}
-.gmd-muted{color:#776c61}
-@media(max-width:900px){
-  .gmd-info,.gmd-ai-grid{grid-template-columns:1fr 1fr}
-  .gmd-images{grid-template-columns:1fr}
+.model-detail-page .main {
+  background: #f6f8fb;
+}
+
+.detail-shell {
+  display: grid;
+  gap: 22px;
+  max-width: 1500px;
+  margin: 0 auto;
+}
+
+.detail-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.detail-welcome h1 {
+  margin: 0;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 34px;
+  line-height: 1.1;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.detail-welcome p {
+  margin: 6px 0 0;
+  color: #7382a2;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 15px;
+}
+
+.detail-topbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.detail-date-block,
+.detail-user-chip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.detail-date-block {
+  padding-right: 18px;
+  border-right: 1px solid #dfe5ef;
+}
+
+.detail-date-block svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: #0d2a66;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.detail-date-block div,
+.detail-user-chip div {
+  display: grid;
+  gap: 2px;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.detail-date-block strong,
+.detail-user-chip strong {
+  color: #173264;
+  font-size: 13px;
+}
+
+.detail-date-block span,
+.detail-user-chip span {
+  color: #8390aa;
+  font-size: 12px;
+}
+
+.detail-user-avatar {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: #eaf0f8;
+  display: grid;
+  place-items: center;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-weight: 800;
+  font-size: 15px;
+}
+
+.detail-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 30px;
+  background: #fff;
+  border: 1px solid #e4e9f1;
+  border-radius: 22px;
+  box-shadow: 0 14px 34px rgba(22, 45, 82, .055);
+}
+
+.detail-hero-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  min-width: 0;
+}
+
+.detail-hero-icon {
+  width: 66px;
+  height: 66px;
+  border-radius: 20px;
+  background: #fde8f1;
+  border: 1px solid #f8d4e5;
+  display: grid;
+  place-items: center;
+  color: #f43788;
+  flex: 0 0 auto;
+}
+
+.detail-hero-icon svg {
+  width: 32px;
+  height: 32px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.detail-eyebrow {
+  margin: 2px 0 8px;
+  color: #8290aa;
+  text-transform: uppercase;
+  letter-spacing: .18em;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.detail-title {
+  margin: 0;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 38px;
+  line-height: 1.08;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.detail-subtitle {
+  max-width: 780px;
+  margin: 10px 0 0;
+  color: #71809f;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.detail-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.detail-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 13px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #dfe5ef;
+  color: #506586;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detail-status-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.detail-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 13px;
+  border-radius: 999px;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.detail-badge-success { background: #e5f7ed; color: #178553; }
+.detail-badge-warning { background: #fff3cf; color: #9d7006; }
+.detail-badge-danger { background: #fde8e8; color: #b33d3d; }
+.detail-badge-neutral { background: #edf1f6; color: #67758d; }
+
+.detail-content-grid {
+  display: grid;
+  grid-template-columns: 1.05fr .95fr;
+  gap: 22px;
+}
+
+.detail-card {
+  background: #fff;
+  border: 1px solid #e4e9f1;
+  border-radius: 22px;
+  padding: 26px;
+  box-shadow: 0 14px 34px rgba(22, 45, 82, .045);
+}
+
+.detail-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.detail-card-head h2 {
+  margin: 0;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 25px;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
+.detail-card-head p {
+  margin: 7px 0 0;
+  color: #71809f;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.detail-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.detail-info-item {
+  padding: 17px 18px;
+  background: #f9fbfd;
+  border: 1px solid #e5eaf2;
+  border-radius: 16px;
+}
+
+.detail-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #8996ad;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+
+.detail-value {
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.detail-description {
+  margin: 18px 0 0;
+  padding-top: 18px;
+  border-top: 1px solid #e8edf4;
+  color: #5f6f8d;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.detail-side-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.detail-state-card {
+  padding: 22px;
+  background: #fff;
+  border: 1px solid #e4e9f1;
+  border-radius: 20px;
+  box-shadow: 0 12px 30px rgba(22, 45, 82, .04);
+}
+
+.detail-state-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.detail-state-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.detail-state-icon svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.detail-state-icon.green { background: #e5f7ed; color: #11a765; }
+.detail-state-icon.yellow { background: #fff3cf; color: #d59a00; }
+.detail-state-icon.red { background: #fde8e8; color: #d94b4b; }
+.detail-state-icon.blue { background: #e7f4fc; color: #1597dc; }
+
+.detail-state-card h3 {
+  margin: 0;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.detail-state-card p {
+  margin: 0;
+  color: #70809e;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.detail-images-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.detail-image-card {
+  overflow: hidden;
+  background: #f9fbfd;
+  border: 1px solid #e5eaf2;
+  border-radius: 18px;
+}
+
+.detail-image-card img {
+  width: 100%;
+  height: 240px;
+  object-fit: cover;
+  display: block;
+  background: #f3f5f8;
+}
+
+.detail-image-card figcaption {
+  padding: 12px 14px;
+  color: #71809f;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 12px;
+}
+
+.detail-empty {
+  padding: 34px 20px;
+  border: 1px dashed #dbe2ec;
+  border-radius: 18px;
+  background: #fafbfd;
+  color: #7b89a3;
+  text-align: center;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+}
+
+.detail-ai-list {
+  display: grid;
+  gap: 16px;
+}
+
+.detail-ai-item {
+  padding: 20px;
+  border: 1px solid #e4e9f1;
+  border-radius: 18px;
+  background: #fbfcfe;
+}
+
+.detail-ai-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.detail-ai-item h3 {
+  margin: 0;
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.detail-ai-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.detail-ai-meta > div {
+  padding: 14px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #e7ecf3;
+}
+
+.detail-checkpoint {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 14px;
+  background: #f4f8fd;
+  border: 1px solid #e0e8f2;
+}
+
+.detail-path {
+  word-break: break-word;
+  color: #64738f;
+  font-family: "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.detail-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 11px 16px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  text-decoration: none;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.detail-button.primary { background: #0d2a66; color: #fff; }
+.detail-button.primary:hover { background: #163979; }
+.detail-button.success { background: #e5f7ed; color: #187f50; border-color: #ccebd9; }
+.detail-button.danger { background: #fdeaea; color: #a33c3c; border-color: #efcece; }
+
+.detail-muted {
+  margin: 0;
+  color: #7a88a2;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.detail-form-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.detail-textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: 14px 16px;
+  border: 1px solid #dfe5ef;
+  border-radius: 14px;
+  background: #fff;
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  resize: vertical;
+}
+
+.detail-footer-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: #8692a8;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 12px;
+}
+
+.detail-footer-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.detail-footer-brand i {
+  width: 24px;
+  height: 3px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.detail-footer-brand i:nth-child(1) { background: #ffc928; }
+.detail-footer-brand i:nth-child(2) { background: #f43788; }
+.detail-footer-brand i:nth-child(3) { background: #1597dc; }
+
+@media (max-width: 1180px) {
+  .detail-content-grid { grid-template-columns: 1fr; }
+  .detail-images-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 900px) {
+  .detail-topbar,
+  .detail-hero,
+  .detail-ai-item-head,
+  .detail-card-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .detail-topbar-meta {
+    justify-content: space-between;
+  }
+
+  .detail-status-stack {
+    align-items: flex-start;
+  }
+
+  .detail-info-grid,
+  .detail-ai-meta,
+  .detail-images-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .detail-topbar-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .detail-date-block {
+    padding-right: 0;
+    border-right: 0;
+  }
+
+  .detail-hero-main {
+    flex-direction: column;
+  }
+
+  .detail-title {
+    font-size: 30px;
+  }
+
+  .detail-welcome h1 {
+    font-size: 28px;
+  }
 }
 </style>
 
-<div class="gmd-top">
-  <div>
-    <p>{{ model.code }}</p>
-    <h1>{{ model.name }}</h1>
-  </div>
-  <strong>{{ model.status }}</strong>
-</div>
-
-<section class="gmd-card">
-  <div class="gmd-info">
-    <div>
-      <span class="gmd-label">Tipo</span>
-      Blusa
+<div class="detail-shell">
+  <header class="detail-topbar">
+    <div class="detail-welcome">
+      <h1>¡Hola, {{ session.get('username', role_label) }}!</h1>
+      <p>Bienvenido al sistema de control de calidad</p>
     </div>
 
-    <div>
-      <span class="gmd-label">Color</span>
-      {{ model.color }}
-    </div>
-
-    <div>
-      <span class="gmd-label">Talla</span>
-      {{ model.size }}
-    </div>
-
-    <div>
-      <span class="gmd-label">Vista</span>
-      {{ model.inspection_side }}
-    </div>
-  </div>
-
-  {% if model.description %}
-  <p>{{ model.description }}</p>
-  {% endif %}
-
-  <p>
-    Creado por <strong>{{ model.creator_name }}</strong>
-  </p>
-
-  {% if model.ai_ready %}
-  <span class="gmd-badge gmd-ready">
-    {{ model.ai_model_type }} {{ model.ai_version }}
-    &middot; Lista para inspecci&oacute;n
-  </span>
-  {% else %}
-  <span class="gmd-badge gmd-wait">
-    Preparaci&oacute;n de IA pendiente
-  </span>
-  {% endif %}
-
-  {% if model.rejection_reason %}
-  <div class="gmd-reason">
-    <strong>Motivo del rechazo</strong>
-    <div>{{ model.rejection_reason }}</div>
-  </div>
-  {% endif %}
-</section>
-
-<section class="gmd-card">
-  <h2>Im&aacute;genes de referencia</h2>
-
-  {% if images %}
-  <div class="gmd-images">
-    {% for image in images %}
-    <img
-      src="{{ url_for('static', filename=image.image_path) }}"
-      alt="Referencia del modelo"
-    >
-    {% endfor %}
-  </div>
-  {% else %}
-  <p class="gmd-muted">
-    No hay im&aacute;genes de referencia registradas.
-  </p>
-  {% endif %}
-</section>
-
-{% if model.status == 'APROBADO' %}
-<section class="gmd-card">
-  <h2>Preparaci&oacute;n de IA</h2>
-
-  {% if not ai_versions %}
-  <p>
-    Este modelo todav&iacute;a no tiene versiones de IA.
-  </p>
-  {% endif %}
-
-  {% if can_prepare_ai and not ai_in_progress %}
-  <p>
-    Cree una nueva versi&oacute;n para preparar su dataset
-    y posteriormente entrenar PatchCore.
-  </p>
-
-  <form
-    method="post"
-    action="{{ url_for('garment_ai_prepare', model_id=model.id) }}"
-  >
-    <button class="gmd-button" type="submit">
-      Preparar nueva versi&oacute;n
-    </button>
-  </form>
-  {% elif ai_in_progress %}
-  <p class="gmd-muted">
-    Ya existe una versi&oacute;n de IA en proceso.
-  </p>
-  {% endif %}
-
-  {% if ai_versions %}
-  <div class="gmd-ai-list">
-    {% for ai in ai_versions %}
-    <article class="gmd-ai-item">
-
-      <div class="gmd-ai-head">
+    <div class="detail-topbar-meta">
+      <div class="detail-date-block">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 2v3M17 2v3M3.5 9h17M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 19 20.5H5A1.5 1.5 0 0 1 3.5 19V6A1.5 1.5 0 0 1 5 4.5Z" />
+        </svg>
         <div>
-          <strong>{{ ai.version }} &middot; {{ ai.model_type }}</strong>
+          <strong id="detailDate">—</strong>
+          <span id="detailClock">—</span>
         </div>
-
-        {% if ai.active and ai.status == 'ACTIVO' %}
-        <span class="gmd-badge gmd-ready">
-          ACTIVA
-        </span>
-        {% elif ai.status == 'PREPARACION' %}
-        <span class="gmd-badge gmd-wait">
-          PREPARACI&Oacute;N
-        </span>
-        {% else %}
-        <span class="gmd-badge gmd-neutral">
-          {{ ai.status }}
-        </span>
-        {% endif %}
       </div>
 
-      <div class="gmd-ai-grid">
-
+      <div class="detail-user-chip">
+        <span class="detail-user-avatar">{{ (session.get('username', 'U') or 'U')[:1]|upper }}</span>
         <div>
-          <span class="gmd-label">Dataset</span>
-          {% if ai.dataset_name %}
-            {{ ai.dataset_name }}
+          <strong>{{ role_label }}</strong>
+          <span>{{ session.get('username', '') }}</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section class="detail-hero">
+    <div class="detail-hero-main">
+      <div class="detail-hero-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M8 4 5 5.5 2.5 9l3 2 1.5-1v10h10V10l1.5 1 3-2L19 5.5 16 4c-.8 1.3-2.1 2-4 2S8.8 5.3 8 4Z" />
+        </svg>
+      </div>
+
+      <div>
+        <p class="detail-eyebrow">Ficha técnica del modelo</p>
+        <h1 class="detail-title">{{ model.name }}</h1>
+        <p class="detail-subtitle">
+          Consulte la información general del modelo, sus imágenes de referencia y el estado
+          de preparación para el flujo de inspección con inteligencia artificial.
+        </p>
+
+        <div class="detail-chip-row">
+          <span class="detail-chip">Código: {{ model.code }}</span>
+          <span class="detail-chip">Color: {{ model.color }}</span>
+          <span class="detail-chip">Talla: {{ model.size }}</span>
+          <span class="detail-chip">Vista: {{ model.inspection_side }}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="detail-status-stack">
+      <span class="detail-badge {{ status_class }}">{{ model.status }}</span>
+
+      {% if model.ai_ready %}
+        <span class="detail-badge detail-badge-success">
+          {{ model.ai_model_type }} {{ model.ai_version }} · Lista
+        </span>
+      {% else %}
+        <span class="detail-badge detail-badge-warning">
+          Preparación de IA pendiente
+        </span>
+      {% endif %}
+    </div>
+  </section>
+
+  <div class="detail-content-grid">
+    <section class="detail-card">
+      <div class="detail-card-head">
+        <div>
+          <h2>Información general</h2>
+          <p>Datos principales del modelo registrados para su operación y seguimiento.</p>
+        </div>
+      </div>
+
+      <div class="detail-info-grid">
+        <div class="detail-info-item">
+          <span class="detail-label">Tipo</span>
+          <div class="detail-value">Blusa</div>
+        </div>
+
+        <div class="detail-info-item">
+          <span class="detail-label">Creado por</span>
+          <div class="detail-value">{{ model.creator_name }}</div>
+        </div>
+
+        <div class="detail-info-item">
+          <span class="detail-label">Color</span>
+          <div class="detail-value">{{ model.color }}</div>
+        </div>
+
+        <div class="detail-info-item">
+          <span class="detail-label">Vista de inspección</span>
+          <div class="detail-value">{{ model.inspection_side }}</div>
+        </div>
+      </div>
+
+      <div class="detail-description">
+        {% if model.description %}
+          {{ model.description }}
+        {% else %}
+          No se registró una descripción adicional para este modelo.
+        {% endif %}
+      </div>
+    </section>
+
+    <div class="detail-side-stack">
+      <section class="detail-state-card">
+        <div class="detail-state-head">
+          <span class="detail-state-icon {% if model.status == 'APROBADO' %}green{% elif model.status == 'RECHAZADO' %}red{% else %}yellow{% endif %}">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              {% if model.status == 'APROBADO' %}
+                <path d="m7 12 3 3 7-7"/><circle cx="12" cy="12" r="9"/>
+              {% elif model.status == 'RECHAZADO' %}
+                <path d="m8 8 8 8M16 8l-8 8"/><circle cx="12" cy="12" r="9"/>
+              {% else %}
+                <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+              {% endif %}
+            </svg>
+          </span>
+          <h3>Estado del modelo</h3>
+        </div>
+
+        <p>
+          {% if model.status == 'APROBADO' %}
+            El modelo ya fue aprobado y puede continuar con su operación dentro del sistema.
+          {% elif model.status == 'PENDIENTE' %}
+            El modelo está pendiente de revisión administrativa antes de habilitarse por completo.
+          {% elif model.status == 'RECHAZADO' %}
+            El modelo fue rechazado y necesita correcciones antes de reenviarse.
           {% else %}
-            Hist&oacute;rico sin dataset registrado
+            El modelo se encuentra en estado {{ model.status }}.
+          {% endif %}
+        </p>
+      </section>
+
+      <section class="detail-state-card">
+        <div class="detail-state-head">
+          <span class="detail-state-icon {% if model.ai_ready %}green{% else %}yellow{% endif %}">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="7" y="7" width="10" height="10" rx="2"/>
+              <path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>
+            </svg>
+          </span>
+          <h3>Preparación de IA</h3>
+        </div>
+
+        <p>
+          {% if model.ai_ready %}
+            Existe una versión disponible para inspección: <strong>{{ model.ai_model_type }} {{ model.ai_version }}</strong>.
+          {% else %}
+            Todavía no hay una versión activa de IA lista para utilizarse en la estación de inspección.
+          {% endif %}
+        </p>
+      </section>
+
+      {% if model.rejection_reason %}
+      <section class="detail-state-card">
+        <div class="detail-state-head">
+          <span class="detail-state-icon red">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 20h18L12 3Z"/><path d="M12 9v4M12 17h.01"/></svg>
+          </span>
+          <h3>Motivo del rechazo</h3>
+        </div>
+        <p>{{ model.rejection_reason }}</p>
+      </section>
+      {% endif %}
+    </div>
+  </div>
+
+  <section class="detail-card">
+    <div class="detail-card-head">
+      <div>
+        <h2>Imágenes de referencia</h2>
+        <p>Material visual utilizado para identificar correctamente el modelo durante su preparación.</p>
+      </div>
+      <span class="detail-chip">{{ images|length }} imagen{{ '' if images|length == 1 else 'es' }}</span>
+    </div>
+
+    {% if images %}
+      <div class="detail-images-grid">
+        {% for image in images %}
+        <figure class="detail-image-card">
+          <img
+            src="{{ url_for('static', filename=image.image_path) }}"
+            alt="Referencia del modelo {{ model.name }}"
+          >
+          <figcaption>Referencia {{ loop.index }} · {{ model.code }}</figcaption>
+        </figure>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="detail-empty">No hay imágenes de referencia registradas para este modelo.</div>
+    {% endif %}
+  </section>
+
+  {% if model.status == 'APROBADO' %}
+  <section class="detail-card">
+    <div class="detail-card-head">
+      <div>
+        <h2>Preparación de IA</h2>
+        <p>Consulte y gestione las versiones de IA asociadas al modelo.</p>
+      </div>
+
+      {% if can_prepare_ai and not ai_in_progress %}
+      <form method="post" action="{{ url_for('garment_ai_prepare', model_id=model.id) }}">
+        <button class="detail-button primary" type="submit">Preparar nueva versión</button>
+      </form>
+      {% endif %}
+    </div>
+
+    {% if not ai_versions and not ai_in_progress %}
+      <p class="detail-muted">Este modelo todavía no tiene versiones de IA registradas.</p>
+    {% elif ai_in_progress %}
+      <p class="detail-muted">Ya existe una versión de IA en proceso.</p>
+    {% endif %}
+
+    {% if ai_versions %}
+    <div class="detail-ai-list">
+      {% for ai in ai_versions %}
+      <article class="detail-ai-item">
+        <div class="detail-ai-item-head">
+          <h3>{{ ai.version }} · {{ ai.model_type }}</h3>
+
+          {% if ai.active and ai.status == 'ACTIVO' %}
+            <span class="detail-badge detail-badge-success">Activa</span>
+          {% elif ai.status == 'PREPARACION' %}
+            <span class="detail-badge detail-badge-warning">Preparación</span>
+          {% else %}
+            <span class="detail-badge detail-badge-neutral">{{ ai.status }}</span>
           {% endif %}
         </div>
 
-        <div>
-          <span class="gmd-label">Im&aacute;genes normales</span>
-          {{ ai.normal_images_count if ai.normal_images_count is not none else 'Sin registro' }}
+        <div class="detail-ai-meta">
+          <div>
+            <span class="detail-label">Dataset</span>
+            <span class="detail-value">{{ ai.dataset_name if ai.dataset_name else 'Histórico sin dataset registrado' }}</span>
+          </div>
+
+          <div>
+            <span class="detail-label">Imágenes normales</span>
+            <span class="detail-value">{{ ai.normal_images_count if ai.normal_images_count is not none else 'Sin registro' }}</span>
+          </div>
+
+          <div>
+            <span class="detail-label">Responsable</span>
+            <span class="detail-value">{{ ai.creator_name or 'Histórico' }}</span>
+          </div>
         </div>
 
-        <div>
-          <span class="gmd-label">Responsable</span>
-          {{ ai.creator_name or 'Hist&oacute;rico' }}
+        <div class="detail-checkpoint">
+          <span class="detail-label">Checkpoint</span>
+          {% if ai.checkpoint_path %}
+            <div class="detail-path">{{ ai.checkpoint_path }}</div>
+          {% else %}
+            <div class="detail-value">Pendiente de entrenamiento</div>
+          {% endif %}
         </div>
-
-      </div>
-
-      <div style="margin-top:15px">
-        <span class="gmd-label">Checkpoint</span>
-
-        {% if ai.checkpoint_path %}
-        <div class="gmd-path">
-          {{ ai.checkpoint_path }}
-        </div>
-        {% else %}
-        <strong>Pendiente de entrenamiento</strong>
-        {% endif %}
-      </div>
-
-    </article>
-    {% endfor %}
-  </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
   {% endif %}
-</section>
-{% endif %}
 
-{% if can_manage and model.status in ['BORRADOR', 'RECHAZADO'] %}
-<section class="gmd-card">
-  <h2>Enviar a aprobaci&oacute;n</h2>
+  {% if can_manage and model.status in ['BORRADOR', 'RECHAZADO'] %}
+  <section class="detail-card">
+    <div class="detail-card-head">
+      <div>
+        <h2>Enviar a aprobación</h2>
+        <p>Cuando la información esté completa, envíe el modelo para revisión administrativa.</p>
+      </div>
+    </div>
 
-  <p>
-    Cuando la informaci&oacute;n sea correcta, env&iacute;e el modelo
-    para que un administrador lo revise.
-  </p>
+    <div class="detail-actions">
+      <form method="post" action="{{ url_for('garment_model_submit', model_id=model.id) }}">
+        <button class="detail-button primary" type="submit">Enviar a aprobación</button>
+      </form>
+    </div>
+  </section>
+  {% endif %}
 
-  <form
-    method="post"
-    action="{{ url_for('garment_model_submit', model_id=model.id) }}"
-  >
-    <button class="gmd-button" type="submit">
-      Enviar a aprobaci&oacute;n
-    </button>
-  </form>
-</section>
-{% endif %}
+  {% if role == 'ADMIN' and model.status == 'PENDIENTE' %}
+  <section class="detail-card">
+    <div class="detail-card-head">
+      <div>
+        <h2>Revisión administrativa</h2>
+        <p>Apruebe el modelo o indique las observaciones necesarias para su corrección.</p>
+      </div>
+    </div>
 
-{% if role == 'ADMIN' and model.status == 'PENDIENTE' %}
-<section class="gmd-card">
-  <h2>Revisi&oacute;n administrativa</h2>
+    <div class="detail-actions" style="margin-bottom: 16px;">
+      <form method="post" action="{{ url_for('garment_model_approve', model_id=model.id) }}">
+        <button class="detail-button success" type="submit">Aprobar modelo</button>
+      </form>
+    </div>
 
-  <form
-    method="post"
-    action="{{ url_for('garment_model_approve', model_id=model.id) }}"
-  >
-    <button class="gmd-button ok" type="submit">
-      Aprobar modelo
-    </button>
-  </form>
+    <form
+      class="detail-form-stack"
+      method="post"
+      action="{{ url_for('garment_model_reject', model_id=model.id) }}"
+    >
+      <textarea
+        class="detail-textarea"
+        name="rejection_reason"
+        required
+        minlength="5"
+        placeholder="Indique el motivo del rechazo..."
+      ></textarea>
 
-  <form
-    class="gmd-reject"
-    method="post"
-    action="{{ url_for('garment_model_reject', model_id=model.id) }}"
-  >
-    <textarea
-      name="rejection_reason"
-      required
-      minlength="5"
-      placeholder="Indique el motivo del rechazo..."
-    ></textarea>
+      <div class="detail-actions">
+        <button class="detail-button danger" type="submit">Rechazar modelo</button>
+      </div>
+    </form>
+  </section>
+  {% endif %}
 
-    <button class="gmd-button bad" type="submit">
-      Rechazar modelo
-    </button>
-  </form>
-</section>
-{% endif %}
+  <footer class="detail-footer-note">
+    <span>Astrid &amp; Beverly Fashion · Sistema de control de calidad</span>
+    <span class="detail-footer-brand"><i></i><i></i><i></i> El detalle de lucir bien</span>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const dateTarget = document.getElementById("detailDate");
+  const clockTarget = document.getElementById("detailClock");
+  if (!dateTarget || !clockTarget) return;
+
+  const dateFormatter = new Intl.DateTimeFormat("es-GT", {
+    timeZone: "America/Guatemala",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric"
+  });
+
+  const timeFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Guatemala",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true
+  });
+
+  function updateDetailClock() {
+    const now = new Date();
+    const dateText = dateFormatter.format(now);
+    dateTarget.textContent = dateText.charAt(0).toUpperCase() + dateText.slice(1);
+    clockTarget.textContent = timeFormatter.format(now);
+  }
+
+  updateDetailClock();
+  window.setInterval(updateDetailClock, 1000);
+})();
+</script>
 
 {% endblock %}
-
