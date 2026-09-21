@@ -718,14 +718,6 @@
    Este mes
   </button>
 
-  <button
-   type="button"
-   class="reg-period-btn"
-   data-period="last30"
-  >
-   &Uacute;ltimos 30 d&iacute;as
-  </button>
-
  </div>
 
  <div class="reg-period-help">
@@ -1287,12 +1279,6 @@ document.addEventListener("DOMContentLoaded", function () {
         else if (period === "last7") {
             start.setDate(
                 today.getDate() - 6
-            );
-        }
-
-        else if (period === "last30") {
-            start.setDate(
-                today.getDate() - 29
             );
         }
 

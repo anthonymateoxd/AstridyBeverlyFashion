@@ -1,28 +1,691 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8">
   <title>Acceso | Control de Calidad</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+
+  <style>
+    :root {
+      --login-navy: #0d2a66;
+      --login-navy-soft: #24487f;
+      --login-text: #10275a;
+      --login-muted: #7080a1;
+      --login-pink: #f43788;
+      --login-pink-soft: #fde8f1;
+      --login-blue: #1597dc;
+      --login-blue-soft: #e7f4fc;
+      --login-yellow: #ffc928;
+      --login-yellow-soft: #fff5cf;
+      --login-green: #11a765;
+      --login-surface: #ffffff;
+      --login-bg: #f6f8fb;
+      --login-line: #e4e9f1;
+      --login-shadow: 0 22px 60px rgba(22, 45, 82, .10);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body.login-page {
+      margin: 0;
+      min-height: 100vh;
+      display: block;
+      background:
+        radial-gradient(circle at 12% 18%, rgba(244, 55, 136, .045), transparent 30%),
+        radial-gradient(circle at 88% 84%, rgba(21, 151, 220, .055), transparent 30%),
+        var(--login-bg);
+      color: var(--login-text);
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    .login-shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(420px, .95fr);
+    }
+
+    .login-brand-panel {
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 42px 54px 38px;
+      background: linear-gradient(155deg, #ffffff 0%, #fbfcff 62%, #f4f7fb 100%);
+      border-right: 1px solid var(--login-line);
+    }
+
+    .login-brand-panel::before,
+    .login-brand-panel::after {
+      content: "";
+      position: absolute;
+      pointer-events: none;
+      border-radius: 999px;
+      filter: blur(.2px);
+    }
+
+    .login-brand-panel::before {
+      width: 360px;
+      height: 360px;
+      right: -170px;
+      top: -120px;
+      background: rgba(255, 201, 40, .08);
+    }
+
+    .login-brand-panel::after {
+      width: 280px;
+      height: 280px;
+      left: -140px;
+      bottom: -120px;
+      background: rgba(244, 55, 136, .06);
+    }
+
+    .login-brand-top,
+    .login-brand-center,
+    .login-brand-footer {
+      position: relative;
+      z-index: 1;
+    }
+
+    .login-brand-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .login-brand-logo {
+      width: 178px;
+      height: 110px;
+      object-fit: contain;
+      display: block;
+    }
+
+    .login-brand-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 13px;
+      border-radius: 999px;
+      background: #fff;
+      border: 1px solid var(--login-line);
+      color: #526482;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      box-shadow: 0 8px 24px rgba(22, 45, 82, .04);
+    }
+
+    .login-brand-badge::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--login-green);
+      box-shadow: 0 0 0 4px rgba(17, 167, 101, .10);
+    }
+
+    .login-brand-center {
+      max-width: 720px;
+      padding: 40px 0 54px;
+    }
+
+    .login-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0 0 18px;
+      color: var(--login-pink);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    .login-eyebrow::before {
+      content: "";
+      width: 34px;
+      height: 3px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--login-yellow), var(--login-pink), var(--login-blue));
+    }
+
+    .login-brand-center h1 {
+      max-width: 650px;
+      margin: 0;
+      color: var(--login-navy);
+      font-size: clamp(42px, 5.3vw, 72px);
+      line-height: 1.03;
+      letter-spacing: -.035em;
+      font-weight: 800;
+    }
+
+    .login-brand-center > p {
+      max-width: 610px;
+      margin: 22px 0 0;
+      color: var(--login-muted);
+      font-size: 17px;
+      line-height: 1.75;
+    }
+
+    .login-feature-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: 38px;
+      background: rgba(255, 255, 255, .86);
+      border: 1px solid var(--login-line);
+      border-radius: 22px;
+      box-shadow: 0 16px 36px rgba(22, 45, 82, .055);
+      overflow: hidden;
+    }
+
+    .login-feature {
+      min-height: 96px;
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      padding: 20px 18px;
+      position: relative;
+    }
+
+    .login-feature + .login-feature::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 22px;
+      bottom: 22px;
+      width: 1px;
+      background: var(--login-line);
+    }
+
+    .login-feature-icon {
+      width: 42px;
+      height: 42px;
+      flex: 0 0 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: #f7f9fc;
+      color: var(--login-navy);
+    }
+
+    .login-feature-icon svg {
+      width: 22px;
+      height: 22px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.9;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .login-feature strong {
+      display: block;
+      margin-bottom: 3px;
+      color: var(--login-text);
+      font-size: 13px;
+    }
+
+    .login-feature span {
+      display: block;
+      color: var(--login-muted);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .login-brand-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 18px;
+      padding-top: 22px;
+      border-top: 1px solid var(--login-line);
+      color: #73809a;
+      font-size: 11px;
+    }
+
+    .login-brand-footer strong {
+      color: #425475;
+    }
+
+    .login-form-panel {
+      display: grid;
+      place-items: center;
+      padding: 44px;
+      background: #fff;
+    }
+
+    .login-card {
+      width: min(100%, 470px);
+      min-height: 0;
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      box-shadow: none;
+      text-align: left;
+    }
+
+    .login-mobile-logo {
+      display: none;
+      width: 150px;
+      height: 92px;
+      object-fit: contain;
+      margin: 0 auto 24px;
+    }
+
+    .login-card-kicker {
+      margin: 0 0 10px;
+      color: var(--login-pink);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    .login-card h2 {
+      margin: 0;
+      color: var(--login-navy);
+      font-size: 38px;
+      line-height: 1.15;
+      letter-spacing: -.025em;
+    }
+
+    .login-card-intro {
+      margin: 12px 0 28px;
+      color: var(--login-muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .login-flashes {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .login-flash {
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: #fff0f0;
+      border: 1px solid #f2d0d0;
+      color: #963737;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .login-form {
+      display: grid;
+      gap: 18px;
+    }
+
+    .login-field {
+      display: grid;
+      gap: 8px;
+    }
+
+    .login-field label {
+      margin: 0;
+      color: #33496f;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .login-input-wrap {
+      position: relative;
+    }
+
+    .login-input-icon {
+      position: absolute;
+      left: 16px;
+      top: 50%;
+      width: 20px;
+      height: 20px;
+      transform: translateY(-50%);
+      color: #7e8ba4;
+      pointer-events: none;
+    }
+
+    .login-input-icon svg {
+      width: 100%;
+      height: 100%;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .login-input-wrap input {
+      width: 100%;
+      height: 54px;
+      padding: 0 48px 0 48px;
+      border: 1px solid #d8e0ec;
+      border-radius: 14px;
+      outline: none;
+      background: #fbfcfe;
+      color: var(--login-text);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 14px;
+      transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+    }
+
+    .login-input-wrap input::placeholder {
+      color: #a1abbd;
+    }
+
+    .login-input-wrap input:focus {
+      background: #fff;
+      border-color: #9eb4d7;
+      box-shadow: 0 0 0 4px rgba(13, 42, 102, .07);
+    }
+
+    .password-toggle {
+      position: absolute;
+      top: 50%;
+      right: 12px;
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      margin: 0;
+      transform: translateY(-50%);
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 9px;
+      background: transparent;
+      color: #71809b;
+      cursor: pointer;
+    }
+
+    .password-toggle:hover {
+      background: #f0f4f9;
+      color: var(--login-navy);
+    }
+
+    .password-toggle svg {
+      width: 19px;
+      height: 19px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .login-submit {
+      width: 100%;
+      min-height: 54px;
+      margin-top: 4px;
+      border: 0;
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      background: var(--login-navy);
+      color: #fff;
+      box-shadow: 0 14px 28px rgba(13, 42, 102, .16);
+      cursor: pointer;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      transition: transform .16s ease, box-shadow .16s ease, background .16s ease;
+    }
+
+    .login-submit:hover {
+      transform: translateY(-1px);
+      background: #123574;
+      box-shadow: 0 18px 34px rgba(13, 42, 102, .20);
+    }
+
+    .login-submit svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .login-security-note {
+      margin-top: 22px;
+      padding: 15px 16px;
+      border-radius: 14px;
+      background: #f8fafc;
+      border: 1px solid var(--login-line);
+      color: #72809a;
+      font-size: 11px;
+      line-height: 1.65;
+      text-align: center;
+    }
+
+    .login-security-note strong {
+      color: #415578;
+    }
+
+    @media (max-width: 980px) {
+      .login-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .login-brand-panel {
+        display: none;
+      }
+
+      .login-form-panel {
+        min-height: 100vh;
+        padding: 34px 24px;
+        background:
+          radial-gradient(circle at 50% 0%, rgba(244, 55, 136, .05), transparent 34%),
+          #fff;
+      }
+
+      .login-mobile-logo {
+        display: block;
+      }
+    }
+
+    @media (max-width: 540px) {
+      .login-form-panel {
+        padding: 26px 20px;
+      }
+
+      .login-card h2 {
+        font-size: 32px;
+      }
+    }
+  </style>
 </head>
+
 <body class="login-page">
-  <section class="login-card">
-    <img class="login-logo" src="{{ url_for('static', filename='img/logo.jpg') }}" alt="Astrid y Beverly">
-    <div class="tiny-line"></div>
-    <p class="overline">Sistema de GestiÃ³n</p>
-    <h1>Control de Calidad</h1>
+  <main class="login-shell">
+    <section class="login-brand-panel" aria-label="Astrid y Beverly Fashion">
+      <div class="login-brand-top">
+        <img
+          class="login-brand-logo"
+          src="{{ url_for('static', filename='img/logo.jpg') }}"
+          alt="Astrid y Beverly Fashion"
+        >
+        <span class="login-brand-badge">Sistema operativo</span>
+      </div>
 
-    <form method="post">
-      <label>Usuario</label>
-      <input type="text" name="username" placeholder="Ingrese su identificador" required>
-      <label>ContraseÃ±a</label>
-      <input type="password" name="password" placeholder="Ingrese su clave de acceso" required>
-      <button type="submit">Acceder</button>
-    </form>
-    <p class="restricted">Acceso restringido<br>Solo personal autorizado</p>
+      <div class="login-brand-center">
+        <p class="login-eyebrow">Control de calidad textil</p>
+        <h1>Inspección más clara, trazable y organizada.</h1>
+        <p>
+          Plataforma de apoyo para el control de calidad de Astrid &amp; Beverly Fashion,
+          con seguimiento por modelo, lote e inspección.
+        </p>
 
-  </section>
+        <div class="login-feature-strip" aria-label="Funciones principales">
+          <div class="login-feature">
+            <div class="login-feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M9 4 6.5 5 4 9l3 2v8h10v-8l3-2-2.5-4L15 4c-.6 1.2-1.6 2-3 2s-2.4-.8-3-2Z"></path>
+              </svg>
+            </div>
+            <div>
+              <strong>Modelos</strong>
+              <span>Catálogo de prendas para inspección.</span>
+            </div>
+          </div>
+
+          <div class="login-feature">
+            <div class="login-feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="m12 3 8 4-8 4-8-4 8-4Z"></path>
+                <path d="m4 12 8 4 8-4"></path>
+                <path d="m4 17 8 4 8-4"></path>
+              </svg>
+            </div>
+            <div>
+              <strong>Lotes</strong>
+              <span>Seguimiento de producción y revisión.</span>
+            </div>
+          </div>
+
+          <div class="login-feature">
+            <div class="login-feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z"></path>
+                <circle cx="12" cy="12" r="2.5"></circle>
+              </svg>
+            </div>
+            <div>
+              <strong>Inspección</strong>
+              <span>Registro visual y apoyo con IA.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="login-brand-footer">
+        <span><strong>Astrid &amp; Beverly Fashion</strong> El detalle de lucir bien</span>
+        <span>Sistema de control de calidad</span>
+      </footer>
+    </section>
+
+    <section class="login-form-panel">
+      <div class="login-card">
+        <img
+          class="login-mobile-logo"
+          src="{{ url_for('static', filename='img/logo.jpg') }}"
+          alt="Astrid y Beverly Fashion"
+        >
+
+        <p class="login-card-kicker">Acceso al sistema</p>
+        <h2>Bienvenido</h2>
+        <p class="login-card-intro">
+          Ingrese sus credenciales para acceder al sistema de control de calidad.
+        </p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+          <div class="login-flashes" aria-live="polite">
+            {% for category, message in messages %}
+            <div class="login-flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        {% endwith %}
+
+        <form class="login-form" method="post">
+          <div class="login-field">
+            <label for="username">Usuario</label>
+            <div class="login-input-wrap">
+              <span class="login-input-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="8" r="4"></circle>
+                  <path d="M4 21a8 8 0 0 1 16 0"></path>
+                </svg>
+              </span>
+              <input
+                id="username"
+                type="text"
+                name="username"
+                placeholder="Ingrese su identificador"
+                autocomplete="username"
+                required
+                autofocus
+              >
+            </div>
+          </div>
+
+          <div class="login-field">
+            <label for="password">Contraseña</label>
+            <div class="login-input-wrap">
+              <span class="login-input-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <rect x="5" y="10" width="14" height="10" rx="2"></rect>
+                  <path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+                </svg>
+              </span>
+              <input
+                id="password"
+                type="password"
+                name="password"
+                placeholder="Ingrese su clave de acceso"
+                autocomplete="current-password"
+                required
+              >
+              <button
+                class="password-toggle"
+                id="passwordToggle"
+                type="button"
+                aria-label="Mostrar contraseña"
+                aria-pressed="false"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z"></path>
+                  <circle cx="12" cy="12" r="2.5"></circle>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <button class="login-submit" type="submit">
+            Acceder
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 12h14"></path>
+              <path d="m13 6 6 6-6 6"></path>
+            </svg>
+          </button>
+        </form>
+
+        <div class="login-security-note">
+          <strong>Acceso restringido.</strong>
+          Utilice únicamente las credenciales asignadas por la administración.
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const input = document.getElementById('password');
+      const button = document.getElementById('passwordToggle');
+
+      if (!input || !button) return;
+
+      button.addEventListener('click', () => {
+        const reveal = input.type === 'password';
+        input.type = reveal ? 'text' : 'password';
+        button.setAttribute('aria-pressed', String(reveal));
+        button.setAttribute(
+          'aria-label',
+          reveal ? 'Ocultar contraseña' : 'Mostrar contraseña'
+        );
+      });
+    })();
+  </script>
 </body>
 </html>
-
