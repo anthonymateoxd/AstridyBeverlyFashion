@@ -7,3 +7,4 @@ instance/
 static/captures/*
 static/results/*
 runs/
+ai_artifacts/

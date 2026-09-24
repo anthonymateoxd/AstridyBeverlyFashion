@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p static/captures static/results models
+RUN mkdir -p static/captures static/results models ai_artifacts
 
 EXPOSE 5000
 

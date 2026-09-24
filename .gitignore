@@ -17,6 +17,9 @@ results/
 # Datasets locales
 anomaly_dataset/
 
+# Artefactos IA (Fase 1+: datasets, checkpoints, validaciones)
+ai_artifacts/
+
 # Python
 __pycache__/
 *.pyc

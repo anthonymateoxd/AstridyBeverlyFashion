@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 
 import mysql.connector
 
+from ai_domain import ensure_ai_schema
+
 
 load_dotenv()
 # RTSP mediante TCP: más estable que UDP para OpenCV
@@ -411,6 +413,13 @@ def init_db():
         "activated_at",
         "activated_at DATETIME NULL AFTER validated_at",
     )
+
+    # ========================================================
+    # FASE 1 — PREPARACIÓN Y VERSIONADO DE IA
+    # Tablas de dominio, extensiones de garment_ai_models,
+    # constraint de un solo ACTIVO e inmutabilidad de datasets.
+    # ========================================================
+    ensure_ai_schema(cur, DB_NAME, ensure_column=ensure_column)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS inspections (
