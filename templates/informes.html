@@ -2,77 +2,85 @@
 {% block content %}
 
 <style>
-.ana-wrap{max-width:1500px}
+.ana-wrap{max-width:1500px;min-width:0;color:#193654}
 .ana-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:20px}
 .ana-head h1{margin:0 0 4px}
-.ana-sub{color:#756b61}
+.ana-sub{color:#63758a}
 .ana-actions{display:flex;gap:8px}
+.ana-actions .ana-btn:disabled{opacity:.55;cursor:not-allowed}
 
-.ana-btn{display:inline-block;padding:11px 15px;border:1px solid #111;background:#fff;color:#111;text-decoration:none;font-weight:700}
-.ana-btn.primary{background:#111;color:#fff}
+.ana-btn{display:inline-block;padding:11px 15px;border:1px solid #dce4ed;border-radius:8px;background:#fff;color:#193654;text-decoration:none;font-weight:700}
+.ana-btn.primary{background:#193654;color:#fff;border-color:#193654}
 
-.ana-card{background:#fff;border:1px solid #e5ddd2;border-radius:9px;padding:20px;margin-bottom:18px}
+.ana-card{min-width:0;background:#fff;border:1px solid #e2e9f1;border-radius:12px;padding:20px;margin-bottom:18px}
 
 .ana-filters{display:grid;grid-template-columns:1fr 1fr 1.35fr 1fr auto;gap:10px;align-items:end}
-.ana-field label{display:block;margin-bottom:6px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#807367}
-.ana-field input,.ana-field select{width:100%;box-sizing:border-box;padding:10px;border:1px solid #d9d0c5;background:#fff}
+.ana-field{min-width:0}
+.ana-field label{display:block;margin-bottom:6px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#63758a}
+.ana-field input,.ana-field select{width:100%;box-sizing:border-box;padding:10px;border:1px solid #dce4ed;border-radius:8px;background:#fff;color:#193654}
 
 .ana-quick{display:flex;gap:16px;margin-top:13px}
-.ana-quick a{color:#111;font-weight:700}
+.ana-quick a{color:#193654;font-weight:700}
 
 .ana-main-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
-.ana-kpi{background:#fff;border:1px solid #e5ddd2;border-radius:9px;padding:20px}
-.ana-kpi strong{display:block;font-size:31px}
-.ana-kpi span{display:block;margin-top:5px;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#7c7065}
-.ana-kpi small{display:block;margin-top:7px;color:#776d63}
+.ana-kpi{min-width:0;padding:8px}
+.ana-kpi strong{display:block;font-size:24px}
+.ana-kpi span{display:block;margin-top:5px;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#63758a}
+.ana-kpi small{display:block;margin-top:7px;color:#63758a}
 
 .ana-review{display:grid;grid-template-columns:1.4fr repeat(4,1fr);gap:12px;align-items:center}
 .ana-review-title strong{display:block;font-size:18px}
-.ana-review-title span{color:#766c62}
+.ana-review-title span{color:#63758a}
 .ana-mini strong{display:block;font-size:22px}
-.ana-mini span{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#807367}
+.ana-mini span{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#63758a}
 
 .ana-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-.ana-production{display:grid;grid-template-columns:1fr 1fr;gap:25px}
 
 .ana-title{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-bottom:15px}
 .ana-title h2{margin:0}
-.ana-muted{color:#786e64}
+.ana-muted{color:#63758a;font-size:13px}
 
-.ana-progress{height:9px;background:#eee8df;margin:10px 0;overflow:hidden}
-.ana-progress div{height:100%;background:#111}
-
-.ana-values{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
-.ana-value{padding:12px;background:#f7f3ed}
-.ana-value strong{display:block;font-size:22px}
-.ana-value span{font-size:9px;letter-spacing:1px;text-transform:uppercase;color:#7b7065}
-
-.ana-alert-card{border-left:4px solid #111}
+.ana-alert-card{border-left:4px solid #e8a9ba}
 .ana-alert-card strong.big{display:block;font-size:25px;margin:6px 0}
 
+.ana-table-wrap{max-width:100%;overflow-x:auto}
 .ana-table{width:100%;border-collapse:collapse}
-.ana-table th,.ana-table td{padding:11px 8px;border-bottom:1px solid #eee7df;text-align:left;vertical-align:top}
-.ana-table th{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#897b6f}
-.ana-table small{display:block;margin-top:3px;color:#766d64}
+.ana-model-table,.ana-lot-table{min-width:760px}
+.ana-table th,.ana-table td{padding:11px 8px;border-bottom:1px solid #e8edf3;text-align:left;vertical-align:top}
+.ana-table th{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#63758a}
+.ana-table small{display:block;margin-top:3px;color:#63758a}
 
 .ana-rate{font-weight:700}
-.ana-link{color:#111;font-weight:700}
+.ana-link{color:#193654;font-weight:700}
 
 .ana-bar{display:flex;align-items:center;gap:10px;min-width:180px}
-.ana-bar-track{height:7px;flex:1;background:#eee8df}
-.ana-bar-fill{height:100%;background:#111}
+.ana-bar-track{height:7px;flex:1;background:#edf1f6}
+.ana-bar-fill{height:100%;background:#193654}
 
-.ana-empty{padding:18px 0;color:#786e64}
+.ana-empty{padding:18px 0;color:#63758a}
+
+.ana-wrap .ana-disclosure{border-top:1px solid #e8edf3;padding:12px 0}
+.ana-wrap .ana-disclosure > summary,.ana-wrap .ana-analysis > summary{cursor:pointer;color:#193654;font-weight:700;line-height:1.5}
+.ana-wrap .ana-disclosure > summary{font-size:13px}
+.ana-wrap .ana-disclosure[open] > summary{margin-bottom:14px}
+.ana-wrap .ana-disclosure:last-child{padding-bottom:0}
+.ana-analysis{min-width:0;border:1px solid #e2e9f1;border-radius:12px;background:#f7f9fc;margin-bottom:18px}
+.ana-analysis > summary{padding:20px;font-size:17px}
+.ana-analysis-body{padding:0 16px 16px}
+.ana-analysis-body > :last-child{margin-bottom:0}
+.ana-quality-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;margin:0}
+.ana-quality-metrics > div{display:flex;flex-direction:column;gap:6px;min-width:0;padding:8px 0}
+.ana-quality-metrics dt{color:#63758a;font-size:13px}
+.ana-quality-metrics dd{order:-1;margin:0;color:#193654;font-size:26px;font-weight:700}
+.ana-wrap summary:focus-visible,.ana-wrap a:focus-visible,.ana-wrap button:focus-visible,.ana-wrap input:focus-visible,.ana-wrap select:focus-visible,.ana-wrap .ana-table-wrap:focus-visible{outline:3px solid #e8a9ba;outline-offset:3px}
 
 @media(max-width:1150px){
  .ana-main-kpis{grid-template-columns:repeat(2,1fr)}
  .ana-review{grid-template-columns:repeat(2,1fr)}
- .ana-grid,.ana-production{grid-template-columns:1fr}
+ .ana-grid{grid-template-columns:1fr}
  .ana-filters{grid-template-columns:repeat(2,1fr)}
 }
 
-
-/* REPORTS_MOBILE_CARDS_V1 */
 
 @media (max-width: 700px) {
 
@@ -120,22 +128,16 @@
     gap: 12px;
   }
 
-  .ana-main-kpis {
-    grid-template-columns:
-      repeat(2, minmax(0, 1fr)) !important;
-  }
-
-  .ana-review {
-    grid-template-columns:
-      repeat(2, minmax(0, 1fr)) !important;
-  }
+  .ana-main-kpis,.ana-review,.ana-quality-metrics {grid-template-columns:1fr}
+  .ana-analysis-body{padding:0 10px 10px}
+  .ana-quality-metrics{gap:6px}
+  .ana-quality-metrics > div + div{border-top:1px solid #e8edf3;padding-top:14px}
 
   .ana-review-title {
     grid-column: 1 / -1;
   }
 
-  .ana-grid,
-  .ana-production {
+  .ana-grid {
     grid-template-columns: 1fr !important;
   }
 
@@ -144,160 +146,64 @@
     align-items: flex-start;
   }
 
-  .ana-values {
-    grid-template-columns: 1fr !important;
-  }
-
-  /* TABLAS GRANDES -> TARJETAS */
-
-  .ana-model-table,
-  .ana-lot-table {
-    display: block !important;
-    width: 100% !important;
-    border-collapse: initial !important;
-  }
-
-  .ana-model-table thead,
-  .ana-lot-table thead {
-    display: none !important;
-  }
-
-  .ana-model-table tbody,
-  .ana-lot-table tbody {
-    display: grid !important;
-    grid-template-columns: 1fr !important;
-    gap: 12px;
-    width: 100%;
-  }
-
-  .ana-model-table tr,
-  .ana-lot-table tr {
-    display: block !important;
-    width: 100%;
-    box-sizing: border-box;
-
-    padding: 14px;
-
-    border: 1px solid #e5ddd2;
-    border-radius: 8px;
-
-    background: #fff;
-  }
-
-  .ana-model-table td,
-  .ana-lot-table td {
-    display: grid !important;
-    grid-template-columns:
-      minmax(105px, 38%)
-      minmax(0, 1fr) !important;
-
-    gap: 10px;
-
-    width: 100%;
-    box-sizing: border-box;
-
-    padding: 7px 0 !important;
-
-    border: 0 !important;
-
-    overflow-wrap: anywhere;
-  }
-
-  .ana-model-table td::before,
-  .ana-lot-table td::before {
-    color: #897b6f;
-
-    font-size: 9px;
-    font-weight: 700;
-    line-height: 1.2;
-
-    letter-spacing: .8px;
-    text-transform: uppercase;
-  }
-
-  /* RENDIMIENTO POR MODELO */
-
-  .ana-model-table td:nth-child(1)::before {
-    content: "Modelo";
-  }
-
-  .ana-model-table td:nth-child(2)::before {
-    content: "Inspeccionadas";
-  }
-
-  .ana-model-table td:nth-child(3)::before {
-    content: "Rechazadas";
-  }
-
-  .ana-model-table td:nth-child(4)::before {
-    content: "Tasa rechazo";
-  }
-
-  .ana-model-table td:nth-child(5)::before {
-    content: "Comparacion";
-  }
-
-  .ana-model-table td:nth-child(6) {
-    display: block !important;
-    padding-top: 11px !important;
-  }
-
-  /* CALIDAD POR LOTE */
-
-  .ana-lot-table td:nth-child(1)::before {
-    content: "Lote";
-  }
-
-  .ana-lot-table td:nth-child(2)::before {
-    content: "Modelo";
-  }
-
-  .ana-lot-table td:nth-child(3)::before {
-    content: "Avance";
-  }
-
-  .ana-lot-table td:nth-child(4)::before {
-    content: "Rechazadas";
-  }
-
-  .ana-lot-table td:nth-child(5)::before {
-    content: "% rechazo";
-  }
-
-  .ana-lot-table td:nth-child(6)::before {
-    content: "Pendientes";
-  }
-
-  .ana-lot-table td:nth-child(7) {
-    display: block !important;
-    padding-top: 11px !important;
-  }
-
-  .ana-model-table td:last-child .ana-link,
-  .ana-lot-table td:last-child .ana-link {
-    display: block;
-
-    width: 100%;
-    box-sizing: border-box;
-
-    padding: 10px;
-
-    border: 1px solid #111;
-
-    text-align: center;
-    text-decoration: none;
-  }
-
-  .ana-bar {
-    width: 100%;
-    min-width: 0;
-  }
 }
 
+.goal-history{scroll-margin-top:24px;color:#193654;border-color:#e2e9f1;border-top:4px solid #e8a9ba;background:#fff}
+.goal-history h2{margin:0;color:#193654}
+.goal-history .goal-note{color:#63758a;font-size:13px;line-height:1.6}
+.goal-history .goal-quick{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0}
+.goal-history .goal-button{display:inline-block;border:1px solid #dce4ed;border-radius:8px;padding:10px 14px;background:#f5f8fc;color:#193654;text-decoration:none;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+.goal-history .goal-button[aria-current="true"]{background:#fbeaf0;border-color:#e8a9ba}
+.goal-history .goal-button.primary{background:#193654;color:#fff;border-color:#193654}
+.goal-history .goal-form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin-bottom:18px}
+.goal-history .goal-field{flex:1;min-width:150px;max-width:260px}
+.goal-history label{display:block;font-size:12px;font-weight:700;margin-bottom:6px}
+.goal-history input[type="date"]{width:100%;box-sizing:border-box;border:1px solid #dce4ed;border-radius:8px;padding:10px;background:#fff;color:#193654;font:inherit}
+.goal-history .goal-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:18px 0}
+.goal-history .goal-stat{padding:16px;border:1px solid #e2e9f1;border-radius:10px;background:#f7f9fc}
+.goal-history .goal-stat.accent{background:#fff9e8;border-color:#f1df9e}
+.goal-history .goal-stat strong{display:block;font-size:26px;overflow-wrap:anywhere}
+.goal-history .goal-stat span{display:block;font-size:12px;margin-top:6px;color:#63758a}
+.goal-history .goal-stat .goal-denominator{display:inline;font-size:20px;font-weight:500;margin:0}
+.goal-history .goal-executive{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:12px 14px;margin:0 0 18px;border-radius:8px;background:#edf2f7}
+.goal-history .goal-executive span{font-size:12px;color:#52677d}
+.goal-history .goal-executive strong{font-size:15px}
+.goal-history .goal-executive.met{background:#fbeaf0;color:#193654}
+.goal-history .goal-executive.partial{background:#fff9e8;color:#715d25}
+.goal-history .goal-executive.unmet{background:#fbeaf0;color:#89445c}
+.goal-history .goal-executive.progress{background:#e7f1fb;color:#1d4f7a}
+
+.goal-history .goal-table-wrap{overflow-x:auto;border:1px solid #e2e9f1;border-radius:10px}
+.goal-history table{width:100%;min-width:780px;border-collapse:collapse;font-size:13px}
+.goal-history th,.goal-history td{padding:13px 12px;border-bottom:1px solid #e8edf3;text-align:right}
+.goal-history th{background:#f3f6fa;color:#52677d;font-size:12px}
+.goal-history th:first-child,.goal-history td:first-child,.goal-history th:last-child,.goal-history td:last-child{text-align:left;white-space:nowrap}
+.goal-history .goal-state{display:inline-block;padding:5px 9px;border-radius:20px;font-size:12px;background:#eef2f7;color:#52677d}
+.goal-history .goal-state.met{background:#e7f4ee;color:#246249}
+.goal-history .goal-state.unmet{background:#fbeaf0;color:#89445c}
+.goal-history .goal-state.progress{background:#e7f1fb;color:#1d4f7a}
+
+.goal-history .goal-message{padding:14px;border-radius:8px;background:#fff9e8;color:#715d25;line-height:1.5}
+.goal-history .goal-error{background:#fbeaf0;color:#89445c}
+.goal-history a:focus-visible,.goal-history button:focus-visible,.goal-history input:focus-visible,.goal-history .goal-table-wrap:focus-visible{outline:3px solid #e8a9ba;outline-offset:3px}
+@media(max-width:700px){
+ .goal-history .goal-summary{grid-template-columns:1fr}
+ .goal-history .goal-quick{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+ .goal-history .goal-button{text-align:center;padding:10px 8px}
+ .goal-history .goal-form{flex-direction:column;align-items:stretch}
+ .goal-history .goal-field{min-width:0;width:100%}
+ .goal-history .goal-stat{padding:12px}
+ .goal-history .goal-stat strong{font-size:22px}
+ .goal-history .goal-field{max-width:none}
+}
 </style>
 
 
 <div class="ana-wrap">
+
+{% set export_ready = not goal_history.error and goal_history.start_date and goal_history.end_date and goal_history.start_date <= goal_history.end_date %}
+{% set export_from = goal_history.date_from %}
+{% set export_to = goal_history.date_to %}
 
 <header class="ana-head">
 
@@ -310,23 +216,161 @@
  </div>
 
  <div class="ana-actions">
+  {% if export_ready %}
   <a class="ana-btn primary"
-     href="{{ url_for('informe_excel', date_from=date_from, date_to=date_to, batch_id=batch_id, model_id=model_id) }}">
+     href="{{ url_for('informe_excel', date_from=export_from, date_to=export_to, batch_id=batch_id, model_id=model_id) }}">
    Excel
   </a>
 
   <a class="ana-btn"
-     href="{{ url_for('informe_pdf', date_from=date_from, date_to=date_to, batch_id=batch_id, model_id=model_id) }}">
+     href="{{ url_for('informe_pdf', date_from=export_from, date_to=export_to, batch_id=batch_id, model_id=model_id) }}">
    PDF
   </a>
+  {% else %}
+  <button type="button" class="ana-btn primary" disabled aria-describedby="export-period-message">Excel</button>
+  <button type="button" class="ana-btn" disabled aria-describedby="export-period-message">PDF</button>
+  {% endif %}
  </div>
 
 </header>
 
+{% if not export_ready %}
+<p class="ana-muted" id="export-period-message" role="status">Para exportar, seleccione un período válido de Cumplimiento de metas.</p>
+{% endif %}
+
+<section class="ana-card goal-history" id="cumplimiento-metas" aria-labelledby="goal-history-title">
+ <h2 id="goal-history-title">Cumplimiento de metas</h2>
+
+ <nav class="goal-quick" aria-label="Período del historial de metas">
+  {% for key, label in [('hoy', 'HOY'), ('ayer', 'AYER'), ('esta_semana', 'ESTA SEMANA'), ('semana_pasada', 'SEMANA PASADA'), ('este_mes', 'ESTE MES')] %}
+
+  <a class="goal-button" aria-current="{{ 'true' if goal_history.period == key else 'false' }}"
+     href="{{ url_for('informes', goal_period=key, date_from=date_from, date_to=date_to, batch_id=batch_id, model_id=model_id, _anchor='cumplimiento-metas') }}">{{ label }}</a>
+  {% endfor %}
+ </nav>
+
+ <details class="ana-disclosure">
+  <summary>Personalizar período</summary>
+  <form method="get" action="{{ url_for('informes', _anchor='cumplimiento-metas') }}" class="goal-form">
+  <input type="hidden" name="goal_period" value="personalizado">
+  <input type="hidden" name="date_from" value="{{ date_from }}">
+  <input type="hidden" name="date_to" value="{{ date_to }}">
+  <input type="hidden" name="batch_id" value="{{ batch_id }}">
+  <input type="hidden" name="model_id" value="{{ model_id }}">
+  <div class="goal-field">
+   <label for="goal-from">Desde</label>
+   <input id="goal-from" type="date" name="goal_from" value="{{ goal_history.custom_date_from }}" max="{{ goal_history.max_date }}" required>
+  </div>
+  <div class="goal-field">
+   <label for="goal-to">Hasta</label>
+   <input id="goal-to" type="date" name="goal_to" value="{{ goal_history.custom_date_to }}" max="{{ goal_history.max_date }}" required>
+  </div>
+
+  <button type="submit" class="goal-button primary">CONSULTAR</button>
+  </form>
+ </details>
+
+ {% if goal_history.error %}
+ <p class="goal-message goal-error" role="alert">{{ goal_history.error }}</p>
+ {% else %}
+  {% if goal_history.notice %}<p class="goal-message">{{ goal_history.notice }}</p>{% endif %}
+  {% if goal_history.rows %}
+   {% set totals = goal_history.summary %}
+   {% set today_row = goal_history.rows[0] if goal_history.is_today else None %}
+   <p class="goal-note">{{ goal_history.start_date.strftime('%d/%m/%Y') }} — {{ goal_history.end_date.strftime('%d/%m/%Y') }} ·{% if goal_history.is_today and today_row and today_row.status == 'En curso' %} Jornada en curso{% elif goal_history.is_today %} Jornada de hoy{% else %} Jornadas terminadas{% endif %}</p>
+
+   {% if today_row %}
+   <div class="goal-summary" aria-label="Jornada de hoy">
+    <article class="goal-stat"><strong>{{ today_row.target_garments if today_row.has_goal else '—' }}</strong><span>Meta</span></article>
+    <article class="goal-stat"><strong>{{ today_row.inspected }}</strong><span>Prendas inspeccionadas</span></article>
+    <article class="goal-stat accent"><strong>{{ (today_row.progress|string ~ ' %') if today_row.progress is not none else '—' }}</strong><span>Avance</span></article>
+    <article class="goal-stat"><strong>{{ today_row.completed_batches }}{% if today_row.has_goal and today_row.target_batches is not none %} <span class="goal-denominator">/ {{ today_row.target_batches }}</span>{% endif %}</strong><span>{% if today_row.has_goal and today_row.target_batches is not none %}Lotes completados / meta{% else %}Lotes completados{% endif %}</span></article>
+    <article class="goal-stat accent"><strong>{{ today_row.status|upper }}</strong><span>Estado</span></article>
+   </div>
+   {% else %}
+   <div class="goal-summary" aria-label="Resumen del período de metas">
+    <article class="goal-stat accent"><strong>{{ (totals.progress|string ~ ' %') if totals.progress is not none else '—' }}</strong><span>Cumplimiento global</span></article>
+    <article class="goal-stat"><strong>{{ totals.inspected }} <span class="goal-denominator">/ {{ totals.target_garments if totals.days_with_goal else '—' }}</span></strong><span>Prendas inspeccionadas / meta total</span></article>
+    <article class="goal-stat"><strong>{{ totals.days_met }} <span class="goal-denominator">/ {{ totals.days_with_goal }}</span></strong><span>Días cumplidos / días con meta</span></article>
+   </div>
+
+   {% if not totals.days_with_goal %}
+    {% set executive_state = 'Sin metas configuradas' %}
+    {% set executive_class = 'neutral' %}
+   {% elif totals.days_in_progress %}
+    {% set executive_state = 'En curso' %}
+    {% set executive_class = 'progress' %}
+   {% elif totals.inspected_with_goal >= totals.target_garments %}
+    {% set executive_state = 'Cumplida' %}
+    {% set executive_class = 'met' %}
+   {% elif totals.inspected_with_goal > 0 %}
+    {% set executive_state = 'Parcialmente cumplida' %}
+    {% set executive_class = 'partial' %}
+   {% else %}
+    {% set executive_state = 'No cumplida' %}
+    {% set executive_class = 'unmet' %}
+   {% endif %}
+   <p class="goal-executive {{ executive_class }}"><span>Meta global del período</span><strong>{{ executive_state }}</strong></p>
+   {% endif %}
+
+
+   <details class="ana-disclosure goal-daily-detail">
+    <summary>Ver detalle diario <span aria-hidden="true">↓</span></summary>
+    <div class="goal-table-wrap" role="region" aria-label="Cumplimiento diario de metas" tabindex="0">
+    <table>
+     <thead><tr>
+      <th scope="col">Fecha</th><th scope="col">Meta de prendas</th><th scope="col">Prendas inspeccionadas</th>
+      <th scope="col">Cumplimiento de prendas</th><th scope="col">Meta de lotes</th><th scope="col">Lotes completados</th><th scope="col">Estado</th>
+     </tr></thead>
+     <tbody>
+      {% for row in goal_history.rows %}
+      <tr>
+       <td>{{ row.date.strftime('%d/%m/%Y') }}</td>
+       <td>{{ row.target_garments if row.has_goal else '—' }}</td>
+       <td>{{ row.inspected }}</td>
+       <td>{{ (row.progress|string ~ ' %') if row.progress is not none else '—' }}</td>
+       <td>{{ row.target_batches if row.has_goal else '—' }}</td>
+       <td>{{ row.completed_batches }}</td>
+       <td><span class="goal-state{% if row.status == 'Cumplida' %} met{% elif row.status == 'No cumplida' %} unmet{% elif row.status == 'En curso' %} progress{% endif %}">{{ row.status }}</span></td>
+      </tr>
+      {% endfor %}
+     </tbody>
+    </table>
+    </div>
+    <p class="goal-note">Días con meta no cumplida: {{ totals.days_unmet }}{% if totals.days_in_progress %} · Días en curso: {{ totals.days_in_progress }}{% endif %}.</p>
+   </details>
+  {% else %}
+   <p class="goal-message">No hay jornadas en el período seleccionado. Las fechas futuras no se evalúan como incumplimientos.</p>
+  {% endif %}
+
+ {% endif %}
+</section>
+
+<section class="ana-card ana-quality" aria-labelledby="quality-period-title">
+ <div class="ana-title">
+  <h2 id="quality-period-title">Calidad del período</h2>
+  <span class="ana-muted">{{ period_label }}{% if model_id %} · Modelo filtrado{% endif %}{% if batch_id %} · Lote filtrado{% endif %}</span>
+ </div>
+ <dl class="ana-quality-metrics">
+  <div><dt>Inspeccionadas</dt><dd>{{ summary.inspected or 0 }}</dd></div>
+  <div><dt>Rechazadas</dt><dd>{{ summary.rejected or 0 }}</dd></div>
+  <div><dt>Alertas pendientes</dt><dd>{{ summary.pending or 0 }}</dd></div>
+ </dl>
+</section>
+
+<details class="ana-analysis" id="analisis-detallado">
+ <summary>Análisis detallado</summary>
+ <div class="ana-analysis-body">
 
 <section class="ana-card">
 
+<div class="ana-title"><h2>Filtros de calidad</h2><span class="ana-muted">Las fechas aplican a calidad y análisis. PDF y Excel usan el período de metas y conservan los filtros de modelo y lote.</span></div>
+
 <form method="get" class="ana-filters">
+
+ <input type="hidden" name="goal_period" value="{{ goal_history.period }}">
+ <input type="hidden" name="goal_from" value="{{ goal_history.date_from }}">
+ <input type="hidden" name="goal_to" value="{{ goal_history.date_to }}">
 
  <div class="ana-field">
   <label>Desde</label>
@@ -371,15 +415,15 @@
 </form>
 
 <div class="ana-quick">
- <a href="{{ url_for('informes', date_from=today_text, date_to=today_text) }}">Hoy</a>
- <a href="{{ url_for('informes', date_from=quick_7_from, date_to=today_text) }}">7 d&iacute;as</a>
- <a href="{{ url_for('informes', date_from=quick_30_from, date_to=today_text) }}">30 d&iacute;as</a>
+  <a href="{{ url_for('informes', date_from=today_text, date_to=today_text, goal_period=goal_history.period, goal_from=goal_history.date_from, goal_to=goal_history.date_to) }}">Hoy</a>
+  <a href="{{ url_for('informes', date_from=quick_7_from, date_to=today_text, goal_period=goal_history.period, goal_from=goal_history.date_from, goal_to=goal_history.date_to) }}">7 d&iacute;as</a>
+  <a href="{{ url_for('informes', date_from=quick_30_from, date_to=today_text, goal_period=goal_history.period, goal_from=goal_history.date_from, goal_to=goal_history.date_to) }}">30 d&iacute;as</a>
 </div>
 
 </section>
 
 
-<section class="ana-main-kpis">
+<section class="ana-card ana-main-kpis" aria-label="Indicadores detallados de calidad">
 
  <article class="ana-kpi">
   <strong>{{ summary.inspected or 0 }}</strong>
@@ -436,106 +480,6 @@
  </div>
 
 </section>
-
-
-{% if date_from == today_text and date_to == today_text and not batch_id and not model_id %}
-
-<section class="ana-card">
-
- <div class="ana-title">
-  <h2>Producci&oacute;n de hoy</h2>
-  {% if daily_goal %}
-  <strong>
-   {{ summary.inspected or 0 }}/{{ daily_goal.target_garments }}
-  </strong>
-  {% endif %}
- </div>
-
- <div class="ana-production">
-
-  <div>
-
-   {% if daily_goal %}
-
-    <div>
-     Meta diaria:
-     <strong>{{ daily_goal.target_garments }} prendas</strong>
-    </div>
-
-    <div class="ana-progress">
-     <div style="width:{{ [daily_goal.progress_rate,100]|min }}%"></div>
-    </div>
-
-    <div>
-     <strong>{{ daily_goal.progress_rate }} %</strong>
-     completado
-    </div>
-
-   {% else %}
-
-    <div class="ana-muted">
-     No se defini&oacute; una meta de producci&oacute;n para hoy.
-    </div>
-
-   {% endif %}
-
-  </div>
-
-
-  <div>
-
-   {% if active_batch %}
-
-    <strong>Lote {{ active_batch.code }}</strong>
-
-    <div class="ana-muted">
-     {% if active_batch.garment_model_code %}
-      {{ active_batch.garment_model_code }}
-      &mdash;
-      {{ active_batch.garment_model_name }}
-     {% else %}
-      Sin modelo asignado
-     {% endif %}
-    </div>
-
-    <div class="ana-values">
-
-     <div class="ana-value">
-      <strong>
-       {{ active_batch.processed_quantity }}
-       /
-       {{ active_batch.planned_quantity }}
-      </strong>
-      <span>Procesadas</span>
-     </div>
-
-     <div class="ana-value">
-      <strong>{{ active_batch.confirmed_defects or 0 }}</strong>
-      <span>Rechazadas</span>
-     </div>
-
-     <div class="ana-value">
-      <strong>{{ active_batch.progress_rate }} %</strong>
-      <span>Avance lote</span>
-     </div>
-
-    </div>
-
-   {% else %}
-
-    <div class="ana-muted">
-     No hay un lote en inspecci&oacute;n.
-    </div>
-
-   {% endif %}
-
-  </div>
-
- </div>
-
-</section>
-
-{% endif %}
 
 
 {% if top_problem_lot or top_problem_model %}
@@ -631,6 +575,7 @@
 
 {% if model_summary %}
 
+<div class="ana-table-wrap" role="region" aria-label="Rendimiento por modelo" tabindex="0">
 <table class="ana-table ana-model-table">
 
 <thead>
@@ -694,6 +639,7 @@
 
 </tbody>
 </table>
+</div>
 
 {% else %}
 
@@ -717,6 +663,7 @@
 
 {% if lot_summary %}
 
+<div class="ana-table-wrap" role="region" aria-label="Calidad por lote" tabindex="0">
 <table class="ana-table ana-lot-table">
 
 <thead>
@@ -774,6 +721,7 @@
 
 </tbody>
 </table>
+</div>
 
 {% else %}
 
@@ -794,9 +742,10 @@
 
   <h2>Principales causas de rechazo</h2>
 
-  {% if rejection_reasons %}
+   {% if rejection_reasons %}
 
-   <table class="ana-table">
+   <div class="ana-table-wrap" role="region" aria-label="Causas de rechazo" tabindex="0">
+    <table class="ana-table">
     <thead>
      <tr>
       <th>Defecto</th>
@@ -813,6 +762,7 @@
     {% endfor %}
     </tbody>
    </table>
+   </div>
 
   {% else %}
    <div class="ana-empty">Sin defectos confirmados.</div>
@@ -825,9 +775,10 @@
 
   <h2>Zonas con mayor rechazo</h2>
 
-  {% if rejection_zones %}
+   {% if rejection_zones %}
 
-   <table class="ana-table">
+   <div class="ana-table-wrap" role="region" aria-label="Zonas de rechazo" tabindex="0">
+    <table class="ana-table">
     <thead>
      <tr>
       <th>Zona</th>
@@ -844,6 +795,7 @@
     {% endfor %}
     </tbody>
    </table>
+   </div>
 
   {% else %}
    <div class="ana-empty">Sin zonas registradas.</div>
@@ -854,6 +806,9 @@
 </div>
 
 {% endif %}
+
+ </div>
+</details>
 
 </div>
 

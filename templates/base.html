@@ -3,11 +3,23 @@
 <head>
     <meta charset="utf-8">
 
-    <title>{{ title or 'Control de Calidad' }}</title>
+    <title>{{ title or 'Control de Calidad | Astrid & Beverly Fashion' }}</title>
 
     <meta
         name="viewport"
         content="width=device-width, initial-scale=1"
+    >
+
+    <link
+        rel="icon"
+        type="image/png"
+        href="{{ url_for('static', filename='img/favicon.png') }}"
+    >
+
+    <link
+        rel="shortcut icon"
+        type="image/x-icon"
+        href="{{ url_for('static', filename='img/favicon.ico') }}"
     >
 
     <link
@@ -191,7 +203,7 @@
             background: var(--ui-navy);
         }
 
-        @media (max-width: 768px) {
+        @media (max-width: 1024px) {
             .sidebar {
                 width: min(86vw, 290px) !important;
                 padding: 22px 18px;
@@ -401,7 +413,7 @@
         });
 
         window.addEventListener("resize", () => {
-          if (window.innerWidth > 768) {
+          if (window.innerWidth > 1024) {
             setOpen(false);
           }
         });

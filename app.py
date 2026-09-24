@@ -8,6 +8,7 @@ from patchcore_inference import PatchCoreInspector
 import os
 import time
 import uuid
+import json
 import threading
 from functools import wraps
 import io
@@ -87,6 +88,15 @@ RESULT_DIR = ROOT / "static" / "results"
 MODEL_DIR = ROOT / "models"
 MODEL_PATH = MODEL_DIR / "best.pt"
 
+# Experimento de latencia: candidatos 40/45/50 solo benchmark.
+# Default false => no se copian frames extra ni se escribe a disco.
+FRAME_SELECTION_BENCHMARK = str(
+    os.getenv("FRAME_SELECTION_BENCHMARK", "false")
+).strip().lower() in ("1", "true", "yes", "on")
+
+BENCHMARK_FRAMES_DIR = ROOT / "benchmark_frames"
+BENCHMARK_COVERAGE_LEVELS = (0.40, 0.45, 0.50)
+
 DB_NAME = os.environ.get("MYSQL_DATABASE", "textile_quality_db")
 DB_HOST = os.environ.get("MYSQL_HOST", "127.0.0.1")
 DB_PORT = int(os.environ.get("MYSQL_PORT", "3306"))
@@ -104,8 +114,19 @@ DEFECT_TYPES = [
 GARMENTS = ["Blusa", "Top corto", "Camisa cropped"]
 SIZES = ["S"]
 
+# protege el manejador VideoCapture (open/read/release del worker)
 camera_lock = threading.Lock()
+
+# protege latest_frame / timestamp / sequence (consumidores)
+latest_frame_lock = threading.Lock()
 latest_camera_frame = None
+latest_frame_timestamp_monotonic = None
+latest_frame_sequence = 0
+
+CAMERA_CAPTURE_WORKER = None
+CAMERA_CAPTURE_WORKER_LOCK = threading.Lock()
+CAMERA_CAPTURE_WORKER_STARTED = False
+CAMERA_FORCE_REOPEN = False
 yolo_model = None
 
 app = Flask(__name__)
@@ -1190,6 +1211,14 @@ print(
     f"{CAMERA_USER}@{CAMERA_IP}:{CAMERA_RTSP_PORT} "
     f"canal={CAMERA_CHANNEL}, flujo={CAMERA_SUBTYPE}"
 )
+print(
+    "[CAMARA] IP .env="
+    f"{CAMERA_IP} | URL="
+    f"rtsp://{CAMERA_USER_ENCODED}:***"
+    f"@{CAMERA_IP}:{CAMERA_RTSP_PORT}"
+    f"/cam/realmonitor?channel={CAMERA_CHANNEL}"
+    f"&subtype={CAMERA_SUBTYPE}"
+)
 
 AUTO_INSPECTION_ENABLED = False
 AUTO_THREAD = None
@@ -1249,6 +1278,371 @@ AUTO_GARMENT_MAX_TRACK_FRAMES = int(
     )
 )
 
+# ------------------------------------------------------------
+# Identidad temporal de prenda (Fase 3) + latencia (Fase 2).
+# Solo en memoria y logging: no se persiste en BD todavía.
+# ------------------------------------------------------------
+GARMENT_TOKEN_LOCK = threading.Lock()
+GARMENT_TOKEN_SEQ = 0
+
+
+def next_garment_token():
+    """Token secuencial único por ciclo de presencia de prenda."""
+    global GARMENT_TOKEN_SEQ
+    with GARMENT_TOKEN_LOCK:
+        GARMENT_TOKEN_SEQ += 1
+        return GARMENT_TOKEN_SEQ
+
+
+# ------------------------------------------------------------
+# Timeline por garment_token (experimento de latencia).
+# perf_counter para duraciones; time.time() para correlación.
+# ------------------------------------------------------------
+TIMELINE_LOCK = threading.Lock()
+TIMELINE_EVENTS = {}
+
+
+def timeline_mark(token, event):
+    """Registra el PRIMER cruce de un evento para el token."""
+    if token is None or not event:
+        return
+
+    snapshot = {
+        "perf": time.perf_counter(),
+        "wall_ms": int(time.time() * 1000),
+    }
+
+    with TIMELINE_LOCK:
+        bucket = TIMELINE_EVENTS.setdefault(token, {})
+        if event in bucket:
+            return
+        bucket[event] = snapshot
+
+
+def _timeline_delta_ms(token, from_event, to_event):
+    with TIMELINE_LOCK:
+        bucket = TIMELINE_EVENTS.get(token) or {}
+        start = bucket.get(from_event)
+        end = bucket.get(to_event)
+
+    if start is None or end is None:
+        return None
+
+    return (end["perf"] - start["perf"]) * 1000.0
+
+
+def log_timeline(token):
+    """Emite el bloque [TIMELINE] de una prenda."""
+    if token is None:
+        return
+
+    with TIMELINE_LOCK:
+        bucket = dict(TIMELINE_EVENTS.get(token) or {})
+
+    def fmt(value):
+        if value is None:
+            return "n/a"
+        return f"{float(value):.1f}"
+
+    detect = "garment_detected"
+
+    lines = [
+        f"[TIMELINE] token={token}",
+        (
+            "detect_to_40_ms="
+            + fmt(_timeline_delta_ms(token, detect, "coverage_40_reached"))
+        ),
+        (
+            "detect_to_45_ms="
+            + fmt(_timeline_delta_ms(token, detect, "coverage_45_reached"))
+        ),
+        (
+            "detect_to_50_ms="
+            + fmt(_timeline_delta_ms(token, detect, "coverage_50_reached"))
+        ),
+        (
+            "frame_selection_ms="
+            + fmt(_timeline_delta_ms(token, detect, "frame_selected"))
+        ),
+        (
+            "preprocess_ms="
+            + fmt(_timeline_delta_ms(token, "preprocess_start", "preprocess_end"))
+        ),
+        (
+            "inference_ms="
+            + fmt(_timeline_delta_ms(token, "inference_start", "inference_end"))
+        ),
+        (
+            "detect_to_decision_ms="
+            + fmt(_timeline_delta_ms(token, detect, "decision_ready"))
+        ),
+        (
+            "decision_to_alert_ms="
+            + fmt(_timeline_delta_ms(token, "decision_ready", "alert_emitted"))
+        ),
+        (
+            "detect_to_alert_ms="
+            + fmt(_timeline_delta_ms(token, detect, "alert_emitted"))
+        ),
+        (
+            "total_ms="
+            + fmt(_timeline_delta_ms(token, detect, "inspection_complete"))
+        ),
+    ]
+
+    print("\n".join(lines), flush=True)
+
+
+def reset_timeline(token):
+    if token is None:
+        return
+    with TIMELINE_LOCK:
+        TIMELINE_EVENTS.pop(token, None)
+
+
+def persist_benchmark_frames(
+    garment_token,
+    frames_by_level,
+    production_result=None,
+    production_score=None,
+    batch_id=None,
+    batch_position=None,
+):
+    """
+    Escribe candidatos 40/45/50 SOLO después de la inspección
+    productiva. No participa en la decisión.
+    """
+    if not FRAME_SELECTION_BENCHMARK:
+        return
+    if not frames_by_level or garment_token is None:
+        return
+
+    try:
+        out_dir = BENCHMARK_FRAMES_DIR / f"token_{garment_token}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        coverages = {}
+        for level, payload in frames_by_level.items():
+            pct = int(round(float(level) * 100))
+            frame = payload.get("frame")
+            if frame is None:
+                continue
+            path = out_dir / f"coverage_{pct}.jpg"
+            if not cv2.imwrite(str(path), frame):
+                print(
+                    "[BENCHMARK] No se pudo escribir "
+                    f"{path}",
+                    flush=True,
+                )
+                continue
+            coverages[str(pct)] = float(payload.get("coverage") or 0.0)
+
+        metadata = {
+            "token": garment_token,
+            "batch_id": batch_id,
+            "batch_position": batch_position,
+            "coverages": coverages,
+            "production_result": production_result,
+            "production_score": production_score,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "server_emitted_at_ms": int(time.time() * 1000),
+        }
+
+        meta_path = out_dir / "metadata.json"
+        meta_path.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        print(
+            "[BENCHMARK] Candidatos persistidos "
+            f"token={garment_token} dir={out_dir}",
+            flush=True,
+        )
+    except Exception as error:
+        print(
+            "[BENCHMARK] Error al persistir "
+            f"token={garment_token}: {error}",
+            flush=True,
+        )
+
+
+# ------------------------------------------------------------
+# Eventos de alarma de calidad en memoria (para SSE/polling).
+# No se persisten en BD. Se publican en el instante de la
+# decisión, antes de imagen/BD.
+# ------------------------------------------------------------
+QUALITY_ALERT_LOCK = threading.Lock()
+QUALITY_ALERT_SEQ = 0
+QUALITY_ALERT_EVENTS = []
+
+
+def publish_quality_alert_event(
+    garment_token,
+    confidence=None,
+    zone=None,
+    defect_type=None,
+    source="auto",
+):
+    """Publica un evento único de anomalía para el navegador."""
+    global QUALITY_ALERT_SEQ
+
+    with QUALITY_ALERT_LOCK:
+        QUALITY_ALERT_SEQ += 1
+        event = {
+            "alert_id": f"ae{QUALITY_ALERT_SEQ}",
+            "event_id": f"ae{QUALITY_ALERT_SEQ}",
+            "seq": QUALITY_ALERT_SEQ,
+            "token": garment_token,
+            "garment_token": garment_token,
+            "result": "ANOMALIA",
+            "confidence": confidence,
+            "zone": zone,
+            "defect_type": defect_type,
+            "source": source,
+            "batch_id": None,
+            "batch_position": None,
+            "code": None,
+            "ts": time.time(),
+            "server_emitted_at_ms": int(time.time() * 1000),
+        }
+        QUALITY_ALERT_EVENTS.append(event)
+        if len(QUALITY_ALERT_EVENTS) > 80:
+            del QUALITY_ALERT_EVENTS[: len(QUALITY_ALERT_EVENTS) - 80]
+        return dict(event)
+
+
+def enrich_quality_alert_event(
+    garment_token,
+    batch_id=None,
+    batch_position=None,
+    code=None,
+):
+    """
+    Completa posición/código tras el INSERT sin crear un nuevo
+    alert_id (el navegador no vuelve a sonar; solo puede refrescar
+    la alerta visual).
+    """
+    if garment_token is None:
+        return
+
+    global QUALITY_ALERT_SEQ
+
+    with QUALITY_ALERT_LOCK:
+        for event in reversed(QUALITY_ALERT_EVENTS):
+            if event.get("token") == garment_token:
+                if batch_id is not None:
+                    event["batch_id"] = batch_id
+                if batch_position is not None:
+                    event["batch_position"] = batch_position
+                if code is not None:
+                    event["code"] = code
+
+                update = dict(event)
+                QUALITY_ALERT_SEQ += 1
+                update["seq"] = QUALITY_ALERT_SEQ
+                update["enriched"] = True
+                QUALITY_ALERT_EVENTS.append(update)
+                if len(QUALITY_ALERT_EVENTS) > 80:
+                    del QUALITY_ALERT_EVENTS[
+                        : len(QUALITY_ALERT_EVENTS) - 80
+                    ]
+                break
+
+
+def get_quality_alerts_after(after_seq):
+    """Devuelve eventos con seq > after_seq (orden ascendente)."""
+    with QUALITY_ALERT_LOCK:
+        return [
+            dict(event)
+            for event in QUALITY_ALERT_EVENTS
+            if int(event.get("seq") or 0) > int(after_seq or 0)
+        ]
+
+
+def current_quality_alert_seq():
+    with QUALITY_ALERT_LOCK:
+        return QUALITY_ALERT_SEQ
+
+
+def trigger_quality_alert(
+    garment_token,
+    confidence=None,
+    zone=None,
+    defect_type=None,
+    source="auto",
+):
+    """
+    Punto único de alerta de calidad.
+
+    Se invoca INMEDIATAMENTE después de conocer ANOMALIA y ANTES de
+    persistencia secundaria (imagen de resultado, MySQL, contadores).
+    Publica el evento en memoria para que el navegador pueda sonar
+    sin esperar BD.
+    """
+    publish_quality_alert_event(
+        garment_token=garment_token,
+        confidence=confidence,
+        zone=zone,
+        defect_type=defect_type,
+        source=source,
+    )
+    timeline_mark(garment_token, "alert_emitted")
+
+    confidence_text = (
+        f"{confidence}"
+        if confidence is not None
+        else "n/a"
+    )
+    print(
+        "[ALERT] "
+        f"token={garment_token} "
+        "result=ANOMALIA "
+        f"confidence={confidence_text} "
+        f"zone={zone or 'n/a'} "
+        f"defect_type={defect_type or 'n/a'} "
+        f"source={source}",
+        flush=True,
+    )
+
+
+def log_latency_metrics(
+    garment_token,
+    metrics,
+    ai_decision,
+    batch_id=None,
+    batch_position=None,
+    source="auto",
+):
+    """Emite la línea [LATENCY] de una inspección completa."""
+    if not metrics:
+        return
+
+    def _ms(key):
+        value = metrics.get(key)
+        if value is None:
+            return "n/a"
+        return f"{float(value):.1f}"
+
+    print(
+        "[LATENCY] "
+        f"token={garment_token} "
+        f"decision_ms={_ms('decision_ms')} "
+        f"total_ms={_ms('total_complete_ms')} "
+        f"inference_ms={_ms('inference_ms')} "
+        f"capture_ms={_ms('capture_ms')} "
+        f"frame_selection_ms={_ms('frame_selection_ms')} "
+        f"preprocess_ms={_ms('preprocess_ms')} "
+        f"postprocess_ms={_ms('postprocess_ms')} "
+        f"image_storage_ms={_ms('image_storage_ms')} "
+        f"database_ms={_ms('database_ms')} "
+        f"batch_id={batch_id if batch_id is not None else 'n/a'} "
+        f"batch_position={batch_position if batch_position is not None else 'n/a'} "
+        f"source={source} "
+        f"result={ai_decision}",
+        flush=True,
+    )
+
 
 ROI_X1 = float(os.getenv("ROI_X1", "0.10"))
 ROI_Y1 = float(os.getenv("ROI_Y1", "0.10"))
@@ -1285,6 +1679,15 @@ CAMERA_READ_TIMEOUT_MS = int(
 CAMERA_RECONNECTING = False
 CAMERA_RECONNECT_LOCK = threading.Lock()
 CAMERA_CURRENT_IP = CAMERA_IP
+
+CAMERA_LATENCY_LOG_LOCK = threading.Lock()
+CAMERA_LATENCY_LAST_LOG = {}
+CAMERA_LATENCY_LOG_INTERVAL_S = float(
+    os.getenv("CAMERA_LATENCY_LOG_INTERVAL_S", "2.0")
+)
+CAMERA_READ_FAIL_RELEASE_LIMIT = int(
+    os.getenv("CAMERA_READ_FAIL_RELEASE_LIMIT", "3")
+)
 
 CAMERA_DISCOVERY_ENABLED = (
     os.getenv(
@@ -1623,12 +2026,110 @@ def parse_camera_source(source):
     return source
 
 
+def log_camera_latency(source, sequence, timestamp_monotonic):
+    """
+    Log limitado de edad del frame. No escribe en BD.
+    """
+    if timestamp_monotonic is None:
+        return
+
+    now = time.perf_counter()
+
+    with CAMERA_LATENCY_LOG_LOCK:
+        last = CAMERA_LATENCY_LAST_LOG.get(source, 0.0)
+        if (now - last) < CAMERA_LATENCY_LOG_INTERVAL_S:
+            return
+        CAMERA_LATENCY_LAST_LOG[source] = now
+
+    frame_age_ms = (now - timestamp_monotonic) * 1000.0
+    print(
+        "[CAMERA_LATENCY]\n"
+        f"sequence={sequence}\n"
+        f"frame_age_ms={frame_age_ms:.1f}\n"
+        f"source={source}",
+        flush=True,
+    )
+
+
+def get_latest_camera_frame():
+    """
+    Copia thread-safe del frame más reciente.
+    NO llama cap.read(). No mantiene lock durante procesamiento.
+    Devuelve: (frame|None, timestamp_monotonic|None, sequence:int)
+    """
+    global latest_camera_frame
+    global latest_frame_timestamp_monotonic
+    global latest_frame_sequence
+
+    with latest_frame_lock:
+        frame = (
+            latest_camera_frame.copy()
+            if latest_camera_frame is not None
+            else None
+        )
+        timestamp = latest_frame_timestamp_monotonic
+        sequence = latest_frame_sequence
+
+    return frame, timestamp, sequence
+
+
+def _publish_latest_frame(frame):
+    global latest_camera_frame
+    global latest_frame_timestamp_monotonic
+    global latest_frame_sequence
+
+    timestamp = time.perf_counter()
+
+    with latest_frame_lock:
+        latest_camera_frame = frame
+        latest_frame_timestamp_monotonic = timestamp
+        latest_frame_sequence += 1
+        sequence = latest_frame_sequence
+
+    return timestamp, sequence
+
+
+def _clear_latest_frame():
+    global latest_camera_frame
+    global latest_frame_timestamp_monotonic
+
+    with latest_frame_lock:
+        latest_camera_frame = None
+        latest_frame_timestamp_monotonic = None
+
+
+def _note_camera_signal_lost(error_message):
+    global CAMERA_CONNECTED
+    global CAMERA_FAILURE_COUNT
+    global CAMERA_LAST_ERROR
+    global AUTO_INSPECTION_ENABLED
+    global AUTO_LAST_ERROR
+
+    CAMERA_CONNECTED = False
+    CAMERA_FAILURE_COUNT += 1
+
+    if error_message:
+        CAMERA_LAST_ERROR = error_message
+
+    if (
+        AUTO_INSPECTION_ENABLED
+        and CAMERA_FAILURE_COUNT >= CAMERA_FAILURE_LIMIT
+    ):
+        AUTO_INSPECTION_ENABLED = False
+        AUTO_LAST_ERROR = (
+            "Inspección automática detenida: "
+            "la cámara perdió la señal."
+        )
+
+
 def get_camera():
     """
-    Devuelve una unica instancia de camara.
+    Abre/reutiliza la ÚNICA sesión VideoCapture del pipeline.
 
-    La direccion RTSP se construye usando la IP
-    localizada actualmente por el sistema.
+    No hace cap.read(). Los consumidores NO deben llamar esto
+    para obtener frames: usan get_latest_camera_frame().
+    Debe invocarse bajo camera_lock desde camera_capture_worker
+    o desde reset/reconexión controlada.
     """
     global camera_capture
     global CAMERA_LAST_CONNECT_ATTEMPT
@@ -1697,10 +2198,14 @@ def get_camera():
                 cv2.CAP_FFMPEG,
             )
 
-        camera_capture.set(
-            cv2.CAP_PROP_BUFFERSIZE,
-            1,
-        )
+        # Best-effort: FFmpeg/RTSP puede ignorarlo.
+        try:
+            camera_capture.set(
+                cv2.CAP_PROP_BUFFERSIZE,
+                1,
+            )
+        except Exception:
+            pass
 
         if not camera_capture.isOpened():
             try:
@@ -1736,100 +2241,33 @@ def get_camera():
         return None
 
 
-def read_camera_frame():
+def read_camera_frame(source="compat"):
     """
-    Lee un frame y mantiene el estado operativo de la cámara.
+    Compatibilidad: NO ejecuta cap.read().
 
-    Una pérdida de señal nunca registra una inspección.
-    Si ocurre durante el modo automático, este se detiene
-    después de varios fallos consecutivos.
+    Devuelve el latest_frame publicado por camera_capture_worker.
     """
-    global camera_capture
-    global latest_camera_frame
+    frame, timestamp, sequence = get_latest_camera_frame()
 
-    global CAMERA_CONNECTED
-    global CAMERA_LAST_OK_AT
-    global CAMERA_LAST_ERROR
-    global CAMERA_FAILURE_COUNT
-
-    global AUTO_INSPECTION_ENABLED
-    global AUTO_LAST_ERROR
-
-    if cv2 is None:
-        CAMERA_CONNECTED = False
-        CAMERA_LAST_ERROR = "OpenCV no está disponible."
+    if frame is None:
         return False, None
 
-    with camera_lock:
-        cap = get_camera()
+    log_camera_latency(
+        source=source,
+        sequence=sequence,
+        timestamp_monotonic=timestamp,
+    )
 
-        if cap is None:
-            CAMERA_CONNECTED = False
-            CAMERA_FAILURE_COUNT += 1
-
-            if not CAMERA_LAST_ERROR:
-                CAMERA_LAST_ERROR = "Cámara sin señal."
-
-            if (
-                AUTO_INSPECTION_ENABLED
-                and CAMERA_FAILURE_COUNT >= CAMERA_FAILURE_LIMIT
-            ):
-                AUTO_INSPECTION_ENABLED = False
-                AUTO_LAST_ERROR = (
-                    "Inspección automática detenida: "
-                    "la cámara perdió la señal."
-                )
-
-            return False, None
-
-        ok, frame = cap.read()
-
-        if not ok or frame is None:
-            try:
-                cap.release()
-            except Exception:
-                pass
-
-            camera_capture = None
-            CAMERA_CONNECTED = False
-            CAMERA_FAILURE_COUNT += 1
-            CAMERA_LAST_ERROR = (
-                "No se está recibiendo video de la cámara."
-            )
-
-            if (
-                AUTO_INSPECTION_ENABLED
-                and CAMERA_FAILURE_COUNT >= CAMERA_FAILURE_LIMIT
-            ):
-                AUTO_INSPECTION_ENABLED = False
-                AUTO_LAST_ERROR = (
-                    "Inspección automática detenida: "
-                    "la cámara perdió la señal."
-                )
-
-            return False, None
-
-        latest_camera_frame = frame.copy()
-
-        CAMERA_CONNECTED = True
-        CAMERA_FAILURE_COUNT = 0
-        CAMERA_LAST_ERROR = None
-        CAMERA_LAST_OK_AT = datetime.now().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-
-        return True, frame
-
+    return True, frame
 
 
 def reset_camera_connection():
     """
-    Libera la conexion RTSP actual para que la siguiente lectura
-    abra una sesion nueva con la camara.
+    Libera la conexion RTSP actual y limpia latest_frame.
     No modifica lotes ni registra inspecciones.
+    Solo debe usarse desde el capture worker / reconexión.
     """
     global camera_capture
-    global latest_camera_frame
     global CAMERA_CONNECTED
     global CAMERA_LAST_ERROR
     global CAMERA_LAST_CONNECT_ATTEMPT
@@ -1843,149 +2281,264 @@ def reset_camera_connection():
             pass
 
         camera_capture = None
-        latest_camera_frame = None
 
-        CAMERA_CONNECTED = False
-        CAMERA_LAST_ERROR = (
-            "Reconectando con la c\u00e1mara de inspecci\u00f3n."
-        )
-        CAMERA_LAST_CONNECT_ATTEMPT = 0.0
-        CAMERA_FAILURE_COUNT = 0
+    _clear_latest_frame()
+
+    CAMERA_CONNECTED = False
+    CAMERA_LAST_ERROR = (
+        "Reconectando con la c\u00e1mara de inspecci\u00f3n."
+    )
+    CAMERA_LAST_CONNECT_ATTEMPT = 0.0
+    CAMERA_FAILURE_COUNT = 0
 
 
-
-def camera_reconnect_worker():
+def _try_discover_camera_after_failures(direct_failures):
     """
-    Recuperacion persistente.
-
-    Primero intenta la IP conocida. Si falla varias
-    veces, busca automaticamente la camara en la LAN
-    y adopta la nueva IP cuando encuentra video real.
+    Solo el capture worker llama esto (evita 2 reconexiones).
     """
-    global CAMERA_RECONNECTING
     global CAMERA_CURRENT_IP
     global CAMERA_LAST_CONNECT_ATTEMPT
 
+    if not CAMERA_DISCOVERY_ENABLED:
+        return False
+
+    if not (
+        direct_failures == 2
+        or direct_failures % 5 == 0
+    ):
+        return False
+
     app.logger.warning(
-        "[CAMARA] Reconexion automatica iniciada."
+        "[CAMARA] IP actual sin respuesta. "
+        "Buscando camara en la red local."
     )
 
-    direct_failures = 0
+    discovered_ip = discover_camera_ip()
 
-    try:
+    if (
+        discovered_ip
+        and discovered_ip != CAMERA_CURRENT_IP
+    ):
+        old_ip = CAMERA_CURRENT_IP
+        CAMERA_CURRENT_IP = discovered_ip
+        CAMERA_LAST_CONNECT_ATTEMPT = 0.0
         reset_camera_connection()
 
+        app.logger.warning(
+            "[CAMARA] Cambio automatico "
+            f"de IP: {old_ip} -> "
+            f"{CAMERA_CURRENT_IP}"
+        )
+        return True
+
+    return False
+
+
+def camera_capture_worker():
+    """
+    ÚNICO lector continuo de RTSP.
+
+    while running:
+        ok, frame = cap.read()
+        if ok:
+            latest_frame = frame  (reemplaza; sin cola histórica)
+
+    Reconexión/discovery también viven aquí: no hay un segundo
+    worker que haga cap.read() concurrente.
+    """
+    global CAMERA_CONNECTED
+    global CAMERA_LAST_OK_AT
+    global CAMERA_LAST_ERROR
+    global CAMERA_FAILURE_COUNT
+    global CAMERA_RECONNECTING
+    global CAMERA_FORCE_REOPEN
+
+    with CAMERA_RECONNECT_LOCK:
+        CAMERA_RECONNECTING = True
+
+    app.logger.info(
+        "[CAMARA] camera_capture_worker iniciado "
+        f"(ip={CAMERA_CURRENT_IP}, "
+        f"channel={CAMERA_CHANNEL}, "
+        f"subtype={CAMERA_SUBTYPE})."
+    )
+
+    read_failures = 0
+
+    try:
         while True:
-            ok, frame = read_camera_frame()
-
-            if (
-                ok
-                and frame is not None
-            ):
-                app.logger.info(
-                    "[CAMARA] Conexion recuperada "
-                    "automaticamente en "
-                    f"{CAMERA_CURRENT_IP}."
+            if cv2 is None:
+                CAMERA_CONNECTED = False
+                CAMERA_LAST_ERROR = (
+                    "OpenCV no esta disponible."
                 )
-                return
+                time.sleep(1.0)
+                continue
 
-            direct_failures += 1
+            # Reapertura solicitada (botón reconectar / API).
+            # Solo el worker libera el VideoCapture.
+            force_reopen = False
+            with camera_lock:
+                force_reopen = CAMERA_FORCE_REOPEN
+                if force_reopen:
+                    CAMERA_FORCE_REOPEN = False
+                    try:
+                        if camera_capture is not None:
+                            camera_capture.release()
+                    except Exception:
+                        pass
+                    camera_capture = None
+                    CAMERA_LAST_CONNECT_ATTEMPT = 0.0
 
-            # No escanear toda la LAN en cada intento.
-            # Tras 2 fallos directos se realiza busqueda
-            # y luego se repite periodicamente.
-            if (
-                CAMERA_DISCOVERY_ENABLED
-                and (
-                    direct_failures == 2
-                    or direct_failures % 5 == 0
+            if force_reopen:
+                _clear_latest_frame()
+                CAMERA_CONNECTED = False
+
+            # --- abrir sesión si hace falta ---
+            with camera_lock:
+                cap = get_camera()
+
+            if cap is None:
+                _note_camera_signal_lost(
+                    CAMERA_LAST_ERROR
+                    or "Cámara sin señal."
                 )
-            ):
-                app.logger.warning(
-                    "[CAMARA] IP actual sin respuesta. "
-                    "Buscando camara en la red local."
+                with CAMERA_RECONNECT_LOCK:
+                    CAMERA_RECONNECTING = True
+
+                # Política de discovery de la reconexión clásica.
+                # direct_failures se deriva de CAMERA_FAILURE_COUNT.
+                _try_discover_camera_after_failures(
+                    CAMERA_FAILURE_COUNT
                 )
 
-                discovered_ip = (
-                    discover_camera_ip()
+                time.sleep(
+                    max(float(CAMERA_RETRY_SECONDS), 1.0)
+                )
+                continue
+
+            # --- ÚNICO cap.read() continuo del pipeline ---
+            try:
+                ok, frame = cap.read()
+            except Exception as error:
+                ok = False
+                frame = None
+                CAMERA_LAST_ERROR = (
+                    f"Error de lectura RTSP: {error}"
                 )
 
-                if (
-                    discovered_ip
-                    and discovered_ip
-                    != CAMERA_CURRENT_IP
-                ):
-                    old_ip = (
-                        CAMERA_CURRENT_IP
-                    )
-
-                    CAMERA_CURRENT_IP = (
-                        discovered_ip
-                    )
-
-                    CAMERA_LAST_CONNECT_ATTEMPT = (
-                        0.0
-                    )
-
-                    reset_camera_connection()
-
-                    app.logger.warning(
-                        "[CAMARA] Cambio automatico "
-                        f"de IP: {old_ip} -> "
-                        f"{CAMERA_CURRENT_IP}"
-                    )
-
-                    direct_failures = 0
-
-                    continue
-
-            time.sleep(
-                max(
-                    float(
-                        CAMERA_RETRY_SECONDS
-                    ),
-                    1.0,
+            if ok and frame is not None:
+                timestamp, sequence = _publish_latest_frame(
+                    frame
                 )
+
+                CAMERA_CONNECTED = True
+                CAMERA_FAILURE_COUNT = 0
+                CAMERA_LAST_ERROR = None
+                CAMERA_LAST_OK_AT = datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                read_failures = 0
+
+                with CAMERA_RECONNECT_LOCK:
+                    CAMERA_RECONNECTING = False
+
+                # Diagnóstico opcional del lector (limitado).
+                log_camera_latency(
+                    source="camera_capture_worker",
+                    sequence=sequence,
+                    timestamp_monotonic=timestamp,
+                )
+                continue
+
+            # --- fallo de lectura ---
+            read_failures += 1
+            _note_camera_signal_lost(
+                CAMERA_LAST_ERROR
+                or "No se está recibiendo video de la cámara."
             )
+            _clear_latest_frame()
+
+            if (
+                read_failures
+                >= max(1, CAMERA_READ_FAIL_RELEASE_LIMIT)
+            ):
+                with camera_lock:
+                    try:
+                        if camera_capture is not None:
+                            camera_capture.release()
+                    except Exception:
+                        pass
+                    camera_capture = None
+
+                CAMERA_LAST_CONNECT_ATTEMPT = 0.0
+                read_failures = 0
+
+                with CAMERA_RECONNECT_LOCK:
+                    CAMERA_RECONNECTING = True
+
+                _try_discover_camera_after_failures(
+                    CAMERA_FAILURE_COUNT
+                )
+
+            time.sleep(0.05)
 
     finally:
         with CAMERA_RECONNECT_LOCK:
             CAMERA_RECONNECTING = False
 
 
-def ensure_camera_reconnect_worker():
+def ensure_camera_capture_worker():
     """
-    Inicia la recuperacion automatica solamente
-    cuando no existe otro worker activo.
+    Garantiza EXACTAMENTE UN camera_capture_worker.
+    No crea un thread por request HTTP si ya corre.
     """
-    global CAMERA_RECONNECTING
+    global CAMERA_CAPTURE_WORKER
+    global CAMERA_CAPTURE_WORKER_STARTED
 
-    if CAMERA_CONNECTED:
+    if cv2 is None:
         return False
 
-    with CAMERA_RECONNECT_LOCK:
-        if CAMERA_RECONNECTING:
-            return False
+    with CAMERA_CAPTURE_WORKER_LOCK:
+        if (
+            CAMERA_CAPTURE_WORKER_STARTED
+            and CAMERA_CAPTURE_WORKER is not None
+            and CAMERA_CAPTURE_WORKER.is_alive()
+        ):
+            return True
 
-        CAMERA_RECONNECTING = True
-
-        thread = threading.Thread(
-            target=camera_reconnect_worker,
+        CAMERA_CAPTURE_WORKER = threading.Thread(
+            target=camera_capture_worker,
             daemon=True,
-            name="camera-reconnect-worker",
+            name="camera-capture-worker",
         )
-
-        thread.start()
+        CAMERA_CAPTURE_WORKER.start()
+        CAMERA_CAPTURE_WORKER_STARTED = True
 
     return True
 
 
+def ensure_camera_reconnect_worker():
+    """
+    Compatibilidad con rutas previas.
+    Solo asegura el único capture worker (ya incluye reconexión).
+    """
+    if CAMERA_CONNECTED:
+        return False
+
+    with CAMERA_RECONNECT_LOCK:
+        CAMERA_RECONNECTING = True
+
+    return ensure_camera_capture_worker()
+
+
 def get_camera_status():
     """
-    Devuelve el estado operativo de la camara.
-    Si esta desconectada, garantiza que exista
-    un worker de recuperacion en segundo plano.
+    Estado operativo. Si no hay señal, asegura el capture worker
+    (que también reconecta). No abre RTSP por su cuenta.
     """
+    ensure_camera_capture_worker()
+
     if CAMERA_CONNECTED:
         return {
             "connected": True,
@@ -1997,9 +2550,10 @@ def get_camera_status():
             "last_ok_at": CAMERA_LAST_OK_AT,
         }
 
-    ensure_camera_reconnect_worker()
+    with CAMERA_RECONNECT_LOCK:
+        reconnecting = CAMERA_RECONNECTING
 
-    if CAMERA_RECONNECTING:
+    if reconnecting:
         return {
             "connected": False,
             "reconnecting": True,
@@ -2148,48 +2702,28 @@ def draw_inspection_overlay(frame):
 
 def generate_video_feed():
     """
-    Stream MJPEG.
+    Stream MJPEG desde latest_frame.
 
-    Cuando la camara esta desconectada, solamente el
-    worker de reconexion intenta abrir RTSP. El stream
-    muestra un placeholder y evita crear conexiones
-    paralelas que interfieran con la recuperacion.
+    NO ejecuta cap.read(). El capture worker sigue drenando RTSP.
     """
     while True:
+        ensure_camera_capture_worker()
 
-        if not CAMERA_CONNECTED:
-            ensure_camera_reconnect_worker()
+        frame, timestamp, sequence = get_latest_camera_frame()
 
-            frame_to_send = (
-                make_camera_error_frame(
-                    "RECONECTANDO CAMARA"
-                )
+        if frame is None:
+            frame_to_send = make_camera_error_frame(
+                "RECONECTANDO CAMARA"
             )
-
         else:
-            ok, frame = (
-                read_camera_frame()
+            log_camera_latency(
+                source="video_feed",
+                sequence=sequence,
+                timestamp_monotonic=timestamp,
             )
+            frame_to_send = draw_inspection_overlay(frame)
 
-            if ok:
-                frame_to_send = (
-                    draw_inspection_overlay(
-                        frame
-                    )
-                )
-
-            else:
-                ensure_camera_reconnect_worker()
-
-                frame_to_send = (
-                    make_camera_error_frame(
-                        "RECONECTANDO CAMARA"
-                    )
-                )
-
-        jpg = encode_jpeg(
-            frame_to_send
-        )
+        jpg = encode_jpeg(frame_to_send)
 
         if jpg is None:
             jpg = generate_placeholder_frame(
@@ -2239,7 +2773,7 @@ def save_image(file_storage=None):
 
         return path, f"captures/{name}"
 
-    ok, frame = read_camera_frame()
+    ok, frame = read_camera_frame(source="save_image")
 
     if not ok:
         return None, None
@@ -2250,6 +2784,10 @@ def save_image(file_storage=None):
 def register_inspection_from_frame(
     frame,
     notes="Registro generado por estación de inspección.",
+    garment_token=None,
+    decision_start=None,
+    frame_selection_ms=None,
+    source="auto",
 ):
     """
     Ejecuta la detección, guarda la evidencia y registra la blusa
@@ -2257,6 +2795,12 @@ def register_inspection_from_frame(
 
     Los contadores del lote se sincronizan con las inspecciones
     realmente almacenadas para evitar inconsistencias.
+
+    garment_token: identidad temporal de la prenda (Fase 3).
+    decision_start: time.perf_counter() cuando el frame válido
+        de esa prenda quedó disponible (para decision_ms).
+    frame_selection_ms: duración de la selección de best_frame.
+    source: "auto" | "manual" (solo logging).
     """
     global AUTO_INSPECTION_ENABLED
 
@@ -2265,9 +2809,39 @@ def register_inspection_from_frame(
             "No se recibió imagen de cámara para registrar la inspección."
         )
 
-    img_path, img_rel = save_frame_to_static(frame)
+    if garment_token is None:
+        garment_token = next_garment_token()
 
-    status, defect, conf, zone, result_rel = detect_defect(img_path)
+    total_start = (
+        decision_start
+        if decision_start is not None
+        else time.perf_counter()
+    )
+    metrics = {}
+
+    if frame_selection_ms is not None:
+        metrics["frame_selection_ms"] = float(frame_selection_ms)
+
+    t_capture_0 = time.perf_counter()
+    img_path, img_rel = save_frame_to_static(frame)
+    metrics["capture_ms"] = (
+        time.perf_counter() - t_capture_0
+    ) * 1000.0
+
+    detect_metrics = {}
+    status, defect, conf, zone, result_rel = detect_defect(
+        img_path,
+        metrics=detect_metrics,
+        garment_token=garment_token,
+        decision_start=total_start,
+        source=source,
+    )
+    metrics.update(detect_metrics)
+
+    if "decision_ms" not in metrics:
+        metrics["decision_ms"] = (
+            time.perf_counter() - total_start
+        ) * 1000.0
 
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     code = (
@@ -2287,6 +2861,7 @@ def register_inspection_from_frame(
         else "PENDIENTE"
     )
 
+    t_database_0 = time.perf_counter()
     conn = db()
     cur = conn.cursor(dictionary=True)
 
@@ -2476,6 +3051,9 @@ def register_inspection_from_frame(
             AUTO_INSPECTION_ENABLED = False
 
         conn.commit()
+        metrics["database_ms"] = (
+            time.perf_counter() - t_database_0
+        ) * 1000.0
 
     except Exception:
         if conn.in_transaction:
@@ -2485,6 +3063,27 @@ def register_inspection_from_frame(
     finally:
         cur.close()
         conn.close()
+
+    metrics["total_complete_ms"] = (
+        time.perf_counter() - total_start
+    ) * 1000.0
+
+    if ai_decision == "ANOMALIA":
+        enrich_quality_alert_event(
+            garment_token=garment_token,
+            batch_id=batch["id"],
+            batch_position=processed_quantity,
+            code=code,
+        )
+
+    log_latency_metrics(
+        garment_token=garment_token,
+        metrics=metrics,
+        ai_decision=ai_decision,
+        batch_id=batch["id"],
+        batch_position=processed_quantity,
+        source=source,
+    )
 
     return {
         "code": code,
@@ -2511,6 +3110,7 @@ def register_inspection_from_frame(
         "ai_decision": ai_decision,
         "review_status": review_status,
         "batch_complete": batch_complete,
+        "garment_token": garment_token,
     }
 
 
@@ -2543,6 +3143,17 @@ def auto_inspection_worker():
     best_frame = None
     best_coverage = 0.0
 
+    # Identidad temporal de la prenda del ciclo actual (Fase 3).
+    garment_token = None
+    tracking_started_perf = None
+
+    # Experimento: primer cruce 40/45/50 + frames candidato en RAM.
+    seen_coverage_levels = set()
+    benchmark_frames = {}
+
+    # Secuencia last para no reprocesar el mismo frame.
+    last_camera_sequence = -1
+
     print(
         "[AUTO] Modo automático iniciado. "
         "Esperando entrada de una blusa."
@@ -2550,14 +3161,31 @@ def auto_inspection_worker():
 
     while AUTO_INSPECTION_ENABLED:
         try:
-            ok, frame = read_camera_frame()
+            # Consumidor de latest_frame: NO cap.read().
+            # Mientras PatchCore corre, camera_capture_worker
+            # sigue drenando RTSP.
+            frame, frame_timestamp, sequence = (
+                get_latest_camera_frame()
+            )
 
-            if not ok or frame is None:
+            if frame is None:
                 AUTO_LAST_ERROR = (
                     "Cámara no disponible."
                 )
                 time.sleep(0.5)
                 continue
+
+            if sequence == last_camera_sequence:
+                # Misma secuencia: no reintentar el mismo frame.
+                time.sleep(0.05)
+                continue
+
+            last_camera_sequence = sequence
+            log_camera_latency(
+                source="auto_inspection",
+                sequence=sequence,
+                timestamp_monotonic=frame_timestamp,
+            )
 
             # -------------------------------------------------
             # Medir presencia de prenda.
@@ -2625,6 +3253,10 @@ def auto_inspection_worker():
 
                     best_frame = None
                     best_coverage = 0.0
+                    garment_token = None
+                    tracking_started_perf = None
+                    seen_coverage_levels = set()
+                    benchmark_frames = {}
 
                     print(
                         "[AUTO] Blusa anterior sali?. "
@@ -2648,18 +3280,53 @@ def auto_inspection_worker():
                     tracked_frames = 0
                     best_frame = None
                     best_coverage = 0.0
+                    garment_token = next_garment_token()
+                    tracking_started_perf = time.perf_counter()
+                    seen_coverage_levels = set()
+                    benchmark_frames = {}
+                    timeline_mark(
+                        garment_token,
+                        "garment_detected",
+                    )
 
                     print(
-                        "[AUTO] Entrada de prenda detectada."
+                        "[AUTO] Entrada de prenda detectada. "
+                        f"token={garment_token}"
                     )
 
                 tracked_frames += 1
 
                 # Conservar siempre el frame donde la prenda
                 # ocupa mayor superficie dentro del ROI.
+                # BEST_FRAME DE PRODUCCIÓN: misma regla que antes.
                 if coverage > best_coverage:
                     best_coverage = coverage
                     best_frame = frame.copy()
+
+                # -------------------------------------------------
+                # Experimento (no altera best_frame productivo):
+                # primer cruce de 40/45/50 => marca timeline y,
+                # solo si FRAME_SELECTION_BENCHMARK, copia en RAM.
+                # -------------------------------------------------
+                if tracking and garment_token is not None:
+                    for level in BENCHMARK_COVERAGE_LEVELS:
+                        if level in seen_coverage_levels:
+                            continue
+                        if coverage < level:
+                            continue
+
+                        seen_coverage_levels.add(level)
+                        pct = int(round(level * 100))
+                        timeline_mark(
+                            garment_token,
+                            f"coverage_{pct}_reached",
+                        )
+
+                        if FRAME_SELECTION_BENCHMARK:
+                            benchmark_frames[level] = {
+                                "frame": frame.copy(),
+                                "coverage": float(coverage),
+                            }
 
                 print(
                     "[AUTO] "
@@ -2681,6 +3348,12 @@ def auto_inspection_worker():
                     tracked_frames = 0
                     best_frame = None
                     best_coverage = 0.0
+                    if garment_token is not None:
+                        reset_timeline(garment_token)
+                    garment_token = None
+                    tracking_started_perf = None
+                    seen_coverage_levels = set()
+                    benchmark_frames = {}
 
             # -------------------------------------------------
             # ESTADO 3: determinar el momento de captura.
@@ -2734,8 +3407,25 @@ def auto_inspection_worker():
                     print(
                         "[AUTO] Prenda completa confirmada. "
                         f"Capturando mejor frame "
-                        f"({best_coverage * 100:.2f}%)."
+                        f"({best_coverage * 100:.2f}%). "
+                        f"token={garment_token}"
                     )
+
+                    timeline_mark(
+                        garment_token,
+                        "frame_selected",
+                    )
+
+                    frame_selection_ms = None
+                    if tracking_started_perf is not None:
+                        frame_selection_ms = (
+                            time.perf_counter()
+                            - tracking_started_perf
+                        ) * 1000.0
+
+                    # La captura válida de ESTA prenda está
+                    # disponible a partir de este instante.
+                    decision_start = time.perf_counter()
 
                     result = (
                         register_inspection_from_frame(
@@ -2745,8 +3435,30 @@ def auto_inspection_worker():
                                 "por presencia de prenda en "
                                 "cinta transportadora."
                             ),
+                            garment_token=garment_token,
+                            decision_start=decision_start,
+                            frame_selection_ms=frame_selection_ms,
+                            source="auto",
                         )
                     )
+
+                    timeline_mark(
+                        garment_token,
+                        "inspection_complete",
+                    )
+                    log_timeline(garment_token)
+
+                    # Persistir candidatos SOLO después de la
+                    # inspección productiva terminar.
+                    if FRAME_SELECTION_BENCHMARK and benchmark_frames:
+                        persist_benchmark_frames(
+                            garment_token=garment_token,
+                            frames_by_level=dict(benchmark_frames),
+                            production_result=result.get("ai_decision"),
+                            production_score=result.get("confidence"),
+                            batch_id=result.get("batch_id"),
+                            batch_position=result.get("batch_position"),
+                        )
 
                     AUTO_LAST_RESULT = result
                     AUTO_LAST_ERROR = None
@@ -2758,7 +3470,8 @@ def auto_inspection_worker():
                         "[AUTO] Inspección registrada: "
                         f"{result.get('code')} | "
                         f"{result.get('status')} | "
-                        f"{result.get('defect_type')}"
+                        f"{result.get('defect_type')} | "
+                        f"token={result.get('garment_token')}"
                     )
 
                     # Esta misma blusa no puede generar otro
@@ -2772,6 +3485,10 @@ def auto_inspection_worker():
 
                     best_frame = None
                     best_coverage = 0.0
+                    garment_token = None
+                    tracking_started_perf = None
+                    seen_coverage_levels = set()
+                    benchmark_frames = {}
 
                     continue
 
@@ -4044,12 +4761,30 @@ def localize_patchcore_anomaly(
 PATCHCORE_INFERENCE_LOCK = __import__("threading").Lock()
 
 
-def detect_defect(image_path):
+def detect_defect(
+    image_path,
+    metrics=None,
+    garment_token=None,
+    decision_start=None,
+    source="auto",
+):
+    """
+    Ejecuta la inferencia y, al conocer NORMAL/ANOMALIA, dispara
+    trigger_quality_alert antes de la persistencia secundaria
+    (imagen de resultado).
+
+    metrics: dict opcional que se rellena con preprocess_ms,
+    inference_ms, postprocess_ms, image_storage_ms y decision_ms.
+    """
+    m = metrics if metrics is not None else {}
+
     # ========================================================
     # 1. PATCHCORE: detector principal
     # ========================================================
     if patchcore_inspector is not None and cv2 is not None:
         try:
+            timeline_mark(garment_token, "preprocess_start")
+            t_preprocess_0 = time.perf_counter()
             image = cv2.imread(str(image_path))
 
             if image is None:
@@ -4110,12 +4845,19 @@ def detect_defect(image_path):
                     "No se pudo preparar el ROI para PatchCore."
                 )
 
+            m["preprocess_ms"] = (
+                time.perf_counter() - t_preprocess_0
+            ) * 1000.0
+            timeline_mark(garment_token, "preprocess_end")
+
             try:
                 print(
                     "[PATCHCORE] Esperando acceso exclusivo "
                     "al motor de inferencia."
                 )
 
+                timeline_mark(garment_token, "inference_start")
+                t_inference_0 = time.perf_counter()
                 with PATCHCORE_INFERENCE_LOCK:
                     print(
                         "[PATCHCORE] Inferencia iniciada."
@@ -4128,6 +4870,10 @@ def detect_defect(image_path):
                     print(
                         "[PATCHCORE] Inferencia finalizada."
                     )
+                m["inference_ms"] = (
+                    time.perf_counter() - t_inference_0
+                ) * 1000.0
+                timeline_mark(garment_token, "inference_end")
             finally:
                 try:
                     roi_path.unlink(
@@ -4163,6 +4909,7 @@ def detect_defect(image_path):
                 confidence >= PATCHCORE_SCORE_THRESHOLD
             )
 
+            t_postprocess_0 = time.perf_counter()
             annotated_roi, zone, anomaly_count = localize_patchcore_anomaly(
                 image=patchcore_input,
                 anomaly_map=prediction["anomaly_map"],
@@ -4183,6 +4930,46 @@ def detect_defect(image_path):
                 roi_x1:roi_x2
             ] = annotated_roi
 
+            if is_anomaly:
+                status = "Defecto"
+                if anomaly_count > 1:
+                    defect_type = f"Manchas ({anomaly_count})"
+                else:
+                    defect_type = "Mancha"
+            else:
+                status = "Aprobado"
+                defect_type = "Sin defecto"
+                zone = "Centro"
+
+            m["postprocess_ms"] = (
+                time.perf_counter() - t_postprocess_0
+            ) * 1000.0
+            timeline_mark(garment_token, "decision_ready")
+
+            # ====================================================
+            # DECISIÓN NORMAL/ANOMALIA conocida.
+            # Punto de alerta: ANTES de persistencia secundaria
+            # (imagen de resultado, MySQL, contadores).
+            # ====================================================
+            if decision_start is not None:
+                m["decision_ms"] = (
+                    time.perf_counter() - decision_start
+                ) * 1000.0
+
+            if is_anomaly:
+                trigger_quality_alert(
+                    garment_token=garment_token,
+                    confidence=confidence,
+                    zone=zone,
+                    defect_type=defect_type,
+                    source=source,
+                )
+
+            # -------------------------------------------------
+            # Persistencia secundaria: solo después de la
+            # decisión y de haber disparado la alerta.
+            # -------------------------------------------------
+            t_image_storage_0 = time.perf_counter()
             result_name = (
                 f"result_patchcore_"
                 f"{uuid.uuid4().hex[:10]}.jpg"
@@ -4198,16 +4985,9 @@ def detect_defect(image_path):
                     "No se pudo guardar el resultado PatchCore."
                 )
 
-            if is_anomaly:
-                status = "Defecto"
-                if anomaly_count > 1:
-                    defect_type = f"Manchas ({anomaly_count})"
-                else:
-                    defect_type = "Mancha"
-            else:
-                status = "Aprobado"
-                defect_type = "Sin defecto"
-                zone = "Centro"
+            m["image_storage_ms"] = (
+                time.perf_counter() - t_image_storage_0
+            ) * 1000.0
 
             print(
                 f"[PATCHCORE] Estado={status}, "
@@ -4278,7 +5058,6 @@ def detect_defect(image_path):
         result_path = RESULT_DIR / result_name
 
         annotated = result.plot()
-        cv2.imwrite(str(result_path), annotated)
 
         boxes = result.boxes
 
@@ -4305,8 +5084,37 @@ def detect_defect(image_path):
                 zone = "Zona frontal"
 
             status = "Defecto" if confidence >= (YOLO_DEFECT_THRESHOLD * 100) else "Revisar"
+
+            if decision_start is not None:
+                m["decision_ms"] = (
+                    time.perf_counter() - decision_start
+                ) * 1000.0
+
+            if status != "Aprobado":
+                trigger_quality_alert(
+                    garment_token=garment_token,
+                    confidence=round(confidence, 2),
+                    zone=zone,
+                    defect_type=defect_type,
+                    source=source,
+                )
+
+            t_image_storage_0 = time.perf_counter()
+            cv2.imwrite(str(result_path), annotated)
+            m["image_storage_ms"] = (
+                time.perf_counter() - t_image_storage_0
+            ) * 1000.0
             return status, defect_type, round(confidence, 2), zone, f"results/{result_name}"
 
+        if decision_start is not None:
+            m["decision_ms"] = (
+                time.perf_counter() - decision_start
+            ) * 1000.0
+        t_image_storage_0 = time.perf_counter()
+        cv2.imwrite(str(result_path), annotated)
+        m["image_storage_ms"] = (
+            time.perf_counter() - t_image_storage_0
+        ) * 1000.0
         return "Aprobado", "Sin defecto", 90.0, "Centro", f"results/{result_name}"
 
     if cv2 is None or np is None:
@@ -4400,7 +5208,26 @@ def detect_defect(image_path):
             2,
         )
 
+    if decision_start is not None:
+        m["decision_ms"] = (
+            time.perf_counter() - decision_start
+        ) * 1000.0
+
+    if status != "Aprobado":
+        trigger_quality_alert(
+            garment_token=garment_token,
+            confidence=confidence,
+            zone=zone,
+            defect_type=defect_type,
+            source=source,
+        )
+
+    t_image_storage_0 = time.perf_counter()
     cv2.imwrite(str(result_path), original)
+    m["image_storage_ms"] = (
+        time.perf_counter() - t_image_storage_0
+    ) * 1000.0
+
     return status, defect_type, confidence, zone, f"results/{result_name}"
 
 
@@ -4494,6 +5321,57 @@ def get_batch_alerts(batch_id):
         """,
         (batch_id,),
     )
+
+
+def get_batch_garments(batch_id, page=1, per_page=50):
+    """
+    Todas las inspecciones del lote (sin filtrar por
+    ai_decision ni review_status), con paginación.
+    """
+    per_page = max(1, int(per_page))
+    page = max(1, int(page or 1))
+
+    total_row = fetch_one(
+        """
+        SELECT COUNT(*) AS total
+        FROM inspections
+        WHERE batch_id = %s
+        """,
+        (batch_id,),
+    )
+    total = int((total_row or {}).get("total") or 0)
+
+    max_page = max(1, (total + per_page - 1) // per_page)
+    if page > max_page:
+        page = max_page
+
+    offset = (page - 1) * per_page
+
+    rows = fetch_all(
+        """
+        SELECT *
+        FROM inspections
+        WHERE batch_id = %s
+        ORDER BY
+            batch_position IS NULL,
+            batch_position ASC,
+            id ASC
+        LIMIT %s OFFSET %s
+        """,
+        (batch_id, per_page, offset),
+    ) or []
+
+    return {
+        "items": rows,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "max_page": max_page,
+        "has_prev": page > 1,
+        "has_next": page < max_page,
+        "start_index": (offset + 1) if total else 0,
+        "end_index": min(offset + per_page, total),
+    }
 
 
 
@@ -7181,10 +8059,23 @@ def batch_review(batch_id):
 
     alerts = get_batch_alerts(batch_id)
 
+    garment_page = request.args.get(
+        "garment_page",
+        1,
+        type=int,
+    )
+    garments = get_batch_garments(
+        batch_id,
+        page=garment_page,
+        per_page=50,
+    )
+
     return render_template(
         "batch_review.html",
         batch=batch,
         alerts=alerts,
+        garments=garments,
+        garment_page=garments["page"],
     )
 
 
@@ -7605,7 +8496,8 @@ def station_manual_inspect():
                 ),
             }), 409
 
-        ok, frame = read_camera_frame()
+        # latest_frame: NO cap.read(); no abre otra sesión RTSP.
+        ok, frame = read_camera_frame(source="manual")
 
         if not ok:
             return jsonify({
@@ -7616,12 +8508,15 @@ def station_manual_inspect():
                 ),
             }), 503
 
+        frame_available = time.perf_counter()
         result = register_inspection_from_frame(
             frame,
             notes=(
                 "Registro manual generado desde "
                 "estación de inspección."
             ),
+            decision_start=frame_available,
+            source="manual",
         )
 
         AUTO_LAST_RESULT = result
@@ -7653,24 +8548,21 @@ def station_manual_inspect():
 @login_required
 @role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
 def station_camera_reconnect():
-    started = (
-        ensure_camera_reconnect_worker()
-    )
+    """
+    Pide reabrir RTSP. No crea otro camera_capture_worker.
+    La liberación real la hace el worker (evita release concurrente).
+    """
+    global CAMERA_FORCE_REOPEN
 
-    if not started:
-        return jsonify({
-            "ok": True,
-            "message": (
-                "La reconexion de la camara "
-                "ya esta en curso."
-            ),
-            "camera": get_camera_status(),
-        }), 202
+    with camera_lock:
+        CAMERA_FORCE_REOPEN = True
+
+    ensure_camera_capture_worker()
 
     return jsonify({
         "ok": True,
         "message": (
-            "Reconexion de camara iniciada."
+            "Reconexion de camara solicitada."
         ),
         "camera": get_camera_status(),
     }), 202
@@ -7791,7 +8683,156 @@ def station_auto_status():
         "last_error": AUTO_LAST_ERROR,
         "active_batch": row_to_json(active_batch),
         "camera": get_camera_status(),
+        "alert_seq": current_quality_alert_seq(),
     })
+
+
+@app.route("/api/station/alerts/stream")
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def station_alerts_stream():
+    """
+    Server-Sent Events de anomalías.
+
+    Por defecto (sin query after) solo emite eventos NUEVOS
+    desde la conexión: un reload no reanima alarmas viejas.
+    """
+    after_raw = request.args.get("after")
+    if after_raw is None:
+        start_after = current_quality_alert_seq()
+    else:
+        try:
+            start_after = int(after_raw)
+        except (TypeError, ValueError):
+            start_after = current_quality_alert_seq()
+
+    def event_stream():
+        last_sent = start_after
+        last_beat = time.time()
+
+        while True:
+            events = get_quality_alerts_after(last_sent)
+            for event in events:
+                last_sent = int(event["seq"])
+                payload = json.dumps(event, ensure_ascii=False)
+                yield (
+                    f"id: {event['seq']}\n"
+                    f"event: quality-alert\n"
+                    f"data: {payload}\n\n"
+                )
+
+            now = time.time()
+            if now - last_beat >= 15.0:
+                last_beat = now
+                yield f": heartbeat {int(now)}\n\n"
+
+            time.sleep(0.12)
+
+    return Response(
+        event_stream(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.route("/api/station/alerts/last")
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def station_alerts_last():
+    """Polling corto de respaldo si SSE no está disponible."""
+    after_raw = request.args.get("after")
+
+    if after_raw is None:
+        # Suscripción desde ahora: no reenviar alarmas antiguas.
+        events = []
+        after = current_quality_alert_seq()
+    else:
+        try:
+            after = int(after_raw)
+        except (TypeError, ValueError):
+            after = current_quality_alert_seq()
+        events = get_quality_alerts_after(after)
+
+    return jsonify({
+        "ok": True,
+        "seq": current_quality_alert_seq(),
+        "after": after,
+        "events": events,
+    })
+
+
+@app.route("/api/station/alerts/ack", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def station_alerts_ack():
+    """
+    Diagnóstico de entrega de alarma. Solo logging; no toca BD
+    y no bloquea el sonido del navegador.
+    """
+    data = request.get_json(silent=True) or {}
+
+    try:
+        server_emitted_at_ms = int(
+            data.get("server_emitted_at_ms") or 0
+        )
+    except (TypeError, ValueError):
+        server_emitted_at_ms = 0
+
+    try:
+        browser_received_at_ms = int(
+            data.get("browser_received_at_ms") or 0
+        )
+    except (TypeError, ValueError):
+        browser_received_at_ms = 0
+
+    try:
+        audio_started_at_ms = int(
+            data.get("audio_started_at_ms") or 0
+        )
+    except (TypeError, ValueError):
+        audio_started_at_ms = 0
+
+    event_id = data.get("event_id") or data.get("alert_id") or "n/a"
+    garment_token = (
+        data.get("garment_token")
+        if data.get("garment_token") is not None
+        else data.get("token")
+    )
+
+    transport_ms = "n/a"
+    browser_audio_delay_ms = "n/a"
+    server_to_audio_ms = "n/a"
+
+    if server_emitted_at_ms and browser_received_at_ms:
+        transport_ms = str(
+            browser_received_at_ms - server_emitted_at_ms
+        )
+
+    if browser_received_at_ms and audio_started_at_ms:
+        browser_audio_delay_ms = str(
+            audio_started_at_ms - browser_received_at_ms
+        )
+
+    if server_emitted_at_ms and audio_started_at_ms:
+        server_to_audio_ms = str(
+            audio_started_at_ms - server_emitted_at_ms
+        )
+
+    print(
+        "[ALERT_DELIVERY]\n"
+        f"token={garment_token}\n"
+        f"event_id={event_id}\n"
+        f"transport_ms={transport_ms}\n"
+        f"browser_audio_delay_ms={browser_audio_delay_ms}\n"
+        f"server_to_audio_ms={server_to_audio_ms}",
+        flush=True,
+    )
+
+    return jsonify({"ok": True})
 
 
 
@@ -7831,7 +8872,13 @@ def inspection():
             flash("No se pudo leer la cámara. No se guardó ningún registro.", "error")
             return render_template("inspection.html", result=None)
 
-        status, defect, conf, zone, result_rel = detect_defect(img_path)
+        decision_start = time.perf_counter()
+        status, defect, conf, zone, result_rel = detect_defect(
+            img_path,
+            garment_token=next_garment_token(),
+            decision_start=decision_start,
+            source="legacy",
+        )
 
         code = f"INS-{datetime.now().strftime('%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
 
@@ -9680,10 +10727,327 @@ def get_informe_data():
     }
 
 
+def goal_time_value(value, default):
+    """Convierte TIME de MySQL (timedelta o time) a datetime.time."""
+    from datetime import time as dt_time, timedelta
+
+    if isinstance(value, timedelta):
+        total = int(value.total_seconds())
+        return dt_time(
+            (total // 3600) % 24,
+            (total % 3600) // 60,
+            total % 60,
+        )
+
+    if isinstance(value, dt_time):
+        return value
+
+    return default
+
+
+def goal_shift_end(day, goal):
+    """Momento local en que termina el turno de la meta de `day`."""
+    from datetime import time as dt_time, timedelta
+
+    timezone_gt = ZoneInfo("America/Guatemala")
+
+    start_time = goal_time_value(
+        goal.get("shift_start"),
+        dt_time(8, 0),
+    )
+    end_time = goal_time_value(
+        goal.get("shift_end"),
+        dt_time(17, 0),
+    )
+
+    start_dt = datetime.combine(
+        day,
+        start_time,
+        tzinfo=timezone_gt,
+    )
+    end_dt = datetime.combine(
+        day,
+        end_time,
+        tzinfo=timezone_gt,
+    )
+
+    # Un turno que termina a medianoche o crusa el día siguiente.
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
+
+    return end_dt
+
+
+def resolve_goal_history_period(args, today=None):
+    """Resuelve fechas locales; 'hoy' consulta la jornada en curso."""
+    from datetime import timedelta
+
+    if today is None:
+        today = datetime.now(ZoneInfo("America/Guatemala")).date()
+
+    yesterday = today - timedelta(days=1)
+    monday = today - timedelta(days=today.weekday())
+    period = args.get("goal_period", "ayer").strip()
+    result = {
+        "period": period,
+        "date_from": args.get("goal_from", "").strip(),
+        "date_to": args.get("goal_to", "").strip(),
+        "max_date": yesterday.isoformat(),
+        "custom_date_from": yesterday.isoformat(),
+        "custom_date_to": yesterday.isoformat(),
+        "is_today": period == "hoy",
+        "start_date": None,
+        "end_date": None,
+        "error": None,
+        "notice": None,
+    }
+    presets = {
+        "hoy": (today, today),
+        "ayer": (yesterday, yesterday),
+        "esta_semana": (monday, yesterday),
+        "semana_pasada": (
+            monday - timedelta(days=7),
+            monday - timedelta(days=1),
+        ),
+        "este_mes": (today.replace(day=1), yesterday),
+    }
+
+    if period in presets:
+        start_date, end_date = presets[period]
+    elif period == "personalizado":
+        try:
+            start_date = datetime.strptime(
+                result["date_from"], "%Y-%m-%d"
+            ).date()
+            end_date = datetime.strptime(
+                result["date_to"], "%Y-%m-%d"
+            ).date()
+        except ValueError:
+            result["error"] = "Ingrese fechas Desde y Hasta válidas."
+            return result
+
+        if end_date < start_date:
+            result["error"] = "Desde no puede ser posterior a Hasta."
+            return result
+        if end_date > yesterday:
+            end_date = yesterday
+            result["notice"] = (
+                "Se excluyeron hoy y las fechas futuras del período "
+                "personalizado: use el acceso HOY para consultar la "
+                "jornada en curso."
+            )
+    else:
+        result["error"] = "Seleccione un período válido."
+        return result
+
+    result.update({
+        "start_date": start_date,
+        "end_date": end_date,
+        "date_from": start_date.isoformat(),
+        "date_to": end_date.isoformat(),
+        "custom_date_from": (
+            start_date.isoformat()
+            if start_date <= yesterday
+            else yesterday.isoformat()
+        ),
+        "custom_date_to": (
+            end_date.isoformat()
+            if end_date <= yesterday
+            else yesterday.isoformat()
+        ),
+    })
+    return result
+
+
+def summarize_goal_history(rows):
+    """Pondera por prendas; la producción sin meta no compensa otros días."""
+    with_goal = [row for row in rows if row["has_goal"]]
+    finished = [
+        row for row in with_goal if row["status"] != "En curso"
+    ]
+    in_progress = [
+        row for row in with_goal if row["status"] == "En curso"
+    ]
+    target = sum(row["target_garments"] for row in with_goal)
+    inspected_with_goal = sum(row["inspected"] for row in with_goal)
+    met = sum(row["status"] == "Cumplida" for row in finished)
+    return {
+        "target_garments": target,
+        "inspected": sum(row["inspected"] for row in rows),
+        "inspected_with_goal": inspected_with_goal,
+        "progress": (
+            round(inspected_with_goal / target * 100, 1)
+            if target > 0 else None
+        ),
+        "days_with_goal": len(with_goal),
+        "days_met": met,
+        "days_unmet": len(finished) - met,
+        "days_in_progress": len(in_progress),
+    }
+
+
+
+def get_goal_history_data(start_date, end_date):
+    """Lee metas finales y eventos UTC en una misma fotografía de MySQL."""
+    import json
+    from datetime import time as dt_time, timedelta
+
+    empty = {"rows": [], "summary": summarize_goal_history([])}
+    if start_date is None or end_date is None or start_date > end_date:
+        return empty
+
+    timezone_gt = ZoneInfo("America/Guatemala")
+    timezone_utc = ZoneInfo("UTC")
+    days = []
+    calendar = []
+    day = start_date
+    while day <= end_date:
+        # Mismo contrato UTC que dashboard/get_informe_data. Los límites
+        # se convierten por fecha, sin asumir un offset fijo ni depender
+        # de las tablas de zonas horarias instaladas en MySQL.
+        start = datetime.combine(day, dt_time.min, tzinfo=timezone_gt)
+        end = datetime.combine(
+            day + timedelta(days=1), dt_time.min, tzinfo=timezone_gt
+        )
+        days.append(day)
+        calendar.append({
+            "day": day.isoformat(),
+            "start": start.astimezone(timezone_utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.astimezone(timezone_utc).strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        day += timedelta(days=1)
+
+    # JSON_TABLE está disponible en MySQL 8 (docker-compose.yaml).
+    # El calendario completo es un parámetro, nunca SQL interpolado.
+    calendar_sql = """
+        WITH calendar AS (
+            SELECT day, start_utc, end_utc
+            FROM JSON_TABLE(
+                %s, '$[*]' COLUMNS (
+                    day DATE PATH '$.day',
+                    start_utc DATETIME PATH '$.start',
+                    end_utc DATETIME PATH '$.end'
+                )
+            ) AS dates
+        )
+    """
+    params = (
+        json.dumps(calendar),
+        calendar[0]["start"],
+        calendar[-1]["end"],
+    )
+    conn = db()
+    cur = None
+    try:
+        conn.start_transaction(
+            isolation_level="REPEATABLE READ",
+            consistent_snapshot=True,
+            readonly=True,
+        )
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT
+                goal_date,
+                target_garments,
+                target_batches,
+                shift_start,
+                shift_end
+            FROM daily_production_goals
+            WHERE goal_date >= %s AND goal_date <= %s
+            """,
+            (start_date, end_date),
+        )
+
+        goals = {row["goal_date"]: row for row in cur.fetchall()}
+        if any(int(goal["target_garments"]) <= 0 for goal in goals.values()):
+            raise ValueError(
+                "Hay metas guardadas con cantidad de prendas no válida. "
+                "No se calculó el cumplimiento del período."
+            )
+
+        cur.execute(
+            calendar_sql + """
+            SELECT c.day, COUNT(*) AS inspected
+            FROM inspections i
+            JOIN calendar c
+              ON i.created_at >= c.start_utc
+             AND i.created_at < c.end_utc
+            WHERE i.created_at >= %s AND i.created_at < %s
+            GROUP BY c.day
+            """,
+            params,
+        )
+        inspected = {row["day"]: int(row["inspected"]) for row in cur.fetchall()}
+        cur.execute(
+            calendar_sql + """
+            SELECT c.day, COUNT(*) AS completed_batches
+            FROM batches b
+            JOIN calendar c
+              ON b.inspection_completed_at >= c.start_utc
+             AND b.inspection_completed_at < c.end_utc
+            WHERE b.inspection_completed_at >= %s
+              AND b.inspection_completed_at < %s
+              AND EXISTS (
+                  SELECT 1 FROM inspections i WHERE i.batch_id = b.id
+              )
+            GROUP BY c.day
+            """,
+            params,
+        )
+        completed = {
+            row["day"]: int(row["completed_batches"])
+            for row in cur.fetchall()
+        }
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
+
+    rows = []
+    now_gt = datetime.now(ZoneInfo("America/Guatemala"))
+    local_today = now_gt.date()
+    for day in days:
+        goal = goals.get(day)
+        actual = inspected.get(day, 0)
+        target = int(goal["target_garments"]) if goal else None
+        status = "Sin meta configurada"
+        if goal:
+            # La jornada en curso nunca se evalúa como incumplida:
+            # solo los días terminados usan la regla histórica.
+            shift_ends = goal_shift_end(day, goal)
+            if day == local_today and now_gt < shift_ends:
+                status = "En curso"
+            else:
+                status = "Cumplida" if actual >= target else "No cumplida"
+
+        rows.append({
+            "date": day,
+            "has_goal": goal is not None,
+            "target_garments": target,
+            "inspected": actual,
+            "progress": round(actual / target * 100, 1) if target else None,
+            "target_batches": int(goal["target_batches"]) if goal else None,
+            "completed_batches": completed.get(day, 0),
+            "status": status,
+        })
+    return {"rows": rows, "summary": summarize_goal_history(rows)}
+
+
 @app.route("/informes")
 @login_required
 def informes():
     data = get_informe_data()
+
+    goal_history = resolve_goal_history_period(request.args)
+    goal_history.update({"rows": [], "summary": summarize_goal_history([])})
+    if not goal_history["error"]:
+        try:
+            goal_history.update(get_goal_history_data(
+                goal_history["start_date"], goal_history["end_date"]
+            ))
+        except ValueError as error:
+            goal_history["error"] = str(error)
 
     models_options = fetch_all(
         """
@@ -9709,6 +11073,7 @@ def informes():
 
     return render_template(
         "informes.html",
+        goal_history=goal_history,
         models_options=models_options,
         batches_options=batches_options,
         **data,
@@ -10728,6 +12093,11 @@ def informe_excel():
         or 0
     )
 
+    discarded = int(
+        summary["discarded"]
+        or 0
+    )
+
     batches_count = int(
         summary[
             "batches_with_activity"
@@ -10872,31 +12242,31 @@ def informe_excel():
             None,
         ),
         (
-            "APTAS CONFIRMADAS",
-            approval_rate,
+            "APTAS",
+            passed,
             (
                 f"{passed} de "
                 f"{inspected} prendas"
             ),
-            "0.0%",
+            None,
         ),
         (
-            "RECHAZO CONFIRMADO",
-            rejection_rate,
+            "DEFECTOS CONFIRMADOS",
+            rejected,
             (
                 f"{rejected} de "
                 f"{inspected} prendas"
             ),
-            "0.0%",
+            None,
         ),
         (
-            "ALERTAS REVISADAS",
-            reviewed_rate,
+            "PENDIENTES DE REVISI\u00d3N",
+            pending,
             (
-                f"{pending} pendientes "
-                f"de {alerts} alertas"
+                f"de {alerts} "
+                "alertas IA"
             ),
-            "0.0%",
+            None,
         ),
     ]
 
@@ -11012,6 +12382,31 @@ def informe_excel():
     summary_sheet.row_dimensions[10].height = 21
     summary_sheet.row_dimensions[11].height = 21
 
+    # Indicador secundario: la tasa no ocupa una de las cuatro
+    # categorías principales (Inspeccionadas = Aptas + Confirmados
+    # + Pendientes).
+    summary_sheet.merge_cells(
+        "A12:H12"
+    )
+
+    summary_sheet["A12"] = (
+        "Tasa de rechazo confirmada: "
+        + f"{rejection_rate * 100:.1f} %"
+    )
+
+    summary_sheet["A12"].font = Font(
+        italic=True,
+        size=10,
+        color="69727A",
+    )
+
+    summary_sheet["A12"].alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+    )
+
+    summary_sheet.row_dimensions[12].height = 18
+
 
     # --------------------------------------------------------
     # ESTADO GENERAL
@@ -11098,7 +12493,7 @@ def informe_excel():
 
 
     # --------------------------------------------------------
-    # LECTURA RAPIDA
+    # SEGUIMIENTO DE CALIDAD
     # --------------------------------------------------------
 
     summary_sheet.merge_cells(
@@ -11106,7 +12501,7 @@ def informe_excel():
     )
 
     summary_sheet["A19"] = (
-        "Lectura r\u00e1pida"
+        "Seguimiento de calidad"
     )
 
     summary_sheet["A19"].font = Font(
@@ -11125,83 +12520,32 @@ def informe_excel():
         border_value=border,
     )
 
-    production_main = (
-        f"{inspected} prendas"
-    )
-
-    production_detail = (
-        f"{batches_count} "
-        + (
-            "lote con actividad."
-            if batches_count == 1
-            else "lotes con actividad."
-        )
-    )
-
-    quality_main = (
-        f"{approval_rate:.1%} aptas"
-    )
-
-    quality_detail = (
-        f"{rejection_rate:.1%} de rechazo "
-        "confirmado."
-    )
-
-    review_main = (
-        f"{pending_alert_rate:.1%} pendiente"
-    )
-
-    review_detail = (
-        f"{pending} de {alerts} alertas "
-        "todav\u00eda requieren revisi\u00f3n."
-    )
-
-    best_model = insights[
-        "best_model"
-    ]
-
-    if best_model:
-        model_main = (
-            best_model["code"]
-        )
-
-        model_detail = (
-            f"{best_model['name']} | "
-            f"{best_model['rejection_rate']:.1f}% "
-            "de rechazo confirmado."
-        )
-
-    else:
-        model_main = (
-            "A\u00fan no definido"
-        )
-
-        model_detail = (
-            "Se necesita completar la revisi\u00f3n "
-            "antes de comparar el rendimiento "
-            "definitivo de los modelos."
-        )
-
     quick_cards = [
         (
-            "PRODUCCI\u00d3N",
-            production_main,
-            production_detail,
+            "ALERTAS IA",
+            alerts,
+            (
+                f"de {inspected} "
+                "prendas inspeccionadas"
+            ),
         ),
         (
-            "CALIDAD",
-            quality_main,
-            quality_detail,
+            "CONFIRMADAS",
+            rejected,
+            "defectos confirmados "
+            "por revisi\u00f3n humana",
         ),
         (
-            "REVISI\u00d3N",
-            review_main,
-            review_detail,
+            "DESCARTADAS",
+            discarded,
+            "alertas descartadas "
+            "por revisi\u00f3n humana",
         ),
         (
-            "MODELO DESTACADO",
-            model_main,
-            model_detail,
+            "PENDIENTES",
+            pending,
+            "alertas a\u00fan "
+            "sin revisar",
         ),
     ]
 
@@ -11311,6 +12655,34 @@ def informe_excel():
     summary_sheet.row_dimensions[24].height = 21
     summary_sheet.row_dimensions[25].height = 21
     summary_sheet.row_dimensions[26].height = 21
+
+    # Quinto indicador del seguimiento, como l\u00ednea secundaria.
+    summary_sheet.merge_cells(
+        "A27:H27"
+    )
+
+    summary_sheet["A27"] = (
+        "% de alertas revisadas: "
+        + f"{reviewed_rate * 100:.1f} %"
+        + (
+            f"  ({rejected + discarded} de {alerts} alertas)"
+            if alerts
+            else ""
+        )
+    )
+
+    summary_sheet["A27"].font = Font(
+        italic=True,
+        size=10,
+        color="69727A",
+    )
+
+    summary_sheet["A27"].alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+    )
+
+    summary_sheet.row_dimensions[27].height = 18
 
 
     # --------------------------------------------------------
@@ -12543,6 +13915,18 @@ def informe_pdf():
         ),
     )
 
+    secondary_metric_style = ParagraphStyle(
+        "SecondaryMetric",
+        parent=styles["Normal"],
+        alignment=TA_CENTER,
+        fontName="Helvetica-Bold",
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor(
+            "#6B625A"
+        ),
+    )
+
     note_style = ParagraphStyle(
         "ReportNote",
         parent=styles["Normal"],
@@ -12892,19 +14276,34 @@ def informe_pdf():
                 ),
             ),
             (
-                "Defectos confirmados",
+                "Defecto confirmado",
                 str(
                     summary["rejected"]
                     or 0
                 ),
             ),
             (
-                "Tasa de rechazo",
-                (
-                    f"{float(summary['rejection_rate'] or 0):.1f}%"
+                "Pendientes de revisi\u00f3n",
+                str(
+                    summary["pending"]
+                    or 0
                 ),
             ),
         ])
+    )
+
+    elements.append(
+        Spacer(1, 5)
+    )
+
+    elements.append(
+        paragraph(
+            (
+                "Tasa de rechazo confirmada: "
+                + f"{float(summary['rejection_rate'] or 0):.1f}%"
+            ),
+            secondary_metric_style,
+        )
     )
 
     elements.append(
@@ -14900,5 +16299,7 @@ def discard_persistent_flash_messages():
 
 if __name__ == "__main__":
     init_db()
+    # Exactamente un lector RTSP continuo (no uno por request).
+    ensure_camera_capture_worker()
     # app.run(debug=True, host="127.0.0.1", port=5000)
     app.run(debug=True, host="0.0.0.0", port=5000, threaded=True, use_reloader=False)

@@ -225,6 +225,8 @@ body.app-body{
 }
 
 .section-title-wrap{display:flex;gap:14px;min-width:0}
+.goal-history-link{font-size:12px;font-weight:600;color:var(--dash-blue);white-space:nowrap;text-decoration:none}
+.goal-history-link:hover,.goal-history-link:focus-visible{text-decoration:underline}
 .section-icon{
   width:42px;height:42px;flex:0 0 42px;
   display:grid;place-items:center;border-radius:50%;
@@ -648,6 +650,7 @@ body.app-body{
           </div>
           <div><h2>Estado de la jornada</h2><p>Avance general hacia el objetivo del día.</p></div>
         </div>
+        <a class="goal-history-link" href="{{ url_for('informes', goal_period='ayer', _anchor='cumplimiento-metas') }}">Ver historial →</a>
       </div>
 
       {% if goal %}

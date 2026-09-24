@@ -179,6 +179,69 @@
     display: none;
   }
 
+  .quality-alarm {
+    position: fixed;
+    top: 18px;
+    right: 18px;
+    z-index: 9999;
+    min-width: 300px;
+    max-width: 380px;
+    padding: 18px 20px;
+    background: #fff0f0;
+    color: #7f1d1d;
+    border: 1px solid #efb8b8;
+    border-left: 6px solid #d9534f;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+    animation: quality-alarm-in 0.2s ease-out;
+  }
+
+  .quality-alarm.hidden {
+    display: none;
+  }
+
+  .quality-alarm h3 {
+    margin: 0 0 8px;
+    font-size: 18px;
+    letter-spacing: 0.5px;
+    color: #b42318;
+  }
+
+  .quality-alarm p {
+    margin: 4px 0;
+    line-height: 1.45;
+  }
+
+  .quality-alarm .alarm-action {
+    margin-top: 10px;
+    font-weight: 700;
+    color: #7f1d1d;
+  }
+
+  .quality-alarm-close {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    border: 0;
+    background: transparent;
+    color: #7f1d1d;
+    font-size: 18px;
+    font-weight: 700;
+    cursor: pointer;
+    line-height: 1;
+    padding: 4px;
+  }
+
+  @keyframes quality-alarm-in {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
   #cameraText.connected {
     color: #198754;
     font-weight: 700;
@@ -363,6 +426,26 @@
         <span id="cameraAlertMessage">
           Verificando conexiÃ³n con la cÃ¡mara de inspecciÃ³n.
         </span>
+      </div>
+
+
+      <div
+        id="qualityAlarm"
+        class="quality-alarm hidden"
+        role="alert"
+        aria-live="assertive"
+      >
+        <button
+          type="button"
+          class="quality-alarm-close"
+          id="qualityAlarmClose"
+          aria-label="Cerrar alerta"
+        >
+          ×
+        </button>
+        <h3>⚠ DEFECTO DETECTADO</h3>
+        <p id="qualityAlarmDetail">Prenda detectada con anomalía.</p>
+        <p class="alarm-action">Retirar esta prenda</p>
       </div>
 
 
@@ -627,6 +710,302 @@
     stationMessage.className = 'station-message ' + type;
   }
 
+  /* =========================================================
+   * Alarma audible (Web Audio API) + alerta visual
+   * ========================================================= */
+
+  let qualityAudioCtx = null;
+  let lastPlayedAlertId =
+    sessionStorage.getItem('stationLastAlertId') || '';
+  let alertEventSource = null;
+  let alertPollTimer = null;
+  let alertPollSeq = 0;
+  let alertStreamReady = false;
+
+  const qualityAlarmEl = document.getElementById('qualityAlarm');
+  const qualityAlarmDetail = document.getElementById(
+    'qualityAlarmDetail',
+  );
+  const qualityAlarmCloseBtn = document.getElementById(
+    'qualityAlarmClose',
+  );
+
+  function ensureAudioContext() {
+    try {
+      if (!qualityAudioCtx) {
+        const Ctx =
+          window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return null;
+        qualityAudioCtx = new Ctx();
+      }
+
+      if (qualityAudioCtx.state === 'suspended') {
+        qualityAudioCtx.resume();
+      }
+
+      /* Desbloqueo de autoplay con un clic del usuario. */
+      const osc = qualityAudioCtx.createOscillator();
+      const gain = qualityAudioCtx.createGain();
+      gain.gain.value = 0.0001;
+      osc.connect(gain);
+      gain.connect(qualityAudioCtx.destination);
+      osc.start();
+      osc.stop(qualityAudioCtx.currentTime + 0.05);
+
+      return qualityAudioCtx;
+    } catch (error) {
+      console.warn('No se pudo inicializar AudioContext:', error);
+      return null;
+    }
+  }
+
+  function playDefectAlarm() {
+    const ctx = qualityAudioCtx;
+    if (!ctx) return;
+
+    try {
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      const start = ctx.currentTime + 0.02;
+      const beepCount = 4;
+
+      for (let i = 0; i < beepCount; i += 1) {
+        const t0 = start + i * 0.28;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(988, t0);
+        osc.frequency.setValueAtTime(784, t0 + 0.12);
+
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.22, t0 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t0);
+        osc.stop(t0 + 0.24);
+      }
+    } catch (error) {
+      console.warn('Error al reproducir alarma:', error);
+    }
+  }
+
+  function showQualityAlarm(event) {
+    if (!qualityAlarmEl) return;
+
+    const token =
+      event.token !== undefined && event.token !== null
+        ? event.token
+        : '—';
+    const position =
+      event.batch_position !== undefined &&
+      event.batch_position !== null
+        ? '#' + event.batch_position
+        : '';
+    const code = event.code ? String(event.code) : '';
+
+    const parts = [];
+    if (position) {
+      parts.push('Prenda ' + position);
+    }
+    parts.push('token ' + token);
+    if (code) {
+      parts.push(code);
+    }
+
+    qualityAlarmDetail.textContent = parts.join(' · ');
+    qualityAlarmEl.classList.remove('hidden');
+  }
+
+  function hideQualityAlarm() {
+    if (qualityAlarmEl) {
+      qualityAlarmEl.classList.add('hidden');
+    }
+  }
+
+  function sendAlertAck(event, browserReceivedAtMs, audioStartedAtMs) {
+    const payload = {
+      event_id: event.event_id || event.alert_id || '',
+      alert_id: event.alert_id || '',
+      garment_token:
+        event.garment_token !== undefined && event.garment_token !== null
+          ? event.garment_token
+          : event.token,
+      token: event.token,
+      server_emitted_at_ms: Number(event.server_emitted_at_ms) || 0,
+      browser_received_at_ms: browserReceivedAtMs,
+      audio_started_at_ms: audioStartedAtMs,
+    };
+
+    try {
+      fetch('{{ url_for("station_alerts_ack") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      });
+    } catch (error) {
+      /* Fire-and-forget: no bloquea el sonido. */
+    }
+  }
+
+  function handleQualityAlertEvent(event) {
+    if (!event) return;
+
+    const alertId = String(event.alert_id || '');
+    if (!alertId) return;
+
+    const seqNum = Number(event.seq) || 0;
+    if (seqNum > alertPollSeq) {
+      alertPollSeq = seqNum;
+    }
+
+    /* Misma anomalía: no repetir sonido; solo refrescar texto. */
+    if (alertId === lastPlayedAlertId) {
+      if (!qualityAlarmEl || qualityAlarmEl.classList.contains('hidden')) {
+        return;
+      }
+      showQualityAlarm(event);
+      return;
+    }
+
+    const stored = sessionStorage.getItem('stationLastAlertId');
+    if (stored && alertId === stored) {
+      lastPlayedAlertId = alertId;
+      return;
+    }
+
+    lastPlayedAlertId = alertId;
+    sessionStorage.setItem('stationLastAlertId', alertId);
+
+    const browserReceivedAtMs = Date.now();
+
+    if (!qualityAudioCtx) {
+      ensureAudioContext();
+    }
+
+    const audioStartedAtMs = Date.now();
+    playDefectAlarm();
+    showQualityAlarm(event);
+    sendAlertAck(event, browserReceivedAtMs, audioStartedAtMs);
+  }
+
+  function processAlertEvents(events) {
+    if (!Array.isArray(events)) return;
+    for (let i = 0; i < events.length; i += 1) {
+      handleQualityAlertEvent(events[i]);
+    }
+  }
+
+  function connectAlertStream() {
+    if (alertEventSource) {
+      try {
+        alertEventSource.close();
+      } catch (error) {
+        /* noop */
+      }
+      alertEventSource = null;
+    }
+
+    if (alertPollTimer) {
+      clearInterval(alertPollTimer);
+      alertPollTimer = null;
+    }
+
+    /*
+     * Primer connect: sin historial (alertStreamReady=false).
+     * Tras reconexión: since alertPollSeq para no perder ni
+     * repetir eventos.
+     */
+    if (typeof EventSource === 'undefined') {
+      startAlertPolling();
+      return;
+    }
+
+    try {
+      let streamUrl = "{{ url_for('station_alerts_stream') }}";
+      if (alertStreamReady && alertPollSeq > 0) {
+        streamUrl += '?after=' + encodeURIComponent(alertPollSeq);
+      }
+
+      alertEventSource = new EventSource(streamUrl);
+
+      alertEventSource.addEventListener(
+        'quality-alert',
+        function (message) {
+          try {
+            const event = JSON.parse(message.data);
+            handleQualityAlertEvent(event);
+          } catch (error) {
+            console.warn('Evento de alarma inválido:', error);
+          }
+        },
+      );
+
+      alertEventSource.addEventListener('open', function () {
+        alertStreamReady = true;
+      });
+
+      alertEventSource.onerror = function () {
+        if (alertEventSource) {
+          try {
+            alertEventSource.close();
+          } catch (error) {
+            /* noop */
+          }
+          alertEventSource = null;
+        }
+        startAlertPolling();
+      };
+    } catch (error) {
+      startAlertPolling();
+    }
+  }
+
+  function startAlertPolling() {
+    if (alertPollTimer) return;
+
+    const poll = async function () {
+      try {
+        let url = "{{ url_for('station_alerts_last') }}";
+        if (alertStreamReady || alertPollSeq > 0) {
+          url += '?after=' + encodeURIComponent(alertPollSeq);
+        }
+
+        const response = await fetch(url, {
+          cache: 'no-store',
+        });
+        const data = await response.json();
+        if (data && data.ok) {
+          alertStreamReady = true;
+          processAlertEvents(data.events);
+          if (typeof data.seq === 'number') {
+            alertPollSeq = Math.max(
+              alertPollSeq,
+              Number(data.seq) || 0,
+            );
+          }
+        }
+      } catch (error) {
+        /* Silencioso: se reintenta en el siguiente tick. */
+      }
+    };
+
+    poll();
+    alertPollTimer = setInterval(poll, 400);
+  }
+
+  if (qualityAlarmCloseBtn) {
+    qualityAlarmCloseBtn.addEventListener(
+      'click',
+      hideQualityAlarm,
+    );
+  }
+
   function setLastResult(result) {
     if (!result) return;
 
@@ -687,6 +1066,7 @@
   }
 
   async function manualInspect() {
+    ensureAudioContext();
     manualBtn.disabled = true;
     setMessage('Ejecutando inspecciÃ³n manual...', 'normal');
 
@@ -715,6 +1095,9 @@
   }
 
   async function startAuto() {
+    /* Desbloquear AudioContext en la interacción del usuario. */
+    ensureAudioContext();
+    hideQualityAlarm();
     setMessage('Iniciando modo automÃ¡tico...', 'normal');
 
     try {
@@ -729,6 +1112,7 @@
         stationModeBadge.classList.remove('offline');
         autoStateText.textContent = 'AutomÃ¡tico activo';
         setMessage(data.message, 'success');
+        connectAlertStream();
       } else {
         setMessage(
           data.message || 'No se pudo iniciar el modo automÃ¡tico.',
@@ -955,6 +1339,7 @@
 
   refreshAutoStatus();
   setInterval(refreshAutoStatus, 3000);
+  connectAlertStream();
 </script>
 {% endblock %}
 
