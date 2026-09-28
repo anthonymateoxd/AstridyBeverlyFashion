@@ -53,8 +53,14 @@
             font-family: Arial, Helvetica, sans-serif;
         }
 
-        .global-flash {
+        .global-flash-wrap {
+            display: grid;
+            gap: 10px;
             margin: 0 0 18px 0;
+        }
+
+        .global-flash {
+            margin: 0;
             padding: 12px 15px;
             border-radius: 12px;
             font-weight: 700;
@@ -69,6 +75,12 @@
         .global-flash.error {
             background: #fbe8e8;
             color: #963737;
+        }
+
+        .global-flash.message,
+        .global-flash.info {
+            background: var(--ui-blue-soft);
+            color: #10628f;
         }
 
         .sidebar {
@@ -368,6 +380,16 @@
     ></div>
 
     <main class="main">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="global-flash-wrap" aria-live="polite">
+              {% for category, message in messages %}
+                <div class="global-flash {{ category }}">{{ message }}</div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+
         {% block content %}
         {% endblock %}
     </main>

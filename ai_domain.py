@@ -14,6 +14,8 @@ import hashlib
 import json
 import os
 import re
+import tempfile
+import threading
 from pathlib import Path, PurePosixPath
 
 
@@ -97,6 +99,354 @@ def ensure_ai_artifact_dirs(
         (garment_dir / name).mkdir(parents=True, exist_ok=True)
 
     return garment_dir
+
+
+# ============================================================
+# FASE 2A — CONFIGURACIÓN Y ALMACENAMIENTO DE CAPTURA IA
+# ============================================================
+
+# Defaults documentados (override por env). No son mágicos:
+# - min_coverage alinea con AUTO_GARMENT_CAPTURE_COVERAGE de producción.
+# - min_sharpness: varianza Laplaciana sobre el ROI (más bajo = más borroso).
+# - target_images: objetivo recomendado, no mínimo obligatorio.
+# - min_images: mínimo configurable de imágenes válidas requerido
+#   tanto para finalizar la preparación como para habilitar entrenamiento.
+# - duplicate_max_distance: distancia Hamming máxima (0–64) del dHash 64-bit
+#   para considerar dos imágenes duplicadas perceptualmente.
+# - keep_rejected: si es false solo se persiste metadata de rechazos.
+
+AI_CAPTURE_DEFAULTS = {
+    "min_coverage": 0.48,
+    "min_sharpness": 40.0,
+    "target_images": 40,
+    "min_images": 20,
+    "duplicate_max_distance": 6,
+    "keep_rejected": False,
+    "jpeg_quality": 92,
+}
+
+
+def _env_bool(raw: str | None, default: bool) -> bool:
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_ai_capture_config() -> dict:
+    """Configuración de captura IA desde env con defaults documentados."""
+    env_map = {
+        "AI_CAPTURE_MIN_COVERAGE": ("min_coverage", float),
+        "AI_CAPTURE_MIN_SHARPNESS": ("min_sharpness", float),
+        "AI_CAPTURE_TARGET_IMAGES": ("target_images", int),
+        "AI_CAPTURE_MIN_IMAGES": ("min_images", int),
+        "AI_CAPTURE_DUPLICATE_THRESHOLD": ("duplicate_max_distance", int),
+        "AI_CAPTURE_JPEG_QUALITY": ("jpeg_quality", int),
+    }
+
+    values = dict(AI_CAPTURE_DEFAULTS)
+
+    for env_name, (key, caster) in env_map.items():
+        raw = os.getenv(env_name, "")
+        if str(raw).strip() == "":
+            continue
+        try:
+            values[key] = caster(raw)
+        except ValueError as error:
+            raise AIDomainError(
+                f"{env_name} inválido: {raw!r}"
+            ) from error
+
+    values["keep_rejected"] = _env_bool(
+        os.getenv("AI_CAPTURE_KEEP_REJECTED"),
+        bool(AI_CAPTURE_DEFAULTS["keep_rejected"]),
+    )
+
+    if not 0.0 <= float(values["min_coverage"]) <= 1.0:
+        raise AIDomainError(
+            "AI_CAPTURE_MIN_COVERAGE debe estar entre 0 y 1."
+        )
+    if float(values["min_sharpness"]) < 0:
+        raise AIDomainError(
+            "AI_CAPTURE_MIN_SHARPNESS no puede ser negativa."
+        )
+    if int(values["target_images"]) < 1:
+        raise AIDomainError(
+            "AI_CAPTURE_TARGET_IMAGES debe ser >= 1."
+        )
+    if int(values["min_images"]) < 1:
+        raise AIDomainError(
+            "AI_CAPTURE_MIN_IMAGES debe ser >= 1."
+        )
+    if not 0 <= int(values["duplicate_max_distance"]) <= 64:
+        raise AIDomainError(
+            "AI_CAPTURE_DUPLICATE_THRESHOLD debe estar entre 0 y 64."
+        )
+    if not 1 <= int(values["jpeg_quality"]) <= 100:
+        raise AIDomainError(
+            "AI_CAPTURE_JPEG_QUALITY debe estar entre 1 y 100."
+        )
+
+    return {
+        "min_coverage": float(values["min_coverage"]),
+        "min_sharpness": float(values["min_sharpness"]),
+        "target_images": int(values["target_images"]),
+        "min_images": int(values["min_images"]),
+        "duplicate_max_distance": int(values["duplicate_max_distance"]),
+        "keep_rejected": bool(values["keep_rejected"]),
+        "jpeg_quality": int(values["jpeg_quality"]),
+    }
+
+
+def capture_progress_gate(
+    accepted_count,
+    *,
+    min_images,
+    target_count=None,
+) -> dict:
+    """
+    Compuertas de la preparación de IA (sin efectos secundarios).
+
+    - can_finalize: exige alcanzar el mínimo configurable.
+    - can_train: recién se habilita cuando se alcanza el mínimo
+      configurable (AI_CAPTURE_MIN_IMAGES).
+    - target_count: objetivo recomendado (no bloquea nada).
+    """
+    accepted = int(accepted_count or 0)
+    minimum = max(0, int(min_images or 0))
+
+    return {
+        "accepted_count": accepted,
+        "min_count": minimum,
+        "target_count": (
+            None if target_count is None else int(target_count)
+        ),
+        "can_finalize": minimum > 0 and accepted >= minimum,
+        "can_train": minimum > 0 and accepted >= minimum,
+        "missing_to_train": max(0, minimum - accepted),
+    }
+
+
+def build_capture_session_dir(
+    garment_model_id: int,
+    capture_session_id: int,
+    root: Path | None = None,
+) -> Path:
+    """garment_<id>/capture_sessions/session_<id> (sin crear)."""
+    garment_dir = build_garment_artifact_dir(garment_model_id, root=root)
+
+    try:
+        session_id = int(capture_session_id)
+    except (TypeError, ValueError) as error:
+        raise AIDomainError(
+            "capture_session_id debe ser un entero positivo."
+        ) from error
+
+    if session_id <= 0:
+        raise AIDomainError(
+            "capture_session_id debe ser un entero positivo."
+        )
+
+    return garment_dir / "capture_sessions" / f"session_{session_id}"
+
+
+def ensure_capture_session_dirs(
+    garment_model_id: int,
+    capture_session_id: int,
+    root: Path | None = None,
+    *,
+    keep_rejected: bool = False,
+) -> Path:
+    """Crea accepted/ (y rejected/ solo si keep_rejected)."""
+    session_dir = build_capture_session_dir(
+        garment_model_id,
+        capture_session_id,
+        root=root,
+    )
+    (session_dir / "accepted").mkdir(parents=True, exist_ok=True)
+    if keep_rejected:
+        (session_dir / "rejected").mkdir(parents=True, exist_ok=True)
+    return session_dir
+
+
+def capture_image_relative_path(
+    garment_model_id: int,
+    capture_session_id: int,
+    filename: str,
+    *,
+    rejected: bool = False,
+) -> str:
+    """Ruta relativa controlada bajo AI_ARTIFACTS_ROOT."""
+    safe_name = ensure_safe_relative_path(str(filename).strip())
+    if "/" in safe_name or "\\" in safe_name:
+        raise AIDomainError("filename no puede contener separadores.")
+    folder = "rejected" if rejected else "accepted"
+    try:
+        model_id = int(garment_model_id)
+        session_id = int(capture_session_id)
+    except (TypeError, ValueError) as error:
+        raise AIDomainError(
+            "garment_model_id y capture_session_id deben ser enteros."
+        ) from error
+    if model_id <= 0 or session_id <= 0:
+        raise AIDomainError(
+            "garment_model_id y capture_session_id deben ser positivos."
+        )
+    return (
+        f"garment_{model_id}/capture_sessions/"
+        f"session_{session_id}/{folder}/{safe_name}"
+    )
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> Path:
+    """Escritura atómica: temporal en el mismo directorio → fsync → replace."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.stem}.",
+        suffix=".tmp",
+        dir=str(target.parent),
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+    return target
+
+
+def hamming_distance(a: int, b: int) -> int:
+    """Distancia de Hamming entre dos enteros (dHash 64-bit)."""
+    return int((a ^ b).bit_count())
+
+
+def is_perceptual_duplicate(
+    hash_a: int,
+    hash_b: int,
+    max_distance: int,
+) -> bool:
+    """True si la distancia Hamming no supera el umbral configurado."""
+    try:
+        max_d = int(max_distance)
+    except (TypeError, ValueError) as error:
+        raise AIDomainError(
+            "duplicate_max_distance debe ser un entero."
+        ) from error
+    if not 0 <= max_d <= 64:
+        raise AIDomainError(
+            "duplicate_max_distance debe estar entre 0 y 64."
+        )
+    return hamming_distance(int(hash_a), int(hash_b)) <= max_d
+
+
+def compute_quality_score(
+    coverage: float,
+    sharpness: float,
+    *,
+    min_coverage: float,
+    min_sharpness: float,
+) -> float:
+    """Score 0–1 combinando cobertura y nitidez (documentado, no mágico)."""
+    cov = max(0.0, float(coverage))
+    sharp = max(0.0, float(sharpness))
+    base_cov = max(float(min_coverage), 1e-6)
+    base_sharp = max(float(min_sharpness), 1e-6)
+    cov_norm = min(1.0, cov / base_cov)
+    # sharpness ~2x el mínimo ya satura el peso de nitidez
+    sharp_norm = min(1.0, sharp / (base_sharp * 2.0))
+    score = 0.6 * cov_norm + 0.4 * sharp_norm
+    return round(max(0.0, min(1.0, score)), 3)
+
+
+def evaluate_capture_metrics(
+    *,
+    coverage: float | None,
+    sharpness: float | None,
+    roi_valid: bool,
+    config: dict | None = None,
+) -> dict:
+    """
+    Decide ACEPTADA/RECHAZADA a partir de métricas ya calculadas.
+
+    No escribe archivos ni toca BD.
+    """
+    cfg = dict(config or get_ai_capture_config())
+    min_coverage = float(cfg["min_coverage"])
+    min_sharpness = float(cfg["min_sharpness"])
+
+    if not roi_valid:
+        return {
+            "accepted": False,
+            "reject_reason": "INVALID_ROI",
+            "quality_score": 0.0,
+        }
+
+    if coverage is None:
+        return {
+            "accepted": False,
+            "reject_reason": "INVALID_COVERAGE",
+            "quality_score": 0.0,
+        }
+
+    try:
+        cov = float(coverage)
+    except (TypeError, ValueError):
+        return {
+            "accepted": False,
+            "reject_reason": "INVALID_COVERAGE",
+            "quality_score": 0.0,
+        }
+
+    if sharpness is None:
+        return {
+            "accepted": False,
+            "reject_reason": "INVALID_SHARPNESS",
+            "quality_score": 0.0,
+        }
+
+    try:
+        sharp = float(sharpness)
+    except (TypeError, ValueError):
+        return {
+            "accepted": False,
+            "reject_reason": "INVALID_SHARPNESS",
+            "quality_score": 0.0,
+        }
+
+    score = compute_quality_score(
+        cov,
+        sharp,
+        min_coverage=min_coverage,
+        min_sharpness=min_sharpness,
+    )
+
+    if cov < min_coverage:
+        return {
+            "accepted": False,
+            "reject_reason": "LOW_COVERAGE",
+            "quality_score": score,
+        }
+
+    if sharp < min_sharpness:
+        return {
+            "accepted": False,
+            "reject_reason": "BLUR",
+            "quality_score": score,
+        }
+
+    return {
+        "accepted": True,
+        "reject_reason": None,
+        "quality_score": score,
+    }
 
 
 def ensure_safe_relative_path(relative_path: str) -> str:
@@ -352,6 +702,189 @@ def next_dataset_version_label(existing_versions) -> str:
 
 
 # ============================================================
+# CÓDIGOS DE MODELO DE PRENDA (alta automática, Fase 2B)
+# ============================================================
+
+GARMENT_CODE_PREFIX = "BLUSA"
+GARMENT_CODE_WIDTH = 3
+GARMENT_CODE_LOCK = "astrid_garment_model_code"
+GARMENT_CODE_STATE_TABLE = "garment_model_code_state"
+
+# Solo BLUSA-<n> compite por la serie automática. Códigos históricos con
+# otro formato (TEST-AI-001, BLUSA-20240101-101010, ...) quedan intactos.
+_GARMENT_CODE_RE_TEMPLATE = r"^{prefix}-([0-9]+)$"
+
+
+def format_garment_model_code(
+    number,
+    *,
+    prefix: str = GARMENT_CODE_PREFIX,
+    width: int = GARMENT_CODE_WIDTH,
+) -> str:
+    """Formatea BLUSA-001 (relleno a `width` dígitos, sin tope artificial)."""
+    try:
+        value = int(number)
+    except (TypeError, ValueError) as error:
+        raise AIDomainError(
+            "El número de código de modelo debe ser entero."
+        ) from error
+
+    if value < 1:
+        raise AIDomainError(
+            "El número de código de modelo debe ser mayor que cero."
+        )
+
+    digits = str(value).zfill(int(width)) if value < 10 ** int(width) else str(value)
+    return f"{prefix}-{digits}"
+
+
+def _garment_code_pattern(prefix: str = GARMENT_CODE_PREFIX) -> "re.Pattern":
+    safe_prefix = re.escape(str(prefix))
+    return re.compile(
+        _GARMENT_CODE_RE_TEMPLATE.format(prefix=safe_prefix),
+        re.IGNORECASE,
+    )
+
+
+# La preparación de la tabla ejecuta DDL (commit implícito) y toma
+# bloqueos: se hace UNA sola vez por proceso, nunca en cada llamada.
+_GARMENT_CODE_STATE_READY = False
+_GARMENT_CODE_STATE_LOCK = threading.Lock()
+
+
+def ensure_garment_code_state(cur) -> None:
+    """Crea la tabla que recuerda el último código emitido (si no existe)."""
+    global _GARMENT_CODE_STATE_READY
+
+    if _GARMENT_CODE_STATE_READY:
+        return
+
+    with _GARMENT_CODE_STATE_LOCK:
+        if _GARMENT_CODE_STATE_READY:
+            return
+
+        try:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {GARMENT_CODE_STATE_TABLE} (
+                    singleton TINYINT NOT NULL PRIMARY KEY,
+                    last_number INT NOT NULL DEFAULT 0
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            cur.execute(
+                f"""
+                INSERT IGNORE INTO {GARMENT_CODE_STATE_TABLE}
+                    (singleton, last_number)
+                VALUES (1, 0)
+                """
+            )
+            _GARMENT_CODE_STATE_READY = True
+        except Exception:
+            # Otra sesión pudo crearla al mismo tiempo. Si la tabla
+            # realmente no existe, el SELECT posterior falla de forma
+            # explícita y se vuelve a intentar en la siguiente llamada.
+            pass
+
+
+def _max_existing_garment_code_number(
+    cur,
+    prefix: str = GARMENT_CODE_PREFIX,
+) -> int:
+    """Mayor número de la serie `prefix` presente en garment_models."""
+    pattern_re = _garment_code_pattern(prefix)
+    cur.execute("SELECT code FROM garment_models")
+
+    maximum = 0
+    for row in cur.fetchall():
+        match = pattern_re.match(str(_scalar(row) or ""))
+        if match:
+            maximum = max(maximum, int(match.group(1)))
+
+    return maximum
+
+
+def next_garment_model_code(
+    cur,
+    *,
+    prefix: str = GARMENT_CODE_PREFIX,
+    width: int = GARMENT_CODE_WIDTH,
+) -> str:
+    """
+    Genera el siguiente código de modelo de prenda (BLUSA-001, BLUSA-002...).
+
+    Reglas:
+    - Se emite bajo un lock de servidor: nunca dos procesos obtienen el
+      mismo código aunque corran en paralelo.
+    - Respeta los códigos históricos existentes (de cualquier formato).
+    - No reutiliza códigos ya emitidos aunque la fila haya sido eliminada
+      (el contador solo avanza).
+    - No depende del frontend para garantizar unicidad.
+    """
+    ensure_garment_code_state(cur)
+
+    cur.execute(
+        "SELECT GET_LOCK(%s, 5) AS got",
+        (GARMENT_CODE_LOCK,),
+    )
+    lock_row = cur.fetchone()
+
+    if int(_scalar(lock_row) or 0) != 1:
+        raise AIDomainError(
+            "No se pudo asignar el código del modelo. "
+            "Intente guardar de nuevo."
+        )
+
+    try:
+        # Lectura bloqueante: si el proceso anterior soltó el lock de
+        # servidor pero todavía no confirmó, esperamos su commit para no
+        # repetir el mismo número.
+        cur.execute(
+            f"SELECT last_number FROM {GARMENT_CODE_STATE_TABLE} "
+            "WHERE singleton = 1 FOR UPDATE"
+        )
+        state_row = cur.fetchone()
+        last_number = int(_scalar(state_row) or 0)
+
+        candidate = max(
+            last_number,
+            _max_existing_garment_code_number(cur, prefix=prefix),
+        )
+
+        # El lock ya serializa, pero el UNIQUE de garment_models es el
+        # respaldo definitivo contra duplicados.
+        while True:
+            candidate += 1
+            code = format_garment_model_code(
+                candidate,
+                prefix=prefix,
+                width=width,
+            )
+            cur.execute(
+                "SELECT id FROM garment_models WHERE code = %s",
+                (code,),
+            )
+            if cur.fetchone() is None:
+                break
+
+        cur.execute(
+            f"""
+            UPDATE {GARMENT_CODE_STATE_TABLE}
+            SET last_number = %s
+            WHERE singleton = 1
+            """,
+            (candidate,),
+        )
+        return code
+    finally:
+        cur.execute(
+            "SELECT RELEASE_LOCK(%s) AS released",
+            (GARMENT_CODE_LOCK,),
+        )
+        cur.fetchone()
+
+
+# ============================================================
 # MÁQUINAS DE ESTADOS — CAPTURA, DATASETS, JOBS
 # ============================================================
 
@@ -433,6 +966,7 @@ AI_EVENT_TYPES = {
     "CAPTURE_STARTED",
     "CAPTURE_COMPLETED",
     "CAPTURE_CANCELLED",
+    "CAPTURE_IMAGE_REVIEWED",
     "DATASET_CLOSED",
     "DATASET_ARCHIVED",
     "TRAINING_STARTED",
@@ -1463,22 +1997,22 @@ def open_ai_capture_session(
     """Abre una sesión de captura (una ABIERTA por modelo)."""
     _lock_garment_model(cur, garment_model_id)
 
+    # Exclusión a nivel estación: solo una ABIERTA en todo el station.
     cur.execute(
         """
-        SELECT id
+        SELECT id, garment_model_id
         FROM ai_capture_sessions
-        WHERE garment_model_id = %s
-          AND status = 'ABIERTA'
+        WHERE status = 'ABIERTA'
         LIMIT 1
-        """,
-        (garment_model_id,),
+        """
     )
+    station_open = cur.fetchone()
 
-    existing = cur.fetchone()
-
-    if existing:
+    if station_open:
         raise AIDomainError(
-            "Ya existe una sesión de captura ABIERTA para este modelo."
+            "Ya existe una sesión de captura ABIERTA en la estación "
+            f"(id={station_open['id']}, "
+            f"garment_model_id={station_open['garment_model_id']})."
         )
 
     cur.execute(
@@ -1501,6 +2035,423 @@ def open_ai_capture_session(
         "garment_model_id": garment_model_id,
         "status": CAPTURE_STATUS_ABIERTA,
     }
+
+
+def get_open_capture_session(cur) -> dict | None:
+    """Sesión ABIERTA de la estación (si existe)."""
+    cur.execute(
+        """
+        SELECT id, garment_model_id, status, started_at, created_by, notes
+        FROM ai_capture_sessions
+        WHERE status = 'ABIERTA'
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+    return cur.fetchone()
+
+
+def get_capture_session(cur, capture_session_id: int) -> dict | None:
+    cur.execute(
+        """
+        SELECT
+            id,
+            garment_model_id,
+            status,
+            started_at,
+            finished_at,
+            created_by,
+            notes
+        FROM ai_capture_sessions
+        WHERE id = %s
+        """,
+        (capture_session_id,),
+    )
+    return cur.fetchone()
+
+
+def start_ai_capture_session(
+    cur,
+    garment_model_id: int,
+    actor_id: int | None,
+    *,
+    notes: str | None = None,
+    config: dict | None = None,
+) -> dict:
+    """Inicia sesión de captura en la estación (idempotente si ya ABIERTA igual)."""
+    cfg = dict(config or get_ai_capture_config())
+
+    # Lock a nivel servidor: evita dos sesiones ABIERTA concurrentes.
+    cur.execute("SELECT GET_LOCK(%s, 5) AS got", ("astrid_ai_capture_station",))
+    lock_row = cur.fetchone()
+    got = int(_scalar(lock_row) or 0)
+    if got != 1:
+        raise AIDomainError(
+            "No se pudo adquirir el lock de captura de la estación."
+        )
+
+    try:
+        existing = get_open_capture_session(cur)
+
+        if existing is not None:
+            if int(existing["garment_model_id"]) == int(garment_model_id):
+                return {
+                    "id": int(existing["id"]),
+                    "garment_model_id": int(existing["garment_model_id"]),
+                    "status": existing["status"],
+                    "started_at": existing["started_at"],
+                    "already_open": True,
+                    "target_images": int(cfg["target_images"]),
+                }
+            raise AIDomainError(
+                "Ya hay una sesión de captura activa en la estación "
+                f"para garment_model_id={existing['garment_model_id']}."
+            )
+
+        session = open_ai_capture_session(
+            cur,
+            garment_model_id,
+            actor_id,
+            notes=notes,
+        )
+        session["already_open"] = False
+        session["target_images"] = int(cfg["target_images"])
+        session["started_at"] = None
+        return session
+    finally:
+        cur.execute(
+            "SELECT RELEASE_LOCK(%s) AS released",
+            ("astrid_ai_capture_station",),
+        )
+        cur.fetchone()
+
+
+def stop_ai_capture_session(
+    cur,
+    capture_session_id: int,
+) -> dict:
+    """Finaliza sesión (idempotente si ya COMPLETADA)."""
+    row = get_capture_session(cur, capture_session_id)
+
+    if row is None:
+        raise AIDomainError(
+            f"La sesión de captura {capture_session_id} no existe."
+        )
+
+    counts = count_session_images(cur, capture_session_id)
+    minimum = int(get_ai_capture_config()["min_images"])
+    accepted = int(counts.get("accepted_images") or 0)
+    if accepted < minimum:
+        missing = minimum - accepted
+        raise AIDomainError(
+            "No se puede finalizar la preparación: "
+            f"faltan {missing} imágenes válidas para alcanzar el mínimo de {minimum}."
+        )
+
+    if row["status"] == CAPTURE_STATUS_COMPLETADA:
+        return {
+            "id": int(row["id"]),
+            "garment_model_id": int(row["garment_model_id"]),
+            "status": row["status"],
+            "finished_at": row["finished_at"],
+            "already_finished": True,
+        }
+
+    result = transition_capture_session_status(
+        cur,
+        capture_session_id,
+        CAPTURE_STATUS_COMPLETADA,
+    )
+    result["already_finished"] = False
+    return result
+
+
+def cancel_ai_capture_session(
+    cur,
+    capture_session_id: int,
+) -> dict:
+    """Cancela sesión (idempotente si ya CANCELADA)."""
+    row = get_capture_session(cur, capture_session_id)
+
+    if row is None:
+        raise AIDomainError(
+            f"La sesión de captura {capture_session_id} no existe."
+        )
+
+    if row["status"] == CAPTURE_STATUS_CANCELADA:
+        return {
+            "id": int(row["id"]),
+            "garment_model_id": int(row["garment_model_id"]),
+            "status": row["status"],
+            "finished_at": row["finished_at"],
+            "already_cancelled": True,
+        }
+
+    result = transition_capture_session_status(
+        cur,
+        capture_session_id,
+        CAPTURE_STATUS_CANCELADA,
+    )
+    result["already_cancelled"] = False
+    return result
+
+
+def claim_frame_sequence(
+    cur,
+    capture_session_id: int,
+    frame_sequence: int,
+) -> None:
+    """Reserva frame_sequence en la sesión (único por sesión)."""
+    try:
+        seq = int(frame_sequence)
+    except (TypeError, ValueError) as error:
+        raise AIDomainError(
+            "frame_sequence debe ser un entero."
+        ) from error
+
+    cur.execute(
+        """
+        SELECT id
+        FROM ai_training_images
+        WHERE capture_session_id = %s
+          AND frame_sequence = %s
+        LIMIT 1
+        """,
+        (capture_session_id, seq),
+    )
+
+    if cur.fetchone() is not None:
+        raise AIDomainError(
+            f"frame_sequence {seq} ya fue persistido en esta sesión."
+        )
+
+
+def find_accepted_sha256(
+    cur,
+    garment_model_id: int,
+    sha256: str,
+) -> dict | None:
+    """Imagen ACEPTADA con el mismo SHA-256 para el modelo."""
+    digest = normalize_sha256(sha256)
+    cur.execute(
+        """
+        SELECT id, capture_session_id, image_path, sha256
+        FROM ai_training_images
+        WHERE garment_model_id = %s
+          AND sha256 = %s
+          AND status = %s
+        LIMIT 1
+        """,
+        (
+            garment_model_id,
+            digest,
+            TRAINING_IMAGE_STATUS_ACEPTADA,
+        ),
+    )
+    return cur.fetchone()
+
+
+def load_session_accepted_hashes(
+    cur,
+    capture_session_id: int,
+) -> dict:
+    """SHA-256 y (si se usara) conjunto de hashes aceptados de la sesión."""
+    cur.execute(
+        """
+        SELECT sha256
+        FROM ai_training_images
+        WHERE capture_session_id = %s
+          AND status = %s
+        """,
+        (
+            capture_session_id,
+            TRAINING_IMAGE_STATUS_ACEPTADA,
+        ),
+    )
+    sha256_set = {
+        str(row["sha256"]).lower()
+        for row in cur.fetchall()
+    }
+    return {"sha256": sha256_set}
+
+
+def capture_session_status_payload(
+    cur,
+    capture_session_id: int,
+    *,
+    config: dict | None = None,
+    last_capture=None,
+) -> dict:
+    """Payload de progreso para endpoints de estado."""
+    cfg = dict(config or get_ai_capture_config())
+    row = get_capture_session(cur, capture_session_id)
+
+    if row is None:
+        raise AIDomainError(
+            f"La sesión de captura {capture_session_id} no existe."
+        )
+
+    counts = count_session_images(cur, capture_session_id)
+
+    cur.execute(
+        """
+        SELECT id, code
+        FROM garment_models
+        WHERE id = %s
+        """,
+        (row["garment_model_id"],),
+    )
+    garment = cur.fetchone() or {
+        "id": row["garment_model_id"],
+        "code": None,
+    }
+
+    return {
+        "session_id": int(row["id"]),
+        "garment_model": {
+            "id": int(garment["id"]),
+            "code": garment.get("code"),
+        },
+        "status": row["status"],
+        "accepted_count": int(counts["accepted_images"]),
+        "rejected_count": int(counts["rejected_images"]),
+        "target_count": int(cfg["target_images"]),
+        "min_count": int(cfg["min_images"]),
+        "last_capture": last_capture,
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+        "config": {
+            "min_coverage": cfg["min_coverage"],
+            "min_sharpness": cfg["min_sharpness"],
+            "duplicate_max_distance": cfg["duplicate_max_distance"],
+            "keep_rejected": cfg["keep_rejected"],
+        },
+    }
+
+
+# ============================================================
+# FASE 2B — ESTADOS DE UI Y MENSAJES PARA LA USUARIA
+# ============================================================
+
+CAPTURE_UI_STATE_SIN_PREPARAR = "SIN_PREPARAR"
+CAPTURE_UI_STATE_PREPARANDO = "PREPARANDO"
+CAPTURE_UI_STATE_CAPTURANDO = "CAPTURANDO"
+CAPTURE_UI_STATE_CAPTURA_COMPLETADA = "CAPTURA_COMPLETADA"
+CAPTURE_UI_STATE_LISTO_PARA_ENTRENAR = "LISTO_PARA_ENTRENAR"
+
+CAPTURE_UI_STATES = (
+    CAPTURE_UI_STATE_SIN_PREPARAR,
+    CAPTURE_UI_STATE_PREPARANDO,
+    CAPTURE_UI_STATE_CAPTURANDO,
+    CAPTURE_UI_STATE_CAPTURA_COMPLETADA,
+    CAPTURE_UI_STATE_LISTO_PARA_ENTRENAR,
+)
+
+CAPTURE_UI_STATE_LABELS = {
+    CAPTURE_UI_STATE_SIN_PREPARAR: "SIN PREPARAR",
+    CAPTURE_UI_STATE_PREPARANDO: "PREPARANDO",
+    CAPTURE_UI_STATE_CAPTURANDO: "CAPTURANDO",
+    CAPTURE_UI_STATE_CAPTURA_COMPLETADA: "CAPTURA COMPLETADA",
+    CAPTURE_UI_STATE_LISTO_PARA_ENTRENAR: "LISTO PARA ENTRENAR",
+}
+
+# Motivos internos -> texto que sí se le explica a la usuaria.
+CAPTURE_REJECT_LABELS = {
+    "INVALID_ROI": (
+        "La prenda no quedó dentro del área de inspección."
+    ),
+    "INVALID_COVERAGE": (
+        "No se pudo medir la prenda por completo."
+    ),
+    "LOW_COVERAGE": (
+        "La prenda no cubrió suficiente el área de inspección."
+    ),
+    "INVALID_SHARPNESS": (
+        "No se pudo evaluar la nitidez de la imagen."
+    ),
+    "BLUR": "Movimiento excesivo.",
+    "DUPLICATE_SHA256": "Imagen repetida.",
+    "DUPLICATE_PERCEPTUAL": "Imagen repetida.",
+    "DUPLICATE": "Imagen repetida.",
+    "MANUAL_REPEAT": "Marcada para repetir por la operadora.",
+    "MANUAL_DISCARD": "Descartada manualmente por la operadora.",
+}
+
+CAPTURE_REJECT_FALLBACK = "La imagen no cumplió la calidad requerida."
+
+
+def humanize_reject_reason(reject_reason) -> str | None:
+    """Traduce un motivo técnico de descarte a texto comprensible."""
+    if reject_reason in (None, ""):
+        return None
+
+    key = str(reject_reason).strip().upper()
+    return CAPTURE_REJECT_LABELS.get(key, CAPTURE_REJECT_FALLBACK)
+
+
+def resolve_capture_ui_state(
+    *,
+    session_status,
+    accepted_count=0,
+    min_images=20,
+    has_preparation_version: bool = False,
+) -> str:
+    """
+    Estado visible para la ficha del modelo.
+
+    Solo expone lo que le aporta a la usuaria; nunca estados internos.
+    """
+    status = str(session_status or "").strip().upper()
+
+    if status == CAPTURE_STATUS_ABIERTA:
+        return CAPTURE_UI_STATE_CAPTURANDO
+
+    if status == CAPTURE_STATUS_COMPLETADA:
+        if int(accepted_count or 0) >= int(min_images or 20):
+            return CAPTURE_UI_STATE_LISTO_PARA_ENTRENAR
+        return CAPTURE_UI_STATE_CAPTURA_COMPLETADA
+
+    # Sin sesión o sesión cancelada: la preparación sigue en curso.
+    if has_preparation_version:
+        return CAPTURE_UI_STATE_PREPARANDO
+
+    return CAPTURE_UI_STATE_SIN_PREPARAR
+
+
+def humanize_capture_error(message) -> str:
+    """
+    Convierte mensajes internos de captura en mensajes para la usuaria.
+
+    Nunca expone ids internos, locks ni SQL.
+    """
+    text = str(message or "").strip()
+
+    if not text:
+        return "No se pudo completar la operación de captura."
+
+    lowered = text.lower()
+
+    if "lock" in lowered or "get_lock" in lowered:
+        return (
+            "La estación está ocupada por otro proceso de captura. "
+            "Espere unos segundos e intente de nuevo."
+        )
+
+    if "sesión de captura" in lowered and (
+        "activa" in lowered or "abierta" in lowered
+    ):
+        return (
+            "Ya hay una sesión de captura activa en la estación. "
+            "Finalícela o cancélela antes de iniciar otra."
+        )
+
+    if "sesión de captura" in lowered and "no existe" in lowered:
+        return "La sesión de captura ya no existe."
+
+    if "no existe" in lowered and "modelo" in lowered:
+        return "El modelo de prenda no existe."
+
+    return text
 
 
 def transition_capture_session_status(

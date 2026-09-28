@@ -552,6 +552,341 @@
 .detail-footer-brand i:nth-child(2) { background: #f43788; }
 .detail-footer-brand i:nth-child(3) { background: #1597dc; }
 
+/* =========================================================
+   FASE 2B — PANEL DE PREPARACIÓN / CAPTURA IA
+   ========================================================= */
+
+.detail-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ai-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 13px;
+  border-radius: 999px;
+  background: #fff5cf;
+  border: 1px solid #f3e2a6;
+  color: #8a6608;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.ai-mode-badge::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffc928;
+  display: inline-block;
+  animation: aiPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes aiPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .25; }
+}
+
+.ai-capture-panel {
+  display: grid;
+  gap: 18px;
+  margin-bottom: 22px;
+  padding: 22px;
+  background: #fbfcfe;
+  border: 1px solid #e4e9f1;
+  border-radius: 18px;
+}
+
+.ai-capture-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ai-state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border-radius: 999px;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.ai-state-SIN_PREPARAR { background: #edf1f6; color: #67758d; }
+.ai-state-PREPARANDO { background: #fff3cf; color: #9d7006; }
+.ai-state-CAPTURANDO { background: #e7f4fc; color: #10628f; }
+.ai-state-CAPTURA_COMPLETADA { background: #edf1f6; color: #4a5a77; }
+.ai-state-LISTO_PARA_ENTRENAR { background: #e5f7ed; color: #178553; }
+
+.ai-capture-hint {
+  margin: 0;
+  color: #70809e;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.ai-capture-notice {
+  padding: 15px 16px;
+  border-radius: 14px;
+  background: #f4f8fd;
+  border: 1px solid #e0e8f2;
+  color: #3b5480;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.ai-capture-notice.warn {
+  background: #fff9e8;
+  border-color: #f6e6b0;
+  color: #7a5c05;
+}
+
+.ai-progress-block {
+  display: grid;
+  gap: 9px;
+}
+
+.ai-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.ai-progress-track {
+  height: 16px;
+  border-radius: 999px;
+  background: #eef2f8;
+  border: 1px solid #e4e9f1;
+  overflow: hidden;
+}
+
+.ai-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #1597dc, #0d2a66);
+  transition: width .45s ease;
+}
+
+.ai-count-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.ai-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ai-stat {
+  padding: 14px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #e7ecf3;
+}
+
+.ai-stat strong {
+  display: block;
+  margin-top: 6px;
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.ai-target-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #e5f7ed;
+  border: 1px solid #ccebd9;
+  color: #178553;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ai-last {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 15px 16px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #e7ecf3;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.ai-last .ai-last-mark {
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.ai-last.ok { background: #f3fbf7; border-color: #d5efdf; color: #178553; }
+.ai-last.warn { background: #fffaf0; border-color: #f6e6b0; color: #8a6608; }
+
+.ai-last strong {
+  display: block;
+  color: inherit;
+  font-weight: 800;
+}
+
+.ai-last span.ai-last-reason {
+  color: #70809e;
+}
+
+.ai-summary {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #e7ecf3;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  color: #5f6f8d;
+}
+
+.ai-summary strong {
+  color: #173264;
+  font-size: 16px;
+}
+
+.ai-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.ai-error {
+  padding: 13px 15px;
+  border-radius: 12px;
+  background: #fbe8e8;
+  color: #963737;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+.ai-muted-note {
+  color: #8692a8;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.detail-button.neutral {
+  background: #eef2f8;
+  color: #3b4d6d;
+  border-color: #dfe5ef;
+}
+
+.detail-button.neutral:hover { background: #e3eaf4; }
+
+.detail-button[disabled] {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.detail-button.is-loading {
+  opacity: .75;
+  cursor: progress;
+  pointer-events: none;
+}
+
+.ai-train-slot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.ai-train-note {
+  color: #8692a8;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* Modal propio: nunca alert() del navegador */
+.ai-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(13, 42, 102, .45);
+}
+
+.ai-modal-backdrop[hidden] { display: none; }
+
+.ai-modal {
+  width: 100%;
+  max-width: 460px;
+  padding: 24px;
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(13, 42, 102, .28);
+}
+
+.ai-modal h4 {
+  margin: 0 0 10px;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 19px;
+  font-weight: 800;
+}
+
+.ai-modal p {
+  margin: 0;
+  color: #5f6f8d;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.ai-modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+
 @media (max-width: 1180px) {
   .detail-content-grid { grid-template-columns: 1fr; }
   .detail-images-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -576,8 +911,13 @@
 
   .detail-info-grid,
   .detail-ai-meta,
-  .detail-images-grid {
+  .detail-images-grid,
+  .ai-stats {
     grid-template-columns: 1fr;
+  }
+
+  .ai-capture-top {
+    align-items: flex-start;
   }
 }
 
@@ -602,6 +942,56 @@
 
   .detail-welcome h1 {
     font-size: 28px;
+  }
+
+  .detail-head-actions {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .detail-head-actions form,
+  .detail-head-actions .detail-button {
+    width: 100%;
+  }
+
+  .ai-capture-panel {
+    padding: 18px;
+    gap: 15px;
+  }
+
+  .ai-actions {
+    flex-direction: column;
+  }
+
+  .ai-actions .detail-button,
+  .ai-train-slot .detail-button {
+    width: 100%;
+  }
+
+  .ai-modal-actions .detail-button {
+    flex: 1 1 160px;
+  }
+}
+
+@media (max-width: 400px) {
+  .ai-capture-panel {
+    padding: 15px;
+    border-radius: 16px;
+  }
+
+  .ai-progress-head,
+  .ai-count-row {
+    font-size: 13px;
+  }
+
+  .ai-stat strong {
+    font-size: 18px;
+  }
+
+  .detail-card {
+    padding: 18px;
+    border-radius: 18px;
   }
 }
 </style>
@@ -805,19 +1195,49 @@
   </section>
 
   {% if model.status == 'APROBADO' %}
-  <section class="detail-card">
+  <section class="detail-card" id="aiPreparacionCard">
     <div class="detail-card-head">
       <div>
         <h2>Preparación de IA</h2>
         <p>Consulte y gestione las versiones de IA asociadas al modelo.</p>
       </div>
 
-      {% if can_prepare_ai and not ai_in_progress %}
-      <form method="post" action="{{ url_for('garment_ai_prepare', model_id=model.id) }}">
-        <button class="detail-button primary" type="submit">Preparar nueva versión</button>
-      </form>
-      {% endif %}
+      <div class="detail-head-actions">
+        <span class="ai-mode-badge" id="aiModeBadge" hidden>
+          MODO PREPARACIÓN DE IA
+        </span>
+
+        {% if can_prepare_ai %}
+        <a
+          class="detail-button success"
+          id="startGuidedPreparation"
+          href="{{ url_for('guided_capture_page', model_id=model.id) }}"
+        >
+          Iniciar preparación · Abrir estación guiada
+        </a>
+        {% endif %}
+
+        {% if can_prepare_ai and not ai_in_progress %}
+        <form
+          id="prepareAiForm"
+          method="post"
+          action="{{ url_for('garment_ai_prepare', model_id=model.id) }}"
+        >
+          <button class="detail-button primary" type="submit">
+            Preparar nueva versión
+          </button>
+        </form>
+        {% endif %}
+      </div>
     </div>
+
+    {% if false and ai_capture_visible %}
+    <div
+      class="ai-capture-panel"
+      id="aiCapturePanel"
+      aria-live="polite"
+    ></div>
+    {% endif %}
 
     {% if not ai_versions and not ai_in_progress %}
       <p class="detail-muted">Este modelo todavía no tiene versiones de IA registradas.</p>
@@ -835,7 +1255,7 @@
           {% if ai.active and ai.status == 'ACTIVO' %}
             <span class="detail-badge detail-badge-success">Activa</span>
           {% elif ai.status == 'PREPARACION' %}
-            <span class="detail-badge detail-badge-warning">Preparación</span>
+            <span class="detail-badge detail-badge-warning">En preparación</span>
           {% else %}
             <span class="detail-badge detail-badge-neutral">{{ ai.status }}</span>
           {% endif %}
@@ -843,8 +1263,18 @@
 
         <div class="detail-ai-meta">
           <div>
-            <span class="detail-label">Dataset</span>
-            <span class="detail-value">{{ ai.dataset_name if ai.dataset_name else 'Histórico sin dataset registrado' }}</span>
+            <span class="detail-label">Estado</span>
+            <span class="detail-value">
+              {% if ai.status == 'PREPARACION' %}
+                Pendiente de entrenamiento
+              {% elif ai.status == 'ACTIVO' %}
+                Lista para inspección
+              {% elif ai.status in ['ENTRENANDO', 'VALIDACION'] %}
+                En proceso
+              {% else %}
+                {{ ai.status }}
+              {% endif %}
+            </span>
           </div>
 
           <div>
@@ -856,15 +1286,6 @@
             <span class="detail-label">Responsable</span>
             <span class="detail-value">{{ ai.creator_name or 'Histórico' }}</span>
           </div>
-        </div>
-
-        <div class="detail-checkpoint">
-          <span class="detail-label">Checkpoint</span>
-          {% if ai.checkpoint_path %}
-            <div class="detail-path">{{ ai.checkpoint_path }}</div>
-          {% else %}
-            <div class="detail-value">Pendiente de entrenamiento</div>
-          {% endif %}
         </div>
       </article>
       {% endfor %}
@@ -930,6 +1351,686 @@
     <span class="detail-footer-brand"><i></i><i></i><i></i> El detalle de lucir bien</span>
   </footer>
 </div>
+
+<div class="ai-modal-backdrop" id="aiCaptureModal" hidden>
+  <div
+    class="ai-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="aiModalTitle"
+  >
+    <h4 id="aiModalTitle">Confirmar</h4>
+    <p id="aiModalBody"></p>
+    <div class="ai-modal-actions">
+      <button type="button" class="detail-button neutral" id="aiModalCancel">
+        Volver
+      </button>
+      <button type="button" class="detail-button primary" id="aiModalConfirm">
+        Confirmar
+      </button>
+    </div>
+  </div>
+</div>
+
+{# Se retira el panel inline de Fase 2B: queda un solo flujo guiado. #}
+{% if false and ai_capture_visible %}
+<script>
+  window.ASTRID_AI_CAPTURE = {{ {
+    'modelId': model.id,
+    'urls': {
+      'start': url_for('ai_capture_start'),
+      'status': url_for('ai_capture_status'),
+      'stop': url_for('ai_capture_stop'),
+      'cancel': url_for('ai_capture_cancel')
+    },
+    'state': ai_capture
+  }|tojson }};
+</script>
+
+<script>
+(() => {
+  const config = window.ASTRID_AI_CAPTURE;
+  const panel = document.getElementById("aiCapturePanel");
+  if (!config || !panel) return;
+
+  const TARGET_DEFAULT = 40;
+  const MIN_DEFAULT = 20;
+  const START_NOTICE =
+    "Utilice únicamente prendas verificadas como correctas. " +
+    "Estas imágenes enseñarán al sistema la apariencia normal de este modelo.";
+  const BAND_NOTICE =
+    "Coloque únicamente prendas correctas en la banda.";
+
+  let state = Object.assign({
+    allowed: false,
+    ui_state: "SIN_PREPARAR",
+    ui_state_label: "SIN PREPARAR",
+    accepted_count: 0,
+    rejected_count: 0,
+    target_count: TARGET_DEFAULT,
+    min_count: MIN_DEFAULT,
+    can_finalize: false,
+    can_train: false,
+    missing_to_train: MIN_DEFAULT,
+    target_reached: false,
+    last_capture_human: null,
+    active: false,
+    session_id: null,
+    status: null,
+    has_preparation_version: false,
+    station_busy: false,
+    station_busy_model_code: null
+  }, config.state || {});
+
+  let busy = false;
+  let errorMessage = "";
+  let pollError = "";
+  let pollTimer = null;
+  let modalConfirmFn = null;
+
+  const modal = document.getElementById("aiCaptureModal");
+  const modalTitle = document.getElementById("aiModalTitle");
+  const modalBody = document.getElementById("aiModalBody");
+  const modalConfirm = document.getElementById("aiModalConfirm");
+  const modalCancel = document.getElementById("aiModalCancel");
+
+  const esc = (value) => String(
+    value === null || value === undefined ? "" : value
+  ).replace(
+    /[&<>"']/g,
+    (ch) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    })[ch]
+  );
+
+  const isPreState = () =>
+    state.ui_state === "SIN_PREPARAR" || state.ui_state === "PREPARANDO";
+  const isCapturing = () => state.ui_state === "CAPTURANDO";
+  const isDone = () =>
+    state.ui_state === "CAPTURA_COMPLETADA" ||
+    state.ui_state === "LISTO_PARA_ENTRENAR";
+
+  const counts = () => {
+    if (isPreState()) {
+      return { accepted: 0, rejected: 0 };
+    }
+    return {
+      accepted: Number(state.accepted_count || 0),
+      rejected: Number(state.rejected_count || 0)
+    };
+  };
+
+  const target = () =>
+    Math.max(1, Number(state.target_count || TARGET_DEFAULT));
+
+  const canStart = () =>
+    state.allowed !== false &&
+    Boolean(state.has_preparation_version) &&
+    !state.station_busy &&
+    !busy;
+
+  function applyPayload(payload) {
+    if (!payload) return;
+    Object.keys(payload).forEach((key) => {
+      state[key] = payload[key];
+    });
+  }
+
+  function countRowHtml(accepted, goal) {
+    return `
+      <div class="ai-count-row">
+        <span>Capturas normales</span>
+        <span>${accepted} / ${goal}</span>
+      </div>
+    `;
+  }
+
+  function progressHtml(accepted, goal) {
+    const percent = Math.min(100, Math.round((accepted / goal) * 100));
+    return `
+      <div class="ai-progress-block">
+        <div class="ai-progress-head">
+          <span>Capturas válidas</span>
+          <span>${accepted} / ${goal}</span>
+        </div>
+        <div
+          class="ai-progress-track"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="${goal}"
+          aria-valuenow="${accepted}"
+        >
+          <div class="ai-progress-fill" style="width:${percent}%"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  function statsHtml(accepted, rejected, goal) {
+    const minimum = Math.max(
+      1,
+      Number(state.min_count || MIN_DEFAULT)
+    );
+    return `
+      <div class="ai-stats">
+        <div class="ai-stat">
+          <span class="detail-label">Aceptadas</span>
+          <strong>${accepted}</strong>
+        </div>
+        <div class="ai-stat">
+          <span class="detail-label">Descartadas</span>
+          <strong>${rejected}</strong>
+        </div>
+        <div class="ai-stat">
+          <span class="detail-label">Mínimo para entrenar</span>
+          <strong>${minimum}</strong>
+        </div>
+        <div class="ai-stat">
+          <span class="detail-label">Objetivo recomendado</span>
+          <strong>${goal}</strong>
+        </div>
+      </div>
+    `;
+  }
+
+  function lastCaptureHtml() {
+    const last = state.last_capture_human;
+    if (!last) {
+      return `
+        <div class="ai-last">
+          <span class="ai-last-mark">•</span>
+          <div>
+            <strong>Última captura</strong>
+            <span class="ai-last-reason">Todavía no se ha capturado ninguna prenda.</span>
+          </div>
+        </div>
+      `;
+    }
+
+    if (last.accepted) {
+      return `
+        <div class="ai-last ok">
+          <span class="ai-last-mark">✓</span>
+          <div>
+            <strong>Última captura: Aceptada</strong>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="ai-last warn">
+        <span class="ai-last-mark">⚠</span>
+        <div>
+          <strong>Última captura: Descartada</strong>
+          <span class="ai-last-reason">Motivo: ${esc(
+            last.reason || "no cumplió la calidad requerida"
+          )}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function targetNoteHtml() {
+    if (!state.target_reached) return "";
+    return `
+      <span class="ai-target-note">
+        Objetivo recomendado alcanzado.
+      </span>
+      <p class="ai-muted-note">
+        Puede continuar capturando más prendas o finalizar la sesión.
+      </p>
+    `;
+  }
+
+  function startButtonHtml(label) {
+    const disabled = canStart() ? "" : "disabled";
+    const loading = busy ? " is-loading" : "";
+    const text = busy ? "Procesando..." : label;
+    return `
+      <button
+        type="button"
+        class="detail-button primary${loading}"
+        data-action="start"
+        ${disabled}
+      >${text}</button>
+    `;
+  }
+
+  function stopButtonHtml() {
+    return `
+      <button
+        type="button"
+        class="detail-button primary${busy ? " is-loading" : ""}"
+        data-action="stop"
+        ${busy ? "disabled" : ""}
+      >${busy ? "Procesando..." : "FINALIZAR CAPTURA"}</button>
+    `;
+  }
+
+  function cancelButtonHtml() {
+    return `
+      <button
+        type="button"
+        class="detail-button danger"
+        data-action="cancel"
+        ${busy ? "disabled" : ""}
+      >CANCELAR SESIÓN</button>
+    `;
+  }
+
+  function trainSlotHtml() {
+    const minimum = Math.max(
+      1,
+      Number(state.min_count || MIN_DEFAULT)
+    );
+    const accepted = counts().accepted;
+    const missing = Number.isFinite(Number(state.missing_to_train))
+      ? Number(state.missing_to_train)
+      : Math.max(0, minimum - accepted);
+
+    let note = "Disponible en la siguiente etapa";
+    if (accepted === 0) {
+      note = "Sesión incompleta. Inicie una nueva captura correcta.";
+    } else if (accepted >= Number(state.target_count || TARGET_DEFAULT)) {
+      note = "Objetivo recomendado alcanzado.";
+    } else if (accepted >= minimum) {
+      note = "Se alcanzó el mínimo. Se recomiendan " +
+        Number(state.target_count || TARGET_DEFAULT) + " imágenes.";
+    } else {
+      note =
+        "Faltan " +
+        missing +
+        " imágenes para alcanzar el mínimo de " + minimum + ".";
+    }
+
+    return `
+      <div class="ai-train-slot">
+        <button
+          type="button"
+          class="detail-button primary"
+          disabled
+          aria-disabled="true"
+        >
+          ENTRENAR IA
+        </button>
+        <span class="ai-train-note">${esc(note)}</span>
+      </div>
+    `;
+  }
+
+  function stationBusyHtml() {
+    const code = state.station_busy_model_code
+      ? ` (${esc(state.station_busy_model_code)})`
+      : "";
+    return `
+      <div class="ai-capture-notice warn">
+        Hay una sesión de captura activa para otro modelo${code}.
+        Finalícele o cancélela antes de iniciar aquí.
+      </div>
+    `;
+  }
+
+  function permissionHtml() {
+    return `
+      <p class="ai-muted-note">
+        No tiene permisos para preparar la captura de este modelo.
+      </p>
+    `;
+  }
+
+  function renderPre() {
+    const goal = target();
+    const html = [];
+
+    html.push(`
+      <p class="ai-capture-hint">
+        Para preparar este modelo utilice únicamente prendas correctas
+        y sin desperfectos.
+      </p>
+    `);
+    html.push(`<div class="ai-capture-notice">${esc(START_NOTICE)}</div>`);
+    html.push(countRowHtml(0, goal));
+
+    if (state.allowed === false) {
+      html.push(permissionHtml());
+      return html.join("");
+    }
+
+    if (!state.has_preparation_version) {
+      html.push(`
+        <p class="ai-muted-note">
+          Primero registre una versión de IA con el botón
+          “Preparar nueva versión”.
+        </p>
+      `);
+      return html.join("");
+    }
+
+    if (state.station_busy) {
+      html.push(stationBusyHtml());
+    }
+
+    html.push(`
+      <div class="ai-actions">
+        ${startButtonHtml("INICIAR CAPTURA")}
+      </div>
+    `);
+
+    return html.join("");
+  }
+
+  function renderCapturing() {
+    const goal = target();
+    const { accepted, rejected } = counts();
+    const html = [];
+
+    html.push(`
+      <div class="ai-capture-notice warn">${esc(BAND_NOTICE)}</div>
+    `);
+    html.push(progressHtml(accepted, goal));
+    html.push(statsHtml(accepted, rejected, goal));
+    html.push(targetNoteHtml());
+    html.push(lastCaptureHtml());
+    html.push(`
+      <div class="ai-actions">
+        ${stopButtonHtml()}
+        ${cancelButtonHtml()}
+      </div>
+    `);
+
+    return html.join("");
+  }
+
+  function renderDone() {
+    const goal = target();
+    const { accepted, rejected } = counts();
+    const html = [];
+
+    html.push(`
+      <div class="ai-summary">
+        <strong>Captura completada</strong>
+        <span>${accepted} imagen${accepted === 1 ? "" : "es"} válida${accepted === 1 ? "" : "s"}</span>
+        <span>${rejected} descartada${rejected === 1 ? "" : "s"}</span>
+        <span>Estado: ${esc(state.ui_state_label || state.ui_state)}</span>
+      </div>
+    `);
+
+    if (accepted === 0) {
+      html.push(`
+        <p class="ai-muted-note">
+          No se guardaron imágenes válidas. Esta sesión no está lista para entrenamiento; inicie una nueva captura.
+        </p>
+        <div class="ai-error" role="alert">
+          Debe capturar al menos 1 imagen válida antes de finalizar
+        </div>
+      `);
+    }
+
+    html.push(progressHtml(accepted, goal));
+    html.push(targetNoteHtml());
+
+    if (state.last_capture_human) {
+      html.push(lastCaptureHtml());
+    }
+
+    html.push(trainSlotHtml());
+
+    if (state.allowed === false) {
+      html.push(permissionHtml());
+      return html.join("");
+    }
+
+    if (state.station_busy) {
+      html.push(stationBusyHtml());
+      return html.join("");
+    }
+
+    html.push(`
+      <div class="ai-actions">
+        ${startButtonHtml("CAPTURAR MÁS IMÁGENES")}
+      </div>
+    `);
+
+    return html.join("");
+  }
+
+  function syncChrome() {
+    const badge = document.getElementById("aiModeBadge");
+    if (badge) {
+      badge.hidden = state.ui_state !== "CAPTURANDO";
+    }
+
+    const form = document.getElementById("prepareAiForm");
+    if (form) {
+      const button = form.querySelector("button");
+      if (button) {
+        button.disabled = state.ui_state === "CAPTURANDO";
+      }
+    }
+  }
+
+  function render() {
+    let body = "";
+
+    if (isCapturing()) {
+      body = renderCapturing();
+    } else if (isDone()) {
+      body = renderDone();
+    } else {
+      body = renderPre();
+    }
+
+    panel.innerHTML = `
+      <div class="ai-capture-top">
+        <span class="ai-state-badge ai-state-${esc(state.ui_state)}">
+          ${esc(state.ui_state_label || state.ui_state)}
+        </span>
+      </div>
+      ${errorMessage || pollError
+        ? `<div class="ai-error" role="alert">${esc(errorMessage || pollError)}</div>`
+        : ""}
+      ${body}
+    `;
+
+    syncChrome();
+  }
+
+  function pollDelay() {
+    if (document.hidden) return 15000;
+    return state.ui_state === "CAPTURANDO" ? 2500 : 10000;
+  }
+
+  function schedulePoll() {
+    window.clearTimeout(pollTimer);
+    pollTimer = window.setTimeout(refresh, pollDelay());
+  }
+
+  async function refresh() {
+    try {
+      const url =
+        config.urls.status +
+        "?garment_model_id=" +
+        encodeURIComponent(config.modelId);
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        credentials: "same-origin"
+      });
+      const data = await response.json();
+
+      if (data && data.ok) {
+        applyPayload(data);
+        pollError = "";
+      } else if (data && data.error) {
+        pollError = data.error;
+      }
+    } catch (error) {
+      // Conexión intermitente: se reintenta en el siguiente ciclo.
+    }
+
+    render();
+    schedulePoll();
+  }
+
+  async function post(url, payload) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      body: JSON.stringify(payload || {})
+    });
+
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (error) {
+      data = null;
+    }
+
+    if (!response.ok || !data || data.ok !== true) {
+      throw new Error(
+        (data && (data.error || data.message)) ||
+          "No se pudo completar la operación."
+      );
+    }
+
+    return data;
+  }
+
+  async function runAction(request) {
+    if (busy) return;
+    busy = true;
+    errorMessage = "";
+    render();
+
+    try {
+      const data = await request();
+      applyPayload(data.session);
+    } catch (error) {
+      errorMessage = error.message || "No se pudo completar la operación.";
+    } finally {
+      busy = false;
+      render();
+      await refresh();
+    }
+  }
+
+  const doStart = () =>
+    runAction(() =>
+      post(config.urls.start, { garment_model_id: config.modelId })
+    );
+
+  const doStop = () =>
+    runAction(() =>
+      post(
+        config.urls.stop,
+        state.session_id ? { session_id: state.session_id } : {}
+      )
+    );
+
+  const doCancel = () =>
+    runAction(() =>
+      post(
+        config.urls.cancel,
+        state.session_id ? { session_id: state.session_id } : {}
+      )
+    );
+
+  function openModal(options) {
+    if (!modal) {
+      if (typeof options.onConfirm === "function") options.onConfirm();
+      return;
+    }
+    modalTitle.textContent = options.title;
+    modalBody.textContent = options.body;
+    modalConfirm.textContent = options.confirmLabel;
+    modalConfirm.className =
+      "detail-button " + (options.danger ? "danger" : "primary");
+    modalConfirmFn = options.onConfirm;
+    modal.hidden = false;
+    modalConfirm.focus();
+  }
+
+  function closeModal() {
+    if (!modal) return;
+    modal.hidden = true;
+    modalConfirmFn = null;
+  }
+
+  if (modalConfirm) {
+    modalConfirm.addEventListener("click", () => {
+      const fn = modalConfirmFn;
+      closeModal();
+      if (typeof fn === "function") fn();
+    });
+  }
+
+  if (modalCancel) {
+    modalCancel.addEventListener("click", closeModal);
+  }
+
+  if (modal) {
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) closeModal();
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && modal && !modal.hidden) {
+      closeModal();
+    }
+  });
+
+  panel.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-action]");
+    if (!trigger) return;
+
+    const action = trigger.getAttribute("data-action");
+
+    if (action === "start") {
+      openModal({
+        title: "Iniciar captura",
+        body:
+          START_NOTICE +
+          " Las imágenes se guardarán automáticamente mientras " +
+          "la prenda esté sobre la banda.",
+        confirmLabel: "Iniciar captura",
+        onConfirm: doStart
+      });
+    } else if (action === "stop") {
+      doStop();
+    } else if (action === "cancel") {
+      openModal({
+        title: "Cancelar sesión",
+        body:
+          "La sesión actual se cerrará y no se tomarán más imágenes. " +
+          "¿Desea continuar?",
+        confirmLabel: "Sí, cancelar sesión",
+        danger: true,
+        onConfirm: doCancel
+      });
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      window.clearTimeout(pollTimer);
+      refresh();
+    }
+  });
+
+  render();
+  schedulePoll();
+})();
+</script>
+{% endif %}
 
 <script>
 (() => {
