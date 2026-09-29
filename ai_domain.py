@@ -625,6 +625,83 @@ def is_technically_invalidated(notes) -> bool:
         notes or ""
     ).upper()
 
+# Estados que cuentan como "versión en proceso" a la hora de decidir si
+# ya existe un trabajo pendiente para el modelo de prenda.
+AI_MODEL_PENDING_STATUSES = (
+    AI_MODEL_STATUS_PREPARACION,
+    AI_MODEL_STATUS_ENTRENANDO,
+    AI_MODEL_STATUS_ENTRENADO,
+    AI_MODEL_STATUS_VALIDACION,
+    AI_MODEL_STATUS_VALIDADO,
+)
+
+# Estados desde los cuales una versión todavía podría llegar a ACTIVO
+# (si nadie la invalidó técnicamente).
+AI_MODEL_ACTIVATABLE_STATUSES = (
+    AI_MODEL_STATUS_ENTRENADO,
+    AI_MODEL_STATUS_VALIDACION,
+    AI_MODEL_STATUS_VALIDADO,
+)
+
+
+def evaluate_retrain_availability(versions) -> tuple:
+    """¿Corresponde "Reentrenar como nueva versión"?
+
+    Reglas de dominio (§4 de FASE 3A.3):
+
+    - debe existir al menos una versión anterior que reemplazar;
+    - ninguna versión en proceso sin invalidar bloquea el reentrenamiento
+      (si la última está ENTRENADO/VALIDACION/VALIDADO y es válida, la
+      acción correcta es validar, no crear otra versión);
+    - una versión invalidada técnicamente (o FALLIDO/RECHAZADO) nunca
+      bloquea: es histórica y no activable.
+
+    Devuelve (disponible, motivo_bloqueo). No toca la base de datos.
+    """
+    rows = []
+
+    for item in versions or []:
+        if isinstance(item, dict):
+            row = {
+                "version": str(item.get("version") or "").strip(),
+                "status": str(item.get("status") or "").strip().upper(),
+                "notes": item.get("notes"),
+            }
+        else:
+            row = {"version": str(item or "").strip(), "status": "", "notes": None}
+
+        if row["version"]:
+            rows.append(row)
+
+    if not rows:
+        return False, "No existe una versión anterior que reemplazar."
+
+    blocking = [
+        row
+        for row in rows
+        if row["status"] in AI_MODEL_PENDING_STATUSES
+        and not is_technically_invalidated(row["notes"])
+    ]
+
+    if blocking:
+        last = blocking[-1]
+
+        if last["status"] in AI_MODEL_ACTIVATABLE_STATUSES:
+            return (
+                False,
+                f"La versión {last['version']} está pendiente de "
+                "validación; complete la validación antes de reentrenar.",
+            )
+
+        return (
+            False,
+            f"Ya existe la versión {last['version']} en proceso "
+            f"({last['status']}).",
+        )
+
+    return True, None
+
+
 # Rollback futuro: RETIRADO -> ACTIVO (reactivación controlada).
 AI_MODEL_TRANSITIONS = {
     AI_MODEL_STATUS_PREPARACION: {AI_MODEL_STATUS_ENTRENANDO},
@@ -995,6 +1072,7 @@ AI_EVENT_TYPES = {
     "ROLLBACK",
     "VERSION_PREPARED",
     "JOB_CREATED",
+    "NEW_VERSION_TRAINING_REQUESTED",
     "TECHNICAL_INVALIDATION",
 }
 
@@ -1898,7 +1976,7 @@ def create_next_ai_model_version(
 
     cur.execute(
         """
-        SELECT version
+        SELECT id, version, status, notes
         FROM garment_ai_models
         WHERE garment_model_id = %s
         ORDER BY id ASC
@@ -1906,27 +1984,18 @@ def create_next_ai_model_version(
         (garment_model_id,),
     )
 
-    versions = [row for row in cur.fetchall()]
+    versions = [dict(row) for row in cur.fetchall()]
 
-    cur.execute(
-        """
-        SELECT COUNT(*) AS total
-        FROM garment_ai_models
-        WHERE garment_model_id = %s
-          AND status IN (
-              'PREPARACION',
-              'ENTRENANDO',
-              'ENTRENADO',
-              'VALIDACION',
-              'VALIDADO'
-          )
-        """,
-        (garment_model_id,),
-    )
+    # Una versión invalidada técnicamente es histórica: no activable y
+    # tampoco impide entrenar una versión nueva que la reemplace.
+    pending = [
+        item
+        for item in versions
+        if item["status"] in AI_MODEL_PENDING_STATUSES
+        and not is_technically_invalidated(item.get("notes"))
+    ]
 
-    pending = int(_scalar(cur.fetchone()) or 0)
-
-    if pending > 0:
+    if pending:
         raise AIDomainError(
             "Ya existe una versión de IA en proceso para este modelo."
         )
@@ -1987,6 +2056,17 @@ def transition_ai_model_status(
 
     validate_ai_status_transition(row["status"], new_raw)
 
+    # Una versión invalidada técnicamente nunca vuelve a entrar al
+    # circuito de validación ni a activarse: es histórica.
+    if new_raw in (
+        AI_MODEL_STATUS_VALIDACION,
+        AI_MODEL_STATUS_ACTIVO,
+    ) and is_technically_invalidated(row.get("notes")):
+        raise AIDomainError(
+            "Esta versión está marcada NO VALIDADA / NO APTO PARA "
+            "ACTIVACIÓN. Entrene una versión nueva."
+        )
+
     _lock_garment_model(cur, row["garment_model_id"])
 
     sets = ["status = %s"]
@@ -2003,12 +2083,6 @@ def transition_ai_model_status(
         sets.append("validated_at = NOW()")
 
     elif new_raw == AI_MODEL_STATUS_ACTIVO:
-        if is_technically_invalidated(row.get("notes")):
-            raise AIDomainError(
-                "Esta versión está marcada NO VALIDADA / NO APTO PARA "
-                "ACTIVACIÓN. Entrene una versión nueva."
-            )
-
         # Si esta configuración ya tiene conflicto histórico de ACTIVE
         # (2+), no se activa ni se retira nada automáticamente.
         cur.execute(

@@ -38,9 +38,11 @@ from ai_domain import (  # noqa: E402
     AIDomainError,
     annotate_technical_invalidation,
     capture_image_relative_path,
+    evaluate_retrain_availability,
     get_ai_artifacts_root,
     get_ai_capture_config,
     is_technically_invalidated,
+    next_version_label,
     transition_ai_model_status,
 )
 from ai_training import (  # noqa: E402
@@ -50,6 +52,7 @@ from ai_training import (  # noqa: E402
     TRAINING_UI_BLOCKED,
     TRAINING_UI_COMPLETED,
     TRAINING_UI_FAILED,
+    TRAINING_UI_HISTORICAL,
     TRAINING_UI_LABELS,
     TRAINING_UI_READY,
     TRAINING_UI_RUNNING,
@@ -61,6 +64,7 @@ from ai_training import (  # noqa: E402
     quality_gate_staged_images,
     redact_secrets,
     relative_to_root,
+    retrain_new_version_preconditions,
 )
 import ai_training  # noqa: E402
 
@@ -306,10 +310,87 @@ class TrainingLogAndMessageTests(unittest.TestCase):
             TRAINING_UI_RUNNING,
             TRAINING_UI_COMPLETED,
             TRAINING_UI_FAILED,
+            TRAINING_UI_HISTORICAL,
         ):
             label = TRAINING_UI_LABELS[status]
             self.assertTrue(label.strip())
             self.assertNotIn("_", label)
+
+    def test_historical_label_states_it_is_not_validatable(self):
+        label = TRAINING_UI_LABELS[TRAINING_UI_HISTORICAL]
+        self.assertIn("HIST", label.upper())
+        self.assertIn("NO APTA", label.upper())
+
+
+class RetrainAvailabilityTests(unittest.TestCase):
+    """§4: reglas puras de «Reentrenar como nueva versión»."""
+
+    INVALIDATED = (
+        f"{AI_MODEL_TECHNICAL_INVALIDATION_PREFIX}: dataset inválido"
+    )
+
+    @staticmethod
+    def _versions(*items):
+        return [
+            {"version": version, "status": status, "notes": notes}
+            for version, status, notes in items
+        ]
+
+    def test_requires_a_previous_version(self):
+        available, reason = evaluate_retrain_availability([])
+
+        self.assertFalse(available)
+        self.assertIn("versión anterior", reason)
+
+    def test_invalidated_version_does_not_block(self):
+        available, reason = evaluate_retrain_availability(
+            self._versions(("v1", "ENTRENADO", self.INVALIDATED))
+        )
+
+        self.assertTrue(available)
+        self.assertIsNone(reason)
+
+    def test_valid_version_pending_validation_blocks(self):
+        for status in ("ENTRENADO", "VALIDACION", "VALIDADO"):
+            available, reason = evaluate_retrain_availability(
+                self._versions(("v1", status, None))
+            )
+
+            with self.subTest(status=status):
+                self.assertFalse(available)
+                self.assertIn("complete la validación", reason.lower())
+
+    def test_invalid_version_does_not_hide_a_newer_valid_one(self):
+        available, reason = evaluate_retrain_availability(
+            self._versions(
+                ("v1", "ENTRENADO", self.INVALIDATED),
+                ("v2", "PREPARACION", None),
+            )
+        )
+
+        self.assertFalse(available)
+        self.assertIn("v2", reason)
+
+    def test_failed_and_rejected_versions_do_not_block(self):
+        for status in ("FALLIDO", "RECHAZADO"):
+            available, _ = evaluate_retrain_availability(
+                self._versions(("v1", status, None))
+            )
+
+            with self.subTest(status=status):
+                self.assertTrue(available)
+
+    def test_next_version_counts_every_version(self):
+        self.assertEqual(next_version_label([]), "v1")
+        self.assertEqual(
+            next_version_label(
+                self._versions(
+                    ("v1", "ENTRENADO", self.INVALIDATED),
+                    ("v2", "FALLIDO", None),
+                )
+            ),
+            "v3",
+        )
 
 
 class ProductionSafetyTests(unittest.TestCase):
@@ -1875,6 +1956,443 @@ class TechnicalInvalidationDbTests(_TrainingDbCase):
                 actor_id=self.user_ids[self.ADMIN_USERNAME],
             )
         self.conn.rollback()
+
+
+@unittest.skipUnless(
+    DB_AVAILABLE,
+    "MySQL no disponible; pruebas de reentrenamiento omitidas.",
+)
+class RetrainNewVersionDbTests(_TrainingDbCase):
+    """FASE 3A.3: «Entrenar nueva versión» crea vN+1 sin tocar vN."""
+
+    ADMIN_USERNAME = "ph3r_admin"
+    QM_USERNAME = "ph3r_qm"
+
+    MODELS = (
+        "TEST-PH3R-EMPTY",
+        "TEST-PH3R-GATE",
+        "TEST-PH3R-HIST",
+        "TEST-PH3R-PEND",
+        "TEST-PH3R-RUN",
+        "TEST-PH3R-STD",
+        "TEST-PH3R-TRAN",
+        "TEST-PH3R-V2N",
+    )
+    USERS = (
+        ("ph3r_admin", "ADMIN"),
+        ("ph3r_qm", "QUALITY_MANAGER"),
+    )
+
+    class _FakeTrainer:
+        """Trainer falso: escribe un checkpoint trivial (sin anomalib)."""
+
+        def train(self, ctx):
+            ctx["report"](35, "EMBEDDINGS", "Generando representaciones")
+
+            checkpoint = Path(ctx["checkpoint_dir"]) / "model.ckpt"
+            checkpoint.write_bytes(b"FAKE-CHECKPOINT-" + b"0" * 512)
+
+            return {
+                "checkpoint": str(checkpoint),
+                "memory_bank": {
+                    "shape": [13, 1536],
+                    "dtype": "torch.float32",
+                },
+                "image_size": [256, 256],
+                "accelerator": "cpu",
+            }
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        actor = cls.user_ids[cls.ADMIN_USERNAME]
+
+        for code in cls.MODELS:
+            cls._seed_accepted(cls.model_ids[code], actor)
+
+    def setUp(self):
+        self._login(self.ADMIN_USERNAME)
+        # Ningún job ajeno debe interferir con el reclamo del worker.
+        self.cur.execute(
+            """
+            UPDATE ai_jobs
+            SET status = 'CANCELADO', finished_at = NOW()
+            WHERE status = 'PENDIENTE'
+            """
+        )
+        self.conn.commit()
+
+    # --------------------------------------------------------
+    # utilidades
+    # --------------------------------------------------------
+
+    def _retrain(self, model_id, username=None):
+        self._login(username or self.ADMIN_USERNAME)
+        return self.client.post(
+            "/api/ai/training/retrain",
+            json={"garment_model_id": model_id},
+        )
+
+    def _versions(self, model_id):
+        self.conn.commit()
+        self.cur.execute(
+            """
+            SELECT id, version, status, notes, dataset_id,
+                   checkpoint_path, checkpoint_hash
+            FROM garment_ai_models
+            WHERE garment_model_id = %s
+            ORDER BY id ASC
+            """,
+            (model_id,),
+        )
+        return self.cur.fetchall()
+
+    @staticmethod
+    def _snapshot(directory):
+        base = Path(directory)
+
+        if not base.is_dir():
+            return {}
+
+        return {
+            str(path.relative_to(base)): hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+            for path in sorted(base.rglob("*"))
+            if path.is_file()
+        }
+
+    def _train_to_entrenado(self, model_id):
+        """Encola y ejecuta un TRAINING real con el trainer falso."""
+        import ai_worker
+        from ai_training import execute_training_job
+
+        response = self._start(model_id)
+        self.assertEqual(response.status_code, 201, self._json(response))
+        job_id = int(self._json(response)["job_id"])
+
+        claimed = ai_worker.claim_job(self._connect, "ph3r-worker")
+        self.assertIsNotNone(claimed)
+
+        result = execute_training_job(
+            job_id,
+            connect=self._connect,
+            trainer=self._FakeTrainer(),
+        )
+        self.assertTrue(result["ok"], result)
+        self.conn.commit()
+
+        versions = self._versions(model_id)
+        self.assertEqual(versions[-1]["status"], "ENTRENADO")
+        return job_id, int(versions[-1]["id"])
+
+    def _invalidate_latest(self, model_id, detail="dataset de prueba inválido"):
+        versions = self._versions(model_id)
+        latest = versions[-1]
+        annotate_technical_invalidation(
+            self.cur,
+            int(latest["id"]),
+            detail,
+            actor_id=self.user_ids[self.ADMIN_USERNAME],
+        )
+        self.conn.commit()
+        return int(latest["id"])
+
+    # --------------------------------------------------------
+    # estado para la UI
+    # --------------------------------------------------------
+
+    def test_trained_version_without_invalidation_is_not_retrainable(self):
+        model_id = self.model_ids["TEST-PH3R-PEND"]
+        self._train_to_entrenado(model_id)
+
+        training = self._json(self._status(model_id))["training"]
+
+        self.assertEqual(training["ui_status"], TRAINING_UI_COMPLETED)
+        self.assertFalse(training["retrain_available"], training)
+        self.assertIn(
+            "complete la validación",
+            (training["retrain_blocked_reason"] or "").lower(),
+        )
+        self.assertFalse(training["can_train"])
+        self.assertEqual(training["historical_version"], None)
+        self.assertEqual(training["next_version"], "v2")
+
+    def test_invalidated_version_is_reported_as_historical(self):
+        model_id = self.model_ids["TEST-PH3R-HIST"]
+        self._train_to_entrenado(model_id)
+        self._invalidate_latest(model_id)
+
+        training = self._json(self._status(model_id))["training"]
+
+        self.assertEqual(training["ui_status"], TRAINING_UI_HISTORICAL)
+        self.assertIn("HIST", training["ui_label"].upper())
+        self.assertIn("NO APTA", training["ui_label"].upper())
+        self.assertFalse(training["can_train"])
+        self.assertTrue(training["retrain_available"], training)
+        self.assertIsNone(training["retrain_blocked_reason"], training)
+        self.assertEqual(training["version"], "v1")
+        self.assertEqual(training["historical_version"], "v1")
+        self.assertEqual(training["next_version"], "v2")
+        self.assertEqual(training["model_status"], "ENTRENADO")
+        self.assertIn("v1", training["invalidated_versions"])
+
+        # La ficha lo pinta y enlaza la acción de nueva versión.
+        self._login(self.ADMIN_USERNAME)
+        html = self.client.get(
+            f"/modelos-prenda/{model_id}"
+        ).get_data(as_text=True)
+
+        self.assertIn("aiTrainingPanel", html)
+        self.assertIn("training/retrain", html)
+        self.assertIn("no apta para validación", html)
+        self.assertIn("NO VALIDADA / NO APTA PARA ACTIVACIÓN", html)
+
+    # --------------------------------------------------------
+    # la acción de reentrenamiento
+    # --------------------------------------------------------
+
+    def test_retrain_creates_new_version_and_keeps_history_intact(self):
+        model_id = self.model_ids["TEST-PH3R-V2N"]
+        old_job_id, _ = self._train_to_entrenado(model_id)
+        self._invalidate_latest(model_id)
+
+        before = self._versions(model_id)
+        self.assertEqual(len(before), 1)
+        v1 = before[0]
+        v1_paths = model_artifact_paths(model_id, int(v1["id"]))
+        v1_files = self._snapshot(v1_paths["training_dir"])
+
+        response = self._retrain(model_id)
+        data = self._json(response)
+        self.assertEqual(response.status_code, 201, data)
+
+        self.assertEqual(data["ok"], True)
+        self.assertEqual(data["ai_model_version"], "v2")
+        self.assertNotEqual(int(data["job_id"]), old_job_id)
+
+        retrain = data["retrain"]
+        self.assertEqual(retrain["version"], "v2")
+        self.assertEqual(retrain["next_version"], "v2")
+        self.assertEqual(
+            [item["version"] for item in retrain["superseded_versions"]],
+            ["v1"],
+        )
+        self.assertEqual(int(retrain["images_reused"]), self.min_images)
+
+        # El dataset se reutiliza: no se clona ni se vuelve a cerrar.
+        self.assertEqual(int(data["dataset_id"]), int(v1["dataset_id"]))
+
+        after = self._versions(model_id)
+        self.assertEqual(
+            [item["version"] for item in after],
+            ["v1", "v2"],
+        )
+        v2 = after[1]
+        self.assertEqual(v2["status"], "PREPARACION")
+        self.assertFalse(is_technically_invalidated(v2["notes"]))
+
+        # La versión histórica queda exactamente igual, artefactos incluidos.
+        self.assertEqual(after[0]["id"], v1["id"])
+        self.assertEqual(after[0]["status"], v1["status"])
+        self.assertEqual(after[0]["checkpoint_hash"], v1["checkpoint_hash"])
+        self.assertTrue(is_technically_invalidated(after[0]["notes"]))
+        self.assertEqual(
+            self._snapshot(v1_paths["training_dir"]),
+            v1_files,
+        )
+
+        v2_paths = model_artifact_paths(model_id, int(v2["id"]))
+        self.assertNotEqual(
+            str(v1_paths["training_dir"]),
+            str(v2_paths["training_dir"]),
+        )
+
+        # Auditoría del reentrenamiento.
+        self.cur.execute(
+            """
+            SELECT payload_json FROM ai_events
+            WHERE ai_model_id = %s
+              AND event_type = 'NEW_VERSION_TRAINING_REQUESTED'
+            """,
+            (int(v2["id"]),),
+        )
+        event = self.cur.fetchone()
+        self.assertIsNotNone(event)
+
+        payload = json.loads(event["payload_json"])
+        self.assertEqual(payload["version"], "v2")
+        self.assertEqual(payload["job_id"], int(data["job_id"]))
+        self.assertEqual(payload["garment_model_id"], model_id)
+        self.assertEqual(
+            [item["version"] for item in payload["superseded_versions"]],
+            ["v1"],
+        )
+        self.assertEqual(int(payload["images_reused"]), self.min_images)
+        self.assertEqual(
+            payload["artifacts_dir"],
+            f"garment_{model_id}/models/ai_model_{int(v2['id'])}",
+        )
+
+        # La ficha ahora muestra el entrenamiento de v2 en curso.
+        training = self._json(self._status(model_id))["training"]
+        self.assertEqual(training["ui_status"], TRAINING_UI_RUNNING)
+        self.assertFalse(training["retrain_available"])
+        self.assertEqual(training["model_id"], int(v2["id"]))
+
+    def test_historical_version_cannot_be_validated_nor_activated(self):
+        from ai_domain import AI_MODEL_STATUS_ACTIVO, AI_MODEL_STATUS_VALIDACION
+
+        model_id = self.model_ids["TEST-PH3R-TRAN"]
+        self._train_to_entrenado(model_id)
+        self._invalidate_latest(model_id)
+
+        v1_id = int(self._versions(model_id)[0]["id"])
+        actor = self.user_ids[self.ADMIN_USERNAME]
+
+        # No vuelve a entrar al circuito de validación.
+        with self.assertRaises(AIDomainError) as ctx:
+            transition_ai_model_status(
+                self.cur,
+                v1_id,
+                AI_MODEL_STATUS_VALIDACION,
+                actor,
+            )
+        self.conn.rollback()
+        self.assertIn("NO APTO PARA ACTIVACIÓN", str(ctx.exception))
+
+        # Tampoco hay camino hasta ACTIVO.
+        with self.assertRaises(AIDomainError):
+            transition_ai_model_status(
+                self.cur,
+                v1_id,
+                AI_MODEL_STATUS_ACTIVO,
+                actor,
+            )
+        self.conn.rollback()
+
+        versions = self._versions(model_id)
+        self.assertEqual(versions[0]["status"], "ENTRENADO")
+        self.assertTrue(is_technically_invalidated(versions[0]["notes"]))
+
+        # La única salida es entrenar una versión nueva.
+        training = self._json(self._status(model_id))["training"]
+        self.assertTrue(training["retrain_available"], training)
+
+    def test_retrain_blocked_while_another_training_runs(self):
+        model_id = self.model_ids["TEST-PH3R-RUN"]
+        self._train_to_entrenado(model_id)
+        self._invalidate_latest(model_id)
+
+        # El camino normal de /start también sigue funcionando.
+        started = self._start(model_id)
+        self.assertEqual(started.status_code, 201, self._json(started))
+        self.assertEqual(self._json(started)["ai_model_version"], "v2")
+
+        blocked = self._retrain(model_id)
+        self.assertEqual(blocked.status_code, 409)
+        payload = self._json(blocked)
+        self.assertFalse(payload["ok"])
+        self.assertIn("entrenamiento", payload["error"].lower())
+
+        # Solo se creó una v2, nunca una v3.
+        self.assertEqual(
+            [item["version"] for item in self._versions(model_id)],
+            ["v1", "v2"],
+        )
+
+        training = self._json(self._status(model_id))["training"]
+        self.assertFalse(training["retrain_available"])
+        self.assertEqual(training["ui_status"], TRAINING_UI_RUNNING)
+
+    def test_retrain_requires_a_previous_version(self):
+        model_id = self.model_ids["TEST-PH3R-EMPTY"]
+
+        blocked = self._retrain(model_id)
+        self.assertEqual(blocked.status_code, 409)
+
+        payload = self._json(blocked)
+        self.assertFalse(payload["ok"])
+        self.assertIn("versión anterior", payload["error"].lower())
+
+        training = payload["training"]
+        self.assertFalse(training["retrain_available"])
+        self.assertIn(
+            "versión anterior",
+            (training["retrain_blocked_reason"] or "").lower(),
+        )
+        self.assertIsNone(training["next_version"])
+
+        self.assertEqual(self._versions(model_id), [])
+
+    def test_retrain_requires_management_permission(self):
+        model_id = self.model_ids["TEST-PH3R-EMPTY"]
+        response = self._retrain(model_id, username=self.QM_USERNAME)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(self._json(response)["ok"])
+
+    def test_quality_gate_failure_rolls_back_the_new_version(self):
+        from unittest import mock
+
+        model_id = self.model_ids["TEST-PH3R-GATE"]
+        self._train_to_entrenado(model_id)
+        self._invalidate_latest(model_id)
+
+        with mock.patch(
+            "ai_training.stage_training_images",
+            side_effect=TrainingStagingGateDbTests._blank_stage,
+        ):
+            response = self._retrain(model_id)
+
+        self.assertEqual(response.status_code, 409, self._json(response))
+
+        # Sin versión nueva, sin job y sin evento de reentrenamiento.
+        self.assertEqual(
+            [item["version"] for item in self._versions(model_id)],
+            ["v1"],
+        )
+        self.assertEqual(
+            self._json(response)["training"]["ui_status"],
+            TRAINING_UI_HISTORICAL,
+        )
+
+        self.conn.commit()
+        self.cur.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM ai_jobs j
+            JOIN garment_ai_models m ON m.id = j.ai_model_id
+            WHERE m.garment_model_id = %s
+            """,
+            (model_id,),
+        )
+        self.assertEqual(int(self.cur.fetchone()["total"]), 1)
+
+        self.cur.execute(
+            """
+            SELECT COUNT(*) AS total FROM ai_events
+            WHERE event_type = 'NEW_VERSION_TRAINING_REQUESTED'
+              AND ai_model_id IN (
+                  SELECT id FROM garment_ai_models
+                  WHERE garment_model_id = %s
+              )
+            """,
+            (model_id,),
+        )
+        self.assertEqual(int(self.cur.fetchone()["total"]), 0)
+
+    def test_normal_start_still_works_when_only_version_is_historical(self):
+        model_id = self.model_ids["TEST-PH3R-STD"]
+        self._train_to_entrenado(model_id)
+        self._invalidate_latest(model_id)
+
+        self._start(model_id)
+
+        self.assertEqual(
+            [item["version"] for item in self._versions(model_id)],
+            ["v1", "v2"],
+        )
 
 
 if __name__ == "__main__":

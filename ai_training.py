@@ -48,8 +48,11 @@ from ai_domain import (
     create_ai_job,
     create_next_ai_model_version,
     ensure_safe_relative_path,
+    evaluate_retrain_availability,
     get_ai_artifacts_root,
     get_ai_capture_config,
+    is_technically_invalidated,
+    next_version_label,
     normalize_sha256,
     record_ai_event,
     resolve_under_root,
@@ -689,6 +692,17 @@ def humanize_training_error(message) -> str:
 
     lowered = text.lower()
 
+    # Barreras del reentrenamiento como nueva versión (FASE 3A.3):
+    # mensajes de dominio ya aptos para la persona usuaria.
+    if "versión anterior" in lowered or "version anterior" in lowered:
+        return text
+    if "complete la validación" in lowered or "complete la validacion" in lowered:
+        return text
+    if "faltan" in lowered and "imágenes" in lowered:
+        return text
+    if "no hay un dataset" in lowered:
+        return text
+
     if "no está cerrado" in lowered or "no esta cerrado" in lowered:
         return "El dataset de imágenes todavía no está cerrado."
     if "se requieren al menos" in lowered:
@@ -734,6 +748,61 @@ def humanize_training_error(message) -> str:
 # ============================================================
 
 
+def retrain_new_version_preconditions(cur, garment_model_id: int) -> dict:
+    """Barreras de la acción «Reentrenar como nueva versión» (§4).
+
+    No crea ni modifica nada: solo decide si la acción está permitida y
+    aporta el contexto (versiones históricas y versión siguiente) que la
+    auditoría debe registrar.
+    """
+    cur.execute(
+        """
+        SELECT id, version, status, notes
+        FROM garment_ai_models
+        WHERE garment_model_id = %s
+        ORDER BY id ASC
+        """,
+        (int(garment_model_id),),
+    )
+    versions = [dict(row) for row in cur.fetchall()]
+
+    available, reason = evaluate_retrain_availability(versions)
+
+    cur.execute(
+        """
+        SELECT j.id
+        FROM ai_jobs j
+        JOIN garment_ai_models m ON m.id = j.ai_model_id
+        WHERE m.garment_model_id = %s
+          AND j.kind = %s
+          AND j.status IN (%s, %s)
+        LIMIT 1
+        """,
+        (
+            int(garment_model_id),
+            JOB_KIND_TRAINING,
+            JOB_STATUS_PENDIENTE,
+            JOB_STATUS_EN_CURSO,
+        ),
+    )
+
+    if cur.fetchone() is not None:
+        available = False
+        reason = "Ya hay un entrenamiento en curso para este modelo."
+
+    return {
+        "available": bool(available),
+        "reason": reason,
+        "versions": versions,
+        "historical": [
+            {"version": item["version"], "status": item["status"]}
+            for item in versions
+            if is_technically_invalidated(item.get("notes"))
+        ],
+        "next_version": next_version_label(versions),
+    }
+
+
 def request_training_job(
     cur,
     *,
@@ -741,11 +810,17 @@ def request_training_job(
     actor_id: int | None,
     artifacts_root=None,
     config: dict | None = None,
+    as_new_version: bool = False,
 ) -> dict:
     """Materializa/verifica el dataset y crea el job TRAINING.
 
     Debe ejecutarse en una transacción abierta por el llamador.
     Lanza AIDomainError con mensaje humano si alguna barrera falla.
+
+    Con `as_new_version=True` se pide explícitamente una NUEVA versión
+    (vN+1) que reemplaza a una versión anterior no apta: nunca se
+    reutiliza ni se toca la versión histórica ni su directorio de
+    artefactos.
     """
     root = Path(artifacts_root) if artifacts_root else get_ai_artifacts_root()
     cfg = dict(config or get_training_config())
@@ -771,9 +846,20 @@ def request_training_job(
             "aprobado y activo."
         )
 
+    retrain = None
+
+    if as_new_version:
+        retrain = retrain_new_version_preconditions(cur, garment_model_id)
+
+        if not retrain["available"]:
+            raise AIDomainError(
+                retrain["reason"]
+                or "No es posible entrenar una versión nueva ahora."
+            )
+
     cur.execute(
         """
-        SELECT id, version, status, garment_model_id
+        SELECT id, version, status, notes, garment_model_id
         FROM garment_ai_models
         WHERE garment_model_id = %s AND status = %s
         ORDER BY id DESC
@@ -782,6 +868,10 @@ def request_training_job(
         (int(garment_model_id), AI_MODEL_STATUS_PREPARACION),
     )
     model = cur.fetchone()
+
+    if model is not None and is_technically_invalidated(model.get("notes")):
+        # Una PREPARACION invalidada es histórica: no se reutiliza.
+        model = None
 
     if model is None:
         # Sin versión PREPARACION disponible se crea una nueva
@@ -916,6 +1006,30 @@ def request_training_job(
         },
     )
 
+    if as_new_version:
+        # Auditoría explícita del reentrenamiento como NUEVA versión:
+        # versión histórica intacta, dataset reutilizado, artefactos
+        # propios de la versión nueva.
+        record_ai_event(
+            cur,
+            "NEW_VERSION_TRAINING_REQUESTED",
+            actor_id=actor_id,
+            ai_model_id=ai_model_id,
+            dataset_id=int(dataset["id"]),
+            payload={
+                "job_id": int(job["id"]),
+                "garment_model_id": int(garment_model_id),
+                "version": model["version"],
+                "superseded_versions": retrain["historical"],
+                "dataset_reused": int(dataset["id"]),
+                "images_reused": int(dataset["image_count"]),
+                "artifacts_dir": (
+                    f"garment_{int(garment_model_id)}"
+                    f"/models/ai_model_{int(ai_model_id)}"
+                ),
+            },
+        )
+
     return {
         "job": job,
         "dataset": dataset,
@@ -927,6 +1041,7 @@ def request_training_job(
         },
         "verification": verification,
         "config": cfg,
+        "retrain": retrain,
     }
 
 
@@ -991,6 +1106,9 @@ TRAINING_UI_READY = "DISPONIBLE"
 TRAINING_UI_RUNNING = "ENTRENANDO"
 TRAINING_UI_COMPLETED = "ENTRENADO"
 TRAINING_UI_FAILED = "FALLIDO"
+# Versión entrenada que quedó marcada NO VALIDADA / NO APTA: es
+# histórica, no entra a validación y habilita el reentrenamiento.
+TRAINING_UI_HISTORICAL = "HISTORICA"
 
 TRAINING_UI_LABELS = {
     TRAINING_UI_BLOCKED: "NO DISPONIBLE",
@@ -998,7 +1116,10 @@ TRAINING_UI_LABELS = {
     TRAINING_UI_RUNNING: "ENTRENANDO",
     TRAINING_UI_COMPLETED: "PENDIENTE DE VALIDACIÓN",
     TRAINING_UI_FAILED: "ENTRENAMIENTO FALLIDO",
+    TRAINING_UI_HISTORICAL: "VERSIÓN HISTÓRICA · NO APTA PARA VALIDACIÓN",
 }
+
+RETRAIN_UI_LABEL = "Entrenar nueva versión"
 
 
 def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
@@ -1030,6 +1151,14 @@ def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
         "started_at": None,
         "finished_at": None,
         "log_path": None,
+        # Reentrenamiento como nueva versión (FASE 3A.3).
+        "retrain_available": False,
+        "retrain_blocked_reason": None,
+        "retrain_label": RETRAIN_UI_LABEL,
+        "retrain_image_count": 0,
+        "next_version": None,
+        "historical_version": None,
+        "invalidated_versions": [],
     }
 
     if not garment_model_id:
@@ -1073,19 +1202,28 @@ def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
     # haberse creado) y la versión ya quedó ENTRENADO en la BD.
     cur.execute(
         """
-        SELECT id, version, status, normal_images_count, trained_at
+        SELECT id, version, status, notes, normal_images_count, trained_at
         FROM garment_ai_models
         WHERE garment_model_id = %s
-        ORDER BY id DESC
-        LIMIT 1
+        ORDER BY id ASC
         """,
         (int(garment_model_id),),
     )
-    latest_model = cur.fetchone()
+    versions = [dict(row) for row in cur.fetchall()]
+    latest_model = versions[-1] if versions else None
+
+    invalidated = [
+        item
+        for item in versions
+        if is_technically_invalidated(item.get("notes"))
+    ]
 
     if latest_model:
         payload["model_id"] = int(latest_model["id"])
         payload["model_status"] = latest_model["status"]
+
+    payload["next_version"] = next_version_label(versions) if versions else None
+    payload["invalidated_versions"] = [item["version"] for item in invalidated]
 
     cur.execute(
         """
@@ -1105,8 +1243,82 @@ def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
     job = cur.fetchone()
 
     active_statuses = (JOB_STATUS_PENDIENTE, JOB_STATUS_EN_CURSO)
+    job_active = bool(job and job["status"] in active_statuses)
 
-    if job and job["status"] in active_statuses:
+    # Disponibilidad de «Entrenar nueva versión»: reglas de dominio
+    # (versión anterior no activable) + dataset sano + sin job activo.
+    retrain_available, retrain_reason = evaluate_retrain_availability(versions)
+
+    if not retrain_available:
+        pass
+    elif allowed is False:
+        retrain_available = False
+        retrain_reason = "No tiene permisos para entrenar este modelo."
+    elif job_active:
+        retrain_available = False
+        retrain_reason = "Ya hay un entrenamiento en curso para este modelo."
+    elif accepted < minimum:
+        retrain_available = False
+        retrain_reason = (
+            f"Faltan {minimum - accepted} imágenes para alcanzar el "
+            f"mínimo de {minimum}."
+        )
+    elif dataset is None:
+        retrain_available = False
+        retrain_reason = "Todavía no hay un dataset de imágenes cerrado."
+    elif dataset["status"] != DATASET_STATUS_CERRADO:
+        retrain_available = False
+        retrain_reason = "El dataset de imágenes todavía no está cerrado."
+
+    payload["retrain_available"] = bool(retrain_available)
+    payload["retrain_blocked_reason"] = None if retrain_available else retrain_reason
+    payload["retrain_image_count"] = int(
+        dataset["image_count"] if dataset else 0
+    )
+
+    # Última versión entrenada pero invalidada técnicamente: histórica,
+    # no apta para validación/activación, con reentrenamiento disponible.
+    if (
+        latest_model
+        and latest_model["status"] in (
+            AI_MODEL_STATUS_ENTRENADO,
+            AI_MODEL_STATUS_VALIDACION,
+            AI_MODEL_STATUS_VALIDADO,
+        )
+        and is_technically_invalidated(latest_model.get("notes"))
+        and not job_active
+    ):
+        payload.update(
+            {
+                "ui_status": TRAINING_UI_HISTORICAL,
+                "ui_label": TRAINING_UI_LABELS[TRAINING_UI_HISTORICAL],
+                "can_train": False,
+                "version": latest_model["version"],
+                "model_id": int(latest_model["id"]),
+                "model_status": latest_model["status"],
+                "historical_version": latest_model["version"],
+                "progress": 100.0,
+                "stage": "HISTORICA",
+                "stage_label": (
+                    "Entrenamiento completado; versión no apta para "
+                    "validación"
+                ),
+                "image_count": int(
+                    dataset["image_count"]
+                    if dataset
+                    else (latest_model["normal_images_count"] or 0)
+                ),
+                "finished_at": str(latest_model["trained_at"] or ""),
+            }
+        )
+
+        if job and job["status"] == JOB_STATUS_COMPLETADO:
+            payload["job_id"] = int(job["id"])
+            payload["log_path"] = job["log_path"]
+
+        return payload
+
+    if job_active:
         payload.update(
             {
                 "ui_status": TRAINING_UI_RUNNING,

@@ -874,6 +874,13 @@
 .ai-state-ENTRENANDO { background: #e7f4fc; color: #10628f; }
 .ai-state-ENTRENADO { background: #e9edfb; color: #2d47a0; }
 .ai-state-FALLIDO { background: #fbe8e8; color: #963737; }
+.ai-state-HISTORICA {
+  background: #f2ecfa;
+  color: #6b3fa0;
+  border: 1px solid #d9c9f0;
+}
+
+.detail-badge-history { background: #f2ecfa; color: #6b3fa0; }
 
 /* Modal propio: nunca alert() del navegador */
 .ai-modal-backdrop {
@@ -1091,6 +1098,10 @@
         <span class="detail-badge detail-badge-success">
           {{ model.ai_model_type }} {{ model.ai_version }} · Lista
         </span>
+      {% elif ai_training and ai_training.ui_status == 'HISTORICA' %}
+        <span class="detail-badge detail-badge-history">
+          Versión {{ ai_training.historical_version }} histórica · no apta para validación
+        </span>
       {% elif ai_training and ai_training.ui_status == 'ENTRENADO' %}
         <span class="detail-badge detail-badge-warning">
           PENDIENTE DE VALIDACIÓN
@@ -1293,6 +1304,18 @@
     </section>
     {% endif %}
 
+    {% if ai_historical_only %}
+    <div class="ai-capture-notice warn">
+      La última versión quedó marcada como
+      <strong>NO VALIDADA / NO APTA PARA ACTIVACIÓN</strong>: se conserva
+      como histórico y no puede validarse ni activarse.
+      {% if ai_training and ai_training.next_version %}
+        Entrene la <strong>{{ ai_training.next_version }}</strong> para
+        reemplazarla.
+      {% endif %}
+    </div>
+    {% endif %}
+
     {% if not ai_versions and not ai_in_progress %}
       <p class="detail-muted">Este modelo todavía no tiene versiones de IA registradas.</p>
     {% elif ai_in_progress %}
@@ -1306,7 +1329,11 @@
         <div class="detail-ai-item-head">
           <h3>{{ ai.version }} · {{ ai.model_type }}</h3>
 
-          {% if ai.active and ai.status == 'ACTIVO' %}
+          {% if ai.technically_invalidated %}
+            <span class="detail-badge detail-badge-history">
+              Histórica · no apta para validación
+            </span>
+          {% elif ai.active and ai.status == 'ACTIVO' %}
             <span class="detail-badge detail-badge-success">Activa</span>
           {% elif ai.status == 'PREPARACION' %}
             <span class="detail-badge detail-badge-warning">En preparación</span>
@@ -1323,7 +1350,9 @@
           <div>
             <span class="detail-label">Estado</span>
             <span class="detail-value">
-              {% if loop.first and ai_training and ai_training.ui_status == 'ENTRENADO' %}
+              {% if ai.technically_invalidated %}
+                {{ ai.status }} · versión histórica
+              {% elif loop.first and ai_training and ai_training.ui_status == 'ENTRENADO' %}
                 {{ ai.status }} · {{ ai_training.ui_label }}
               {% elif ai.status == 'PREPARACION' %}
                 Pendiente de entrenamiento
@@ -1353,7 +1382,9 @@
           <div>
             <span class="detail-label">Entrenamiento</span>
             <span class="detail-value">
-              {% if ai_training.ui_status == 'ENTRENADO' %}
+              {% if ai_training.ui_status == 'HISTORICA' %}
+                Completado · versión histórica
+              {% elif ai_training.ui_status == 'ENTRENADO' %}
                 Completado
               {% elif ai_training.ui_status == 'ENTRENANDO' %}
                 En proceso
@@ -2124,6 +2155,7 @@
     'modelId': model.id,
     'urls': {
       'start': url_for('ai_training_start'),
+      'retrain': url_for('ai_training_retrain'),
       'cancel': url_for('ai_training_cancel'),
       'status': url_for('ai_training_status')
     },
@@ -2180,6 +2212,14 @@
 
     if (state.version) {
       items.push(["Versión", String(state.version)]);
+    }
+
+    if (state.ui_status === "HISTORICA" && state.next_version) {
+      items.push(["Próxima versión", String(state.next_version)]);
+    }
+
+    if (state.ui_status === "HISTORICA" && state.retrain_image_count) {
+      items.push(["Imágenes disponibles", `${Number(state.retrain_image_count)}`]);
     }
 
     if (state.elapsed_seconds !== null && state.elapsed_seconds !== undefined) {
@@ -2240,6 +2280,22 @@
       `);
     }
 
+    if (state.ui_status === "HISTORICA") {
+      if (state.retrain_available) {
+        actions.push(`
+          <button type="button" class="detail-button primary" data-action="retrain">
+            ${esc(state.retrain_label || "Entrenar nueva versión")}
+          </button>
+        `);
+      } else {
+        actions.push(`
+          <button type="button" class="detail-button" disabled>
+            ${esc(state.retrain_label || "Entrenar nueva versión")}
+          </button>
+        `);
+      }
+    }
+
     if (state.ui_status === "ENTRENADO") {
       actions.push(`
         <button type="button" class="detail-button" disabled>
@@ -2289,6 +2345,21 @@
         `<div class="ai-capture-notice">El entrenamiento se ejecuta en segundo plano. Puede salir de esta pantalla; el estado quedará guardado.</div>`
       );
       html.push(progressHtml());
+    } else if (state.ui_status === "HISTORICA") {
+      html.push(
+        `<div class="ai-capture-notice warn">
+          <strong>Versión ${esc(state.historical_version || state.version || "")} histórica.</strong>
+          Quedó marcada como NO VALIDADA / NO APTA PARA ACTIVACIÓN: no puede
+          validarse ni activarse. El siguiente paso es entrenar una versión
+          nueva que la reemplace; la versión histórica se conserva sin cambios.
+        </div>`
+      );
+
+      if (!state.retrain_available && state.retrain_blocked_reason) {
+        html.push(
+          `<div class="ai-capture-notice">${esc(state.retrain_blocked_reason)}</div>`
+        );
+      }
     } else if (state.ui_status === "ENTRENADO") {
       html.push(
         `<div class="ai-summary">
@@ -2445,6 +2516,11 @@
       post(config.urls.start, { garment_model_id: config.modelId })
     );
 
+  const doRetrain = () =>
+    runAction(() =>
+      post(config.urls.retrain, { garment_model_id: config.modelId })
+    );
+
   const doCancel = () =>
     runAction(() =>
       post(config.urls.cancel, { job_id: state.job_id })
@@ -2510,6 +2586,17 @@
           "entrenamiento mientras este termine. ¿Desea continuar?",
         confirmLabel: "Iniciar entrenamiento",
         onConfirm: doStart
+      });
+    } else if (action === "retrain") {
+      openModal({
+        title: "Entrenar una nueva versión",
+        body:
+          "Se creará una versión nueva que reemplaza a la actual. " +
+          "La versión histórica y sus artefactos se conservan sin " +
+          "cambios. Se prepararán las imágenes aceptadas y el " +
+          "entrenamiento correrá en segundo plano. ¿Desea continuar?",
+        confirmLabel: "Entrenar nueva versión",
+        onConfirm: doRetrain
       });
     } else if (action === "cancel") {
       openModal({

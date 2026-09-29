@@ -46,6 +46,7 @@ from ai_domain import (
     get_open_capture_session,
     humanize_capture_error,
     humanize_reject_reason,
+    is_technically_invalidated,
     load_session_accepted_hashes,
     next_garment_model_code,
     record_ai_event,
@@ -15355,7 +15356,7 @@ def build_patchcore_dataset_name(model):
 
 
 def get_garment_ai_versions(model_id):
-    return fetch_all(
+    rows = fetch_all(
         """
         SELECT
             ai.*,
@@ -15393,6 +15394,13 @@ def get_garment_ai_versions(model_id):
         """,
         (model_id,),
     )
+
+    for row in rows:
+        row["technically_invalidated"] = is_technically_invalidated(
+            row.get("notes")
+        )
+
+    return rows
 
 
 def get_garment_model(model_id):
@@ -15793,6 +15801,15 @@ def garment_model_detail(model_id):
 
     ai_in_progress = any(
         version.get("status") in pending_ai_statuses
+        and not version.get("technically_invalidated")
+        for version in ai_versions
+    )
+
+    # Solo quedan versiones invalidadas "en proceso": para la ficha eso
+    # no es proceso, es historia (FASE 3A.3). Habilita el mensaje de
+    # versión histórica y no tapa la preparación de una versión nueva.
+    ai_historical_only = bool(ai_versions) and not ai_in_progress and any(
+        version.get("technically_invalidated")
         for version in ai_versions
     )
 
@@ -15854,6 +15871,7 @@ def garment_model_detail(model_id):
         can_manage=can_manage,
         ai_versions=ai_versions,
         ai_in_progress=ai_in_progress,
+        ai_historical_only=ai_historical_only,
         can_prepare_ai=can_prepare_ai,
         ai_capture=ai_capture_state,
         ai_capture_visible=ai_capture_visible,
@@ -18385,32 +18403,8 @@ def _ai_training_guard(garment_model_id):
     return model, None
 
 
-@app.route("/api/ai/training/start", methods=["POST"])
-@login_required
-@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
-def ai_training_start():
-    body = request.get_json(silent=True) or {}
-    raw_model = body.get("garment_model_id")
-
-    try:
-        garment_model_id = int(raw_model)
-    except (TypeError, ValueError):
-        return jsonify({
-            "ok": False,
-            "error": "garment_model_id inválido.",
-        }), 400
-
-    if garment_model_id <= 0:
-        return jsonify({
-            "ok": False,
-            "error": "garment_model_id debe ser positivo.",
-        }), 400
-
-    model, guard_error = _ai_training_guard(garment_model_id)
-
-    if guard_error is not None:
-        return guard_error
-
+def _start_training_request(garment_model_id, *, as_new_version):
+    """Encola un TRAINING (normal o como NUEVA versión). JSON + código."""
     actor_id = session.get("user_id")
 
     conn = db()
@@ -18421,6 +18415,7 @@ def ai_training_start():
             cur,
             garment_model_id=garment_model_id,
             actor_id=actor_id,
+            as_new_version=as_new_version,
         )
         job_id = int(created["job"]["id"])
         payload = training_status_payload(
@@ -18445,7 +18440,8 @@ def ai_training_start():
             conn.rollback()
         app.logger.exception(
             "No se pudo solicitar el entrenamiento IA "
-            f"(garment_model_id={garment_model_id})."
+            f"(garment_model_id={garment_model_id}, "
+            f"as_new_version={as_new_version})."
         )
         return jsonify({
             "ok": False,
@@ -18458,17 +18454,107 @@ def ai_training_start():
         cur.close()
         conn.close()
 
-    return jsonify({
-        "ok": True,
-        "message": (
+    message = (
+        "Entrenamiento de una nueva versión encolado. El sistema lo "
+        "ejecutará en segundo plano."
+        if as_new_version
+        else (
             "Entrenamiento encolado. El sistema lo ejecutará en "
             "segundo plano."
-        ),
+        )
+    )
+
+    retrain = created.get("retrain")
+    retrain_summary = None
+
+    if as_new_version and retrain:
+        # Resumen legible para la UI/auditoría (sin notas internas).
+        retrain_summary = {
+            "version": created["ai_model"].get("version"),
+            "next_version": retrain.get("next_version"),
+            "superseded_versions": retrain.get("historical"),
+            "images_reused": int(created["dataset"]["image_count"]),
+        }
+
+    return jsonify({
+        "ok": True,
+        "message": message,
         "job_id": job_id,
         "dataset_id": int(created["dataset"]["id"]),
         "ai_model_id": int(created["ai_model"]["id"]),
+        "ai_model_version": created["ai_model"].get("version"),
+        "retrain": _json_sanitize(retrain_summary),
         "training": _json_sanitize(payload),
     }), 201
+
+
+def _parse_garment_model_id(body):
+    """garment_model_id del cuerpo JSON o (None, respuesta 400)."""
+    raw_model = body.get("garment_model_id")
+
+    try:
+        garment_model_id = int(raw_model)
+    except (TypeError, ValueError):
+        return None, jsonify({
+            "ok": False,
+            "error": "garment_model_id inválido.",
+        }), 400
+
+    if garment_model_id <= 0:
+        return None, jsonify({
+            "ok": False,
+            "error": "garment_model_id debe ser positivo.",
+        }), 400
+
+    return garment_model_id, None
+
+
+@app.route("/api/ai/training/start", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_training_start():
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    model, guard_error = _ai_training_guard(garment_model_id)
+
+    if guard_error is not None:
+        return guard_error
+
+    return _start_training_request(
+        garment_model_id,
+        as_new_version=False,
+    )
+
+
+@app.route("/api/ai/training/retrain", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_training_retrain():
+    """Reentrena como NUEVA versión (FASE 3A.3).
+
+    Nunca reutiliza ni modifica la versión anterior: crea vN+1 y su
+    propio directorio de artefactos. El quality gate corre antes de
+    crear el job (mismo flujo que /start).
+    """
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    model, guard_error = _ai_training_guard(garment_model_id)
+
+    if guard_error is not None:
+        return guard_error
+
+    return _start_training_request(
+        garment_model_id,
+        as_new_version=True,
+    )
 
 
 @app.route("/api/ai/training/cancel", methods=["POST"])
