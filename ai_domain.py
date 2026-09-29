@@ -611,6 +611,20 @@ AI_MODEL_STATUSES = {
     AI_MODEL_STATUS_FALLIDO,
 }
 
+# Invalidación técnica: se escribe en garment_ai_models.notes y bloquea
+# cualquier paso a ACTIVO mientras siga presente. No es un estado nuevo
+# (la máquina de estados no tiene transición de invalidación técnica).
+AI_MODEL_TECHNICAL_INVALIDATION_PREFIX = (
+    "NO VALIDADO / NO APTO PARA ACTIVACIÓN"
+)
+
+
+def is_technically_invalidated(notes) -> bool:
+    """True si las notas marcan la versión como no apta para activar."""
+    return AI_MODEL_TECHNICAL_INVALIDATION_PREFIX in str(
+        notes or ""
+    ).upper()
+
 # Rollback futuro: RETIRADO -> ACTIVO (reactivación controlada).
 AI_MODEL_TRANSITIONS = {
     AI_MODEL_STATUS_PREPARACION: {AI_MODEL_STATUS_ENTRENANDO},
@@ -972,6 +986,7 @@ AI_EVENT_TYPES = {
     "TRAINING_STARTED",
     "TRAINING_COMPLETED",
     "TRAINING_FAILED",
+    "TRAINING_CANCELLED",
     "VALIDATION_STARTED",
     "VALIDATED",
     "REJECTED",
@@ -980,6 +995,7 @@ AI_EVENT_TYPES = {
     "ROLLBACK",
     "VERSION_PREPARED",
     "JOB_CREATED",
+    "TECHNICAL_INVALIDATION",
 }
 
 
@@ -1405,6 +1421,84 @@ def ensure_ai_schema(cur, db_name, ensure_column=None):
     )
 
     # --------------------------------------------------------
+    # CONTROL DE EJECUCIÓN DE JOBS (FASE 3A)
+    # MySQL es la fuente de verdad: progreso, etapa, worker y
+    # heartbeat sobreviven a reinicios de Flask y del worker.
+    # --------------------------------------------------------
+    add_column(
+        "ai_jobs",
+        "stage",
+        "stage VARCHAR(60) NULL AFTER log_path",
+    )
+    add_column(
+        "ai_jobs",
+        "stage_label",
+        "stage_label VARCHAR(160) NULL AFTER stage",
+    )
+    add_column(
+        "ai_jobs",
+        "worker_id",
+        "worker_id VARCHAR(120) NULL AFTER stage_label",
+    )
+    add_column(
+        "ai_jobs",
+        "heartbeat_at",
+        "heartbeat_at DATETIME NULL AFTER worker_id",
+    )
+    add_column(
+        "ai_jobs",
+        "config_json",
+        "config_json JSON NULL AFTER progress",
+    )
+    add_column(
+        "ai_jobs",
+        "artifacts_json",
+        "artifacts_json JSON NULL AFTER config_json",
+    )
+    add_column(
+        "ai_jobs",
+        "updated_at",
+        "updated_at DATETIME NULL AFTER finished_at",
+    )
+
+    # Un solo job TRAINING activo por versión de IA: la restricción
+    # vive en la BD (doble clic o dos peticiones no la evitan).
+    # NULL permite varios jobs terminados (reintentos con versión nueva).
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = %s
+          AND TABLE_NAME = 'ai_jobs'
+          AND COLUMN_NAME = 'training_active_key'
+        """,
+        (db_name,),
+    )
+
+    if int(_scalar(cur.fetchone()) or 0) == 0:
+        cur.execute(
+            """
+            ALTER TABLE ai_jobs
+            ADD COLUMN training_active_key INT
+            GENERATED ALWAYS AS (
+                IF(kind = 'TRAINING'
+                   AND status IN ('PENDIENTE', 'EN_CURSO'),
+                   ai_model_id,
+                   NULL)
+            ) STORED
+            """
+        )
+
+    _ensure_index(
+        cur,
+        db_name,
+        "ai_jobs",
+        "uq_ai_jobs_one_training",
+        "(training_active_key)",
+        unique=True,
+    )
+
+    # --------------------------------------------------------
     # AUDITORÍA PERSISTENTE DE IA (no existe AuditEvent previo)
     # --------------------------------------------------------
     cur.execute(
@@ -1768,7 +1862,8 @@ def _fetch_ai_model_for_update(cur, ai_model_id: int) -> dict:
             garment_model_id,
             version,
             status,
-            active
+            active,
+            notes
         FROM garment_ai_models
         WHERE id = %s
         FOR UPDATE
@@ -1908,6 +2003,12 @@ def transition_ai_model_status(
         sets.append("validated_at = NOW()")
 
     elif new_raw == AI_MODEL_STATUS_ACTIVO:
+        if is_technically_invalidated(row.get("notes")):
+            raise AIDomainError(
+                "Esta versión está marcada NO VALIDADA / NO APTO PARA "
+                "ACTIVACIÓN. Entrene una versión nueva."
+            )
+
         # Si esta configuración ya tiene conflicto histórico de ACTIVE
         # (2+), no se activa ni se retira nada automáticamente.
         cur.execute(
@@ -1984,6 +2085,57 @@ def transition_ai_model_status(
         "garment_model_id": row["garment_model_id"],
         "version": row["version"],
         "status": new_raw,
+    }
+
+
+def annotate_technical_invalidation(
+    cur,
+    ai_model_id: int,
+    reason: str,
+    *,
+    actor_id: int | None = None,
+) -> dict:
+    """Marca una versión como NO VALIDADA / NO APTA PARA ACTIVACIÓN.
+
+    Usa los mecanismos de dominio existentes: la columna notes de
+    garment_ai_models y el registro de eventos. No cambia el estado
+    (no existe transición de invalidación técnica) y se niega a tocar
+    una versión que ya esté ACTIVO.
+    """
+    row = _fetch_ai_model_for_update(cur, ai_model_id)
+
+    if row["status"] == AI_MODEL_STATUS_ACTIVO:
+        raise AIDomainError(
+            "No se puede invalidar técnicamente una versión ACTIVO; "
+            "retírela primero."
+        )
+
+    detail = " ".join(str(reason or "").split())[:400]
+    notes = f"{AI_MODEL_TECHNICAL_INVALIDATION_PREFIX}: {detail}"
+
+    cur.execute(
+        "UPDATE garment_ai_models SET notes = %s WHERE id = %s",
+        (notes, int(ai_model_id)),
+    )
+
+    record_ai_event(
+        cur,
+        "TECHNICAL_INVALIDATION",
+        actor_id=actor_id,
+        ai_model_id=int(ai_model_id),
+        payload={
+            "notes": notes,
+            "previous_status": row["status"],
+            "version": row["version"],
+        },
+    )
+
+    return {
+        "id": int(ai_model_id),
+        "garment_model_id": row["garment_model_id"],
+        "version": row["version"],
+        "status": row["status"],
+        "notes": notes,
     }
 
 
@@ -2976,6 +3128,9 @@ def transition_ai_job_status(
     *,
     progress: float | None = None,
     error_message: str | None = None,
+    worker_id: str | None = None,
+    stage: str | None = None,
+    stage_label: str | None = None,
 ) -> dict:
     new_raw = str(new_status or "").strip().upper()
 
@@ -2996,11 +3151,16 @@ def transition_ai_job_status(
 
     validate_job_status_transition(job["status"], new_raw)
 
-    sets = ["status = %s"]
+    sets = ["status = %s", "updated_at = NOW()"]
     params = [new_raw]
 
     if new_raw == JOB_STATUS_EN_CURSO:
         sets.append("started_at = COALESCE(started_at, NOW())")
+        sets.append("heartbeat_at = NOW()")
+
+        if worker_id is not None:
+            sets.append("worker_id = %s")
+            params.append(str(worker_id)[:120])
 
     if new_raw in {
         JOB_STATUS_COMPLETADO,
@@ -3019,6 +3179,14 @@ def transition_ai_job_status(
 
         sets.append("progress = %s")
         params.append(value)
+
+    if stage is not None:
+        sets.append("stage = %s")
+        params.append(str(stage)[:60])
+
+    if stage_label is not None:
+        sets.append("stage_label = %s")
+        params.append(str(stage_label)[:160])
 
     if error_message is not None:
         sets.append("error_message = %s")
@@ -3083,3 +3251,256 @@ def record_ai_event(
         "capture_session_id": capture_session_id,
         "actor_id": actor_id,
     }
+
+# ============================================================
+# FASE 3A — COLA, PROGRESO Y RECUPERACIÓN DE JOBS DE ENTRENAMIENTO
+#
+# MySQL es la fuente de verdad. No existe cola en memoria: si Flask
+# o el worker se reinician, el job sigue existiendo en la tabla.
+# ============================================================
+
+JOB_ACTIVE_STATUSES = (JOB_STATUS_PENDIENTE, JOB_STATUS_EN_CURSO)
+
+JOB_ERROR_ORPHAN = (
+    "El worker se reinició durante el entrenamiento. "
+    "El trabajo se marcó como fallido; no se reanuda un proceso "
+    "parcial."
+)
+
+
+def claim_next_training_job(cur, worker_id: str) -> dict | None:
+    """Reclama el job TRAINING PENDIENTE más antiguo de forma atómica.
+
+    Debe ejecutarse dentro de una transacción abierta por el llamador.
+    ``FOR UPDATE SKIP LOCKED`` garantiza que dos workers jamás reclaman
+    el mismo job (doble entrenamiento).
+    """
+    worker = str(worker_id or "").strip()[:120] or "worker"
+
+    cur.execute(
+        """
+        SELECT id, ai_model_id, dataset_id, kind, status, progress
+        FROM ai_jobs
+        WHERE kind = %s AND status = %s
+        ORDER BY id ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+        """,
+        (JOB_KIND_TRAINING, JOB_STATUS_PENDIENTE),
+    )
+
+    row = cur.fetchone()
+
+    if row is None:
+        return None
+
+    job_id = int(row["id"])
+
+    transition_ai_job_status(
+        cur,
+        job_id,
+        JOB_STATUS_EN_CURSO,
+        progress=0,
+        worker_id=worker,
+        stage="INICIANDO",
+        stage_label="Iniciando entrenamiento",
+    )
+
+    claimed = dict(row)
+    claimed["status"] = JOB_STATUS_EN_CURSO
+    claimed["worker_id"] = worker
+
+    return claimed
+
+
+def update_job_progress(
+    cur,
+    job_id: int,
+    progress: float,
+    *,
+    stage: str | None = None,
+    stage_label: str | None = None,
+) -> dict:
+    """Actualiza el progreso real (etapas, no porcentajes inventados)."""
+    value = float(progress)
+
+    if not 0.0 <= value <= 100.0:
+        raise AIDomainError("progress debe estar entre 0 y 100.")
+
+    sets = ["progress = %s", "updated_at = NOW()", "heartbeat_at = NOW()"]
+    params = [value]
+
+    if stage is not None:
+        sets.append("stage = %s")
+        params.append(str(stage)[:60])
+
+    if stage_label is not None:
+        sets.append("stage_label = %s")
+        params.append(str(stage_label)[:160])
+
+    params.append(int(job_id))
+
+    cur.execute(
+        f"UPDATE ai_jobs SET {', '.join(sets)} WHERE id = %s",
+        tuple(params),
+    )
+
+    if cur.rowcount == 0:
+        raise AIDomainError(f"El job {job_id} no existe.")
+
+    return {
+        "id": int(job_id),
+        "progress": value,
+        "stage": stage,
+        "stage_label": stage_label,
+    }
+
+
+def heartbeat_job(cur, job_id: int, worker_id: str | None = None) -> None:
+    """Marca vida del worker sobre el job EN_CURSO."""
+    if worker_id is None:
+        cur.execute(
+            "UPDATE ai_jobs SET heartbeat_at = NOW(), updated_at = NOW() "
+            "WHERE id = %s",
+            (int(job_id),),
+        )
+    else:
+        cur.execute(
+            "UPDATE ai_jobs SET heartbeat_at = NOW(), updated_at = NOW(), "
+            "worker_id = %s WHERE id = %s",
+            (str(worker_id)[:120], int(job_id)),
+        )
+
+
+def get_active_training_job(cur, ai_model_id: int) -> dict | None:
+    """Job TRAINING PENDIENTE/EN_CURSO de una versión de IA (si existe)."""
+    cur.execute(
+        """
+        SELECT id, ai_model_id, dataset_id, kind, status, progress,
+               stage, stage_label, worker_id, created_at, started_at,
+               heartbeat_at, log_path, error_message
+        FROM ai_jobs
+        WHERE ai_model_id = %s AND kind = %s AND status IN (%s, %s)
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (
+            int(ai_model_id),
+            JOB_KIND_TRAINING,
+            JOB_STATUS_PENDIENTE,
+            JOB_STATUS_EN_CURSO,
+        ),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def get_latest_training_job_for_garment(
+    cur,
+    garment_model_id: int,
+) -> dict | None:
+    """Último job TRAINING (cualquier estado) del modelo de prenda."""
+    cur.execute(
+        """
+        SELECT j.id, j.ai_model_id, j.dataset_id, j.kind, j.status,
+               j.progress, j.stage, j.stage_label, j.worker_id,
+               j.created_at, j.started_at, j.finished_at, j.updated_at,
+               j.heartbeat_at, j.log_path, j.error_message,
+               m.version AS model_version, m.status AS model_status
+        FROM ai_jobs j
+        JOIN garment_ai_models m ON m.id = j.ai_model_id
+        WHERE m.garment_model_id = %s AND j.kind = %s
+        ORDER BY j.id DESC
+        LIMIT 1
+        """,
+        (int(garment_model_id), JOB_KIND_TRAINING),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def reclaim_orphaned_jobs(
+    cur,
+    *,
+    stale_seconds: int,
+    reason: str = JOB_ERROR_ORPHAN,
+) -> list[dict]:
+    """Marca como FALLIDO los jobs EN_CURSO huérfanos (worker caído).
+
+    Política documentada (FASE 3A): nunca se reanuda un entrenamiento
+    parcial. El job fallido conserva su log y el dataset intacto; el
+    reintento crea un job nuevo.
+    """
+    seconds = max(1, int(stale_seconds))
+
+    cur.execute(
+        """
+        SELECT id, ai_model_id, worker_id, heartbeat_at
+        FROM ai_jobs
+        WHERE kind = %s
+          AND status = %s
+          AND (
+                heartbeat_at IS NULL
+                OR heartbeat_at < NOW() - INTERVAL %s SECOND
+          )
+        FOR UPDATE
+        """,
+        (JOB_KIND_TRAINING, JOB_STATUS_EN_CURSO, seconds),
+    )
+
+    stale = [dict(row) for row in cur.fetchall()]
+
+    for job in stale:
+        transition_ai_job_status(
+            cur,
+            int(job["id"]),
+            JOB_STATUS_FALLIDO,
+            error_message=str(reason)[:500],
+            stage="FALLIDO",
+            stage_label="Entrenamiento interrumpido",
+        )
+
+        ai_model_id = job.get("ai_model_id")
+
+        if ai_model_id:
+            cur.execute(
+                "SELECT status FROM garment_ai_models WHERE id = %s "
+                "FOR UPDATE",
+                (int(ai_model_id),),
+            )
+            model = cur.fetchone()
+
+            if model and model.get("status") == AI_MODEL_STATUS_ENTRENANDO:
+                try:
+                    transition_ai_model_status(
+                        cur,
+                        int(ai_model_id),
+                        AI_MODEL_STATUS_FALLIDO,
+                        None,
+                        notes=str(reason)[:500],
+                    )
+                except AIDomainError:
+                    # Estado ya resuelto por otro proceso: el job fallido
+                    # es lo que importa para no reanudar a ciegas.
+                    pass
+
+    return stale
+
+
+def count_open_training_jobs(cur, ai_model_id: int) -> int:
+    """Cuántos jobs TRAINING activos existen para esa versión (0/1)."""
+    cur.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM ai_jobs
+        WHERE ai_model_id = %s AND kind = %s AND status IN (%s, %s)
+        """,
+        (
+            int(ai_model_id),
+            JOB_KIND_TRAINING,
+            JOB_STATUS_PENDIENTE,
+            JOB_STATUS_EN_CURSO,
+        ),
+    )
+    row = cur.fetchone()
+    return int(_scalar(row) or 0)

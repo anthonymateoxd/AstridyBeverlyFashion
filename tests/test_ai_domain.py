@@ -559,7 +559,18 @@ class PersistenceTests(unittest.TestCase):
         for name in AI_TRIGGER_NAMES:
             cur.execute(f"DROP TRIGGER IF EXISTS {name}")
         cur.execute(
-            "DELETE FROM ai_events WHERE 1=1"
+            "DELETE FROM ai_events "
+            "WHERE ai_model_id IN ("
+            "  SELECT id FROM garment_ai_models "
+            "  WHERE garment_model_id = %s"
+            ") OR dataset_id IN ("
+            "  SELECT id FROM ai_datasets "
+            "  WHERE garment_model_id = %s"
+            ") OR capture_session_id IN ("
+            "  SELECT id FROM ai_capture_sessions "
+            "  WHERE garment_model_id = %s"
+            ")",
+            (model_id, model_id, model_id),
         )
         cur.execute(
             """
@@ -570,7 +581,15 @@ class PersistenceTests(unittest.TestCase):
             (model_id,),
         )
         cur.execute(
-            "DELETE FROM ai_jobs WHERE 1=1"
+            "DELETE FROM ai_jobs "
+            "WHERE ai_model_id IN ("
+            "  SELECT id FROM garment_ai_models "
+            "  WHERE garment_model_id = %s"
+            ") OR dataset_id IN ("
+            "  SELECT id FROM ai_datasets "
+            "  WHERE garment_model_id = %s"
+            ")",
+            (model_id, model_id),
         )
         cur.execute(
             "DELETE FROM ai_datasets WHERE garment_model_id = %s",

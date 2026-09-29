@@ -58,6 +58,7 @@ from ai_domain import (
     get_ai_artifacts_root,
 )
 import ai_capture
+import patchcore_preprocess
 from ai_capture import (
     GUIDED_MESSAGES,
     GUIDED_STATE_COLORS,
@@ -73,6 +74,12 @@ from ai_capture import (
     reset_presence_candidate,
     set_ai_capture_mode,
     set_production_probe,
+)
+from ai_training import (
+    cancel_pending_training_job,
+    humanize_training_error,
+    request_training_job,
+    training_status_payload,
 )
 
 
@@ -3668,257 +3675,20 @@ def load_yolo_model():
 
 def create_garment_mask(image):
     """
-    Obtiene la silueta completa de la blusa rosa talla S.
+    Obtiene la silueta completa de la prenda (delegado compartido).
 
-    El color rosa se utiliza solamente como semilla para encontrar
-    la prenda. Después se rellena su contorno exterior para conservar
-    cualquier alteración visual situada sobre la tela, aunque tenga
-    un color diferente.
+    La implementacion vive en patchcore_preprocess para que el
+    entrenador de FASE 3A use exactamente el mismo preprocesamiento
+    que la inferencia productiva.
     """
-    if image is None:
-        raise ValueError(
-            "No se recibió una imagen válida."
-        )
-
-    height, width = image.shape[:2]
-
-    roi_x1, roi_y1, roi_x2, roi_y2 = (
-        get_roi_bounds(image)
+    return patchcore_preprocess.create_garment_mask(
+        image,
+        get_roi_bounds(image),
+        cv2_mod=cv2,
+        np_mod=np,
     )
 
-    roi = image[
-        roi_y1:roi_y2,
-        roi_x1:roi_x2,
-    ]
 
-    if roi is None or roi.size == 0:
-        raise ValueError(
-            "El ROI de inspección está vacío."
-        )
-
-    roi_height, roi_width = roi.shape[:2]
-    roi_area = float(
-        roi_height * roi_width
-    )
-
-    hsv = cv2.cvtColor(
-        roi,
-        cv2.COLOR_BGR2HSV,
-    )
-
-    lab = cv2.cvtColor(
-        roi,
-        cv2.COLOR_BGR2LAB,
-    )
-
-    saturation = hsv[:, :, 1]
-    lab_a = lab[:, :, 1]
-
-    # Semilla: tela rosa.
-    seed = np.where(
-        (saturation >= 30)
-        & (lab_a >= 136),
-        255,
-        0,
-    ).astype(np.uint8)
-
-    # Cerrar discontinuidades producidas por manchas,
-    # reflejos, costuras y pequeños huecos en la tela.
-    seed = cv2.morphologyEx(
-        seed,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (31, 31),
-        ),
-        iterations=1,
-    )
-
-    seed = cv2.morphologyEx(
-        seed,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (15, 15),
-        ),
-        iterations=1,
-    )
-
-    seed = cv2.morphologyEx(
-        seed,
-        cv2.MORPH_OPEN,
-        np.ones(
-            (5, 5),
-            dtype=np.uint8,
-        ),
-        iterations=1,
-    )
-
-    count, labels, stats, centroids = (
-        cv2.connectedComponentsWithStats(
-            seed,
-            connectivity=8,
-        )
-    )
-
-    if count <= 1:
-        return np.zeros(
-            (height, width),
-            dtype=np.uint8,
-        )
-
-    candidates = []
-
-    for label in range(1, count):
-        area = int(
-            stats[
-                label,
-                cv2.CC_STAT_AREA,
-            ]
-        )
-
-        if area < roi_area * 0.04:
-            continue
-
-        cx, cy = centroids[label]
-
-        dx = abs(
-            cx - roi_width / 2.0
-        ) / max(
-            1.0,
-            roi_width,
-        )
-
-        dy = abs(
-            cy - roi_height / 2.0
-        ) / max(
-            1.0,
-            roi_height,
-        )
-
-        score = (
-            area / roi_area
-            - dx * 0.20
-            - dy * 0.10
-        )
-
-        candidates.append(
-            (
-                score,
-                label,
-            )
-        )
-
-    if not candidates:
-        return np.zeros(
-            (height, width),
-            dtype=np.uint8,
-        )
-
-    candidates.sort(
-        key=lambda item: item[0],
-        reverse=True,
-    )
-
-    selected_label = (
-        candidates[0][1]
-    )
-
-    component = np.where(
-        labels == selected_label,
-        255,
-        0,
-    ).astype(np.uint8)
-
-    # Recuperar el CONTORNO EXTERIOR de la prenda.
-    #
-    # Es la diferencia fundamental respecto del algoritmo anterior:
-    # los huecos internos de otro color ya no desaparecen.
-    contours, _ = cv2.findContours(
-        component,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE,
-    )
-
-    if not contours:
-        return np.zeros(
-            (height, width),
-            dtype=np.uint8,
-        )
-
-    garment_contour = max(
-        contours,
-        key=cv2.contourArea,
-    )
-
-    garment_roi = np.zeros(
-        (roi_height, roi_width),
-        dtype=np.uint8,
-    )
-
-    cv2.drawContours(
-        garment_roi,
-        [garment_contour],
-        -1,
-        255,
-        thickness=cv2.FILLED,
-    )
-
-    # Ligero cierre del borde exterior sin convertirlo
-    # en un rectángulo ni en un convex hull.
-    garment_roi = cv2.morphologyEx(
-        garment_roi,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (11, 11),
-        ),
-        iterations=1,
-    )
-
-    garment_roi = cv2.dilate(
-        garment_roi,
-        np.ones(
-            (3, 3),
-            dtype=np.uint8,
-        ),
-        iterations=1,
-    )
-
-    coverage = (
-        cv2.countNonZero(
-            garment_roi
-        )
-        / roi_area
-    )
-
-    print(
-        "[SEGMENTACION] "
-        f"Cobertura silueta: "
-        f"{coverage * 100:.2f}%"
-    )
-
-    if coverage < 0.20:
-        raise RuntimeError(
-            "La silueta detectada es demasiado pequeña."
-        )
-
-    if coverage > 0.75:
-        raise RuntimeError(
-            "La silueta detectada es demasiado grande."
-        )
-
-    garment_mask = np.zeros(
-        (height, width),
-        dtype=np.uint8,
-    )
-
-    garment_mask[
-        roi_y1:roi_y2,
-        roi_x1:roi_x2,
-    ] = garment_roi
-
-    return garment_mask
 
 
 
@@ -5237,36 +5007,31 @@ def detect_defect(
             if cv2.countNonZero(
                 garment_mask_full
             ) == 0:
-                raise RuntimeError(
-                    "No se pudo separar la blusa del fondo."
+                # La mascara de prenda no describio la prenda. El
+                # fallback al ROI completo (compartido con el
+                # entrenador) vive en build_patchcore_regions: asi
+                # entrenamiento e inferencia reciben la misma imagen.
+                print(
+                    "[SEGMENTACION] Mascara de prenda vacia: "
+                    "se usara el ROI completo."
                 )
 
             roi_x1, roi_y1, roi_x2, roi_y2 = (
                 get_roi_bounds(image)
             )
 
-            roi_image = image[
-                roi_y1:roi_y2,
-                roi_x1:roi_x2
-            ]
-
-            roi_garment_mask = garment_mask_full[
-                roi_y1:roi_y2,
-                roi_x1:roi_x2
-            ]
-
-            # Fondo blanco uniforme.
-            # PatchCore recibe ?nicamente la blusa.
-            patchcore_input = np.full_like(
-                roi_image,
-                255,
+            # Fondo blanco uniforme sobre el ROI.
+            # PatchCore recibe únicamente la prenda.
+            # Misma implementación que usa el entrenador de FASE 3A
+            # (patchcore_preprocess) para evitar training-serving skew.
+            roi_image, roi_garment_mask, patchcore_input = (
+                patchcore_preprocess.build_patchcore_regions(
+                    image,
+                    garment_mask_full,
+                    (roi_x1, roi_y1, roi_x2, roi_y2),
+                    cv2_mod=cv2,
+                )
             )
-
-            patchcore_input[
-                roi_garment_mask > 0
-            ] = roi_image[
-                roi_garment_mask > 0
-            ]
 
             roi_name = (
                 f"_patchcore_roi_"
@@ -16066,6 +15831,21 @@ def garment_model_detail(model_id):
         )
     )
 
+    ai_training_state = None
+
+    if model.get("status") == "APROBADO":
+        try:
+            ai_training_state = _ai_training_status_payload(
+                model_id,
+                allowed=can_prepare_ai,
+            )
+        except Exception:
+            app.logger.exception(
+                "No se pudo leer el estado del entrenamiento IA "
+                f"(garment_model_id={model_id})."
+            )
+            ai_training_state = None
+
     return render_template(
         "garment_model_detail.html",
         model=model,
@@ -16077,6 +15857,7 @@ def garment_model_detail(model_id):
         can_prepare_ai=can_prepare_ai,
         ai_capture=ai_capture_state,
         ai_capture_visible=ai_capture_visible,
+        ai_training=ai_training_state,
     )
 
 
@@ -18067,6 +17848,25 @@ def _ai_capture_enrich(payload, cur, allowed=None, config=None):
 
     payload["guide"] = _ai_guided_payload(garment_id)
 
+    # Estado del entrenamiento (FASE 3A): la ficha y la estación
+    # consultan el mismo payload sin duplicar consultas en el front.
+    try:
+        payload["training"] = (
+            training_status_payload(
+                cur,
+                garment_id,
+                allowed=allowed,
+            )
+            if garment_id
+            else None
+        )
+    except Exception:
+        app.logger.exception(
+            "No se pudo leer el estado del entrenamiento IA "
+            f"(garment_model_id={garment_id})."
+        )
+        payload["training"] = None
+
     return payload
 
 
@@ -18523,6 +18323,299 @@ def _ai_capture_finish(action):
         "message": message,
         "idempotent": bool(already),
         "session": status_payload,
+    })
+
+
+def _ai_training_status_payload(garment_model_id, allowed=None):
+    """Estado del entrenamiento listo para JSON (con saneado)."""
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        payload = training_status_payload(
+            cur,
+            garment_model_id,
+            allowed=allowed,
+        )
+    finally:
+        cur.close()
+        conn.close()
+
+    return _json_sanitize(payload)
+
+
+def _ai_training_guard(garment_model_id):
+    """Valida modelo + permisos para entrenar. Devuelve (modelo, error)."""
+    model = get_garment_model(garment_model_id)
+
+    if not model:
+        return None, (
+            jsonify({
+                "ok": False,
+                "error": "El modelo de prenda no existe.",
+            }),
+            404,
+        )
+
+    if not can_manage_garment_model(model):
+        return None, (
+            jsonify({
+                "ok": False,
+                "error": (
+                    "No tiene permisos para entrenar este modelo."
+                ),
+            }),
+            403,
+        )
+
+    if (
+        model.get("status") != "APROBADO"
+        or int(model.get("active") or 0) != 1
+    ):
+        return None, (
+            jsonify({
+                "ok": False,
+                "error": (
+                    "El entrenamiento solo puede iniciarse con el "
+                    "modelo aprobado y activo."
+                ),
+            }),
+            409,
+        )
+
+    return model, None
+
+
+@app.route("/api/ai/training/start", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_training_start():
+    body = request.get_json(silent=True) or {}
+    raw_model = body.get("garment_model_id")
+
+    try:
+        garment_model_id = int(raw_model)
+    except (TypeError, ValueError):
+        return jsonify({
+            "ok": False,
+            "error": "garment_model_id inválido.",
+        }), 400
+
+    if garment_model_id <= 0:
+        return jsonify({
+            "ok": False,
+            "error": "garment_model_id debe ser positivo.",
+        }), 400
+
+    model, guard_error = _ai_training_guard(garment_model_id)
+
+    if guard_error is not None:
+        return guard_error
+
+    actor_id = session.get("user_id")
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        created = request_training_job(
+            cur,
+            garment_model_id=garment_model_id,
+            actor_id=actor_id,
+        )
+        job_id = int(created["job"]["id"])
+        payload = training_status_payload(
+            cur,
+            garment_model_id,
+            allowed=True,
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": humanize_training_error(error),
+            "training": _ai_training_status_payload(
+                garment_model_id,
+                allowed=True,
+            ),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo solicitar el entrenamiento IA "
+            f"(garment_model_id={garment_model_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo iniciar el entrenamiento. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": (
+            "Entrenamiento encolado. El sistema lo ejecutará en "
+            "segundo plano."
+        ),
+        "job_id": job_id,
+        "dataset_id": int(created["dataset"]["id"]),
+        "ai_model_id": int(created["ai_model"]["id"]),
+        "training": _json_sanitize(payload),
+    }), 201
+
+
+@app.route("/api/ai/training/cancel", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_training_cancel():
+    body = request.get_json(silent=True) or {}
+    raw_job = body.get("job_id")
+
+    try:
+        job_id = int(raw_job)
+    except (TypeError, ValueError):
+        return jsonify({
+            "ok": False,
+            "error": "job_id inválido.",
+        }), 400
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute(
+            """
+            SELECT j.id, j.status, m.garment_model_id
+            FROM ai_jobs j
+            JOIN garment_ai_models m ON m.id = j.ai_model_id
+            WHERE j.id = %s
+            """,
+            (job_id,),
+        )
+        job = cur.fetchone()
+
+        if job is None:
+            conn.rollback()
+            return jsonify({
+                "ok": False,
+                "error": "El trabajo de entrenamiento no existe.",
+            }), 404
+
+        garment_model_id = int(job["garment_model_id"])
+        model = get_garment_model(garment_model_id)
+
+        if model is None or not can_manage_garment_model(model):
+            conn.rollback()
+            return jsonify({
+                "ok": False,
+                "error": (
+                    "No tiene permisos para cancelar este entrenamiento."
+                ),
+            }), 403
+
+        result = cancel_pending_training_job(
+            cur,
+            job_id=job_id,
+            actor_id=session.get("user_id"),
+        )
+        payload = training_status_payload(
+            cur,
+            garment_model_id,
+            allowed=True,
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": humanize_training_error(error),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            f"No se pudo cancelar el entrenamiento IA (job_id={job_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo cancelar el entrenamiento. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": "Entrenamiento cancelado.",
+        "job_id": int(result["id"]),
+        "training": _json_sanitize(payload),
+    })
+
+
+@app.route("/api/ai/training/status")
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER, ROLE_QUALITY_MANAGER)
+def ai_training_status():
+    raw_model = request.args.get("garment_model_id")
+
+    try:
+        garment_model_id = int(raw_model)
+    except (TypeError, ValueError):
+        return jsonify({
+            "ok": False,
+            "error": "garment_model_id inválido.",
+        }), 400
+
+    if garment_model_id <= 0:
+        return jsonify({
+            "ok": False,
+            "error": "garment_model_id debe ser positivo.",
+        }), 400
+
+    model = get_garment_model(garment_model_id)
+
+    if not model:
+        return jsonify({
+            "ok": False,
+            "error": "El modelo de prenda no existe.",
+        }), 404
+
+    allowed = can_manage_garment_model(model) and model.get(
+        "status"
+    ) == "APROBADO"
+
+    try:
+        payload = _ai_training_status_payload(
+            garment_model_id,
+            allowed=allowed,
+        )
+    except Exception:
+        app.logger.exception(
+            "No se pudo leer el estado del entrenamiento IA "
+            f"(garment_model_id={garment_model_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo consultar el entrenamiento. "
+                "Intente de nuevo."
+            ),
+        }), 500
+
+    return jsonify({
+        "ok": True,
+        "training": payload,
     })
 
 

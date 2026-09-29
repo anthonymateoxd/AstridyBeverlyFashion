@@ -840,6 +840,41 @@
   font-weight: 700;
 }
 
+/* Panel de entrenamiento (FASE 3A) */
+.ai-train-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  margin-top: 16px;
+  border: 1px solid #e0e8f2;
+  border-radius: 14px;
+  background: #f9fbfe;
+}
+
+.ai-train-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+}
+
+.ai-train-meta > div {
+  display: grid;
+  gap: 4px;
+}
+
+.ai-train-meta .detail-value {
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.ai-state-NO_DISPONIBLE { background: #edf1f6; color: #67758d; }
+.ai-state-DISPONIBLE { background: #e5f7ed; color: #178553; }
+.ai-state-ENTRENANDO { background: #e7f4fc; color: #10628f; }
+.ai-state-ENTRENADO { background: #e9edfb; color: #2d47a0; }
+.ai-state-FALLIDO { background: #fbe8e8; color: #963737; }
+
 /* Modal propio: nunca alert() del navegador */
 .ai-modal-backdrop {
   position: fixed;
@@ -1056,6 +1091,10 @@
         <span class="detail-badge detail-badge-success">
           {{ model.ai_model_type }} {{ model.ai_version }} · Lista
         </span>
+      {% elif ai_training and ai_training.ui_status == 'ENTRENADO' %}
+        <span class="detail-badge detail-badge-warning">
+          PENDIENTE DE VALIDACIÓN
+        </span>
       {% else %}
         <span class="detail-badge detail-badge-warning">
           Preparación de IA pendiente
@@ -1239,6 +1278,21 @@
     ></div>
     {% endif %}
 
+    {% if can_prepare_ai and ai_training %}
+    <section
+      class="ai-train-panel"
+      id="aiTrainingPanel"
+      aria-live="polite"
+    >
+      <div class="ai-capture-top">
+        <span class="ai-state-badge ai-state-{{ ai_training.ui_status }}">
+          {{ ai_training.ui_label }}
+        </span>
+      </div>
+      <p class="ai-muted-note">Cargando estado del entrenamiento…</p>
+    </section>
+    {% endif %}
+
     {% if not ai_versions and not ai_in_progress %}
       <p class="detail-muted">Este modelo todavía no tiene versiones de IA registradas.</p>
     {% elif ai_in_progress %}
@@ -1256,6 +1310,10 @@
             <span class="detail-badge detail-badge-success">Activa</span>
           {% elif ai.status == 'PREPARACION' %}
             <span class="detail-badge detail-badge-warning">En preparación</span>
+          {% elif ai.status == 'ENTRENANDO' %}
+            <span class="detail-badge detail-badge-warning">En entrenamiento</span>
+          {% elif ai.status in ['ENTRENADO', 'VALIDACION', 'VALIDADO'] %}
+            <span class="detail-badge detail-badge-warning">Pendiente de validación</span>
           {% else %}
             <span class="detail-badge detail-badge-neutral">{{ ai.status }}</span>
           {% endif %}
@@ -1265,11 +1323,15 @@
           <div>
             <span class="detail-label">Estado</span>
             <span class="detail-value">
-              {% if ai.status == 'PREPARACION' %}
+              {% if loop.first and ai_training and ai_training.ui_status == 'ENTRENADO' %}
+                {{ ai.status }} · {{ ai_training.ui_label }}
+              {% elif ai.status == 'PREPARACION' %}
                 Pendiente de entrenamiento
               {% elif ai.status == 'ACTIVO' %}
                 Lista para inspección
-              {% elif ai.status in ['ENTRENANDO', 'VALIDACION'] %}
+              {% elif ai.status == 'ENTRENANDO' %}
+                En proceso
+              {% elif ai.status == 'VALIDACION' %}
                 En proceso
               {% else %}
                 {{ ai.status }}
@@ -1281,6 +1343,30 @@
             <span class="detail-label">Imágenes normales</span>
             <span class="detail-value">{{ ai.normal_images_count if ai.normal_images_count is not none else 'Sin registro' }}</span>
           </div>
+
+          {% if loop.first and ai_training %}
+          <div>
+            <span class="detail-label">Dataset</span>
+            <span class="detail-value">{{ ai_training.image_count }} imágenes</span>
+          </div>
+
+          <div>
+            <span class="detail-label">Entrenamiento</span>
+            <span class="detail-value">
+              {% if ai_training.ui_status == 'ENTRENADO' %}
+                Completado
+              {% elif ai_training.ui_status == 'ENTRENANDO' %}
+                En proceso
+              {% elif ai_training.ui_status == 'FALLIDO' %}
+                Fallido
+              {% elif ai_training.ui_status == 'DISPONIBLE' %}
+                Pendiente de entrenamiento
+              {% else %}
+                No disponible
+              {% endif %}
+            </span>
+          </div>
+          {% endif %}
 
           <div>
             <span class="detail-label">Responsable</span>
@@ -2013,6 +2099,425 @@
           "La sesión actual se cerrará y no se tomarán más imágenes. " +
           "¿Desea continuar?",
         confirmLabel: "Sí, cancelar sesión",
+        danger: true,
+        onConfirm: doCancel
+      });
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      window.clearTimeout(pollTimer);
+      refresh();
+    }
+  });
+
+  render();
+  schedulePoll();
+})();
+</script>
+{% endif %}
+
+{% if can_prepare_ai and ai_training %}
+<script>
+  window.ASTRID_AI_TRAINING = {{ {
+    'modelId': model.id,
+    'urls': {
+      'start': url_for('ai_training_start'),
+      'cancel': url_for('ai_training_cancel'),
+      'status': url_for('ai_training_status')
+    },
+    'state': ai_training
+  }|tojson }};
+</script>
+
+<script>
+(() => {
+  const config = window.ASTRID_AI_TRAINING;
+  const panel = document.getElementById("aiTrainingPanel");
+  if (!config || !panel) return;
+
+  const modal = document.getElementById("aiCaptureModal");
+  const modalTitle = document.getElementById("aiModalTitle");
+  const modalBody = document.getElementById("aiModalBody");
+  const modalConfirm = document.getElementById("aiModalConfirm");
+  const modalCancel = document.getElementById("aiModalCancel");
+
+  let state = Object.assign({}, config.state || {});
+  let busy = false;
+  let errorMessage = "";
+  let modalConfirmFn = null;
+  let pollTimer = null;
+
+  const esc = (value) =>
+    String(value === null || value === undefined ? "" : value).replace(
+      /[&<>"']/g,
+      (character) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;"
+        })[character]
+    );
+
+  function elapsedLabel(seconds) {
+    const total = Math.max(0, Number(seconds) || 0);
+    const minutes = Math.floor(total / 60);
+    const rest = Math.floor(total % 60);
+    return minutes > 0
+      ? `${minutes} min ${rest} s`
+      : `${rest} s`;
+  }
+
+  function metaHtml() {
+    const items = [
+      ["Imágenes del dataset", `${Number(state.image_count || 0)}`],
+      ["Mínimo requerido", `${Number(state.min_count || 0)}`],
+      ["Imágenes aceptadas", `${Number(state.accepted_count || 0)}`]
+    ];
+
+    if (state.version) {
+      items.push(["Versión", String(state.version)]);
+    }
+
+    if (state.elapsed_seconds !== null && state.elapsed_seconds !== undefined) {
+      items.push(["Tiempo transcurrido", elapsedLabel(state.elapsed_seconds)]);
+    }
+
+    return `
+      <div class="ai-train-meta">
+        ${items
+          .map(
+            ([label, value]) => `
+          <div>
+            <span class="detail-label">${esc(label)}</span>
+            <span class="detail-value">${esc(value)}</span>
+          </div>
+        `
+          )
+          .join("")}
+      </div>
+    `;
+  }
+
+  function progressHtml() {
+    const percent = Math.max(0, Math.min(100, Number(state.progress) || 0));
+    const label = state.stage_label || state.stage || "Entrenando";
+
+    return `
+      <div class="ai-progress-block">
+        <div class="ai-progress-head">
+          <span>${esc(label)}</span>
+          <span>${percent.toFixed(0)}%</span>
+        </div>
+        <div
+          class="ai-progress-track"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="${percent.toFixed(0)}"
+        >
+          <div class="ai-progress-fill" style="width:${percent}%"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  function actionsHtml() {
+    if (busy) {
+      return `<div class="ai-actions"><button type="button" class="detail-button primary is-loading" disabled>Procesando…</button></div>`;
+    }
+
+    const actions = [];
+
+    if (state.can_train) {
+      actions.push(`
+        <button type="button" class="detail-button primary" data-action="train">
+          ENTRENAR IA
+        </button>
+      `);
+    }
+
+    if (state.ui_status === "ENTRENADO") {
+      actions.push(`
+        <button type="button" class="detail-button" disabled>
+          Continuar a validación
+        </button>
+      `);
+    }
+
+    if (state.ui_status === "FALLIDO") {
+      actions.push(`
+        <button type="button" class="detail-button primary" data-action="train">
+          REINTENTAR ENTRENAMIENTO
+        </button>
+      `);
+    }
+
+    if (state.can_cancel && state.job_id) {
+      actions.push(`
+        <button type="button" class="detail-button danger" data-action="cancel">
+          CANCELAR ENTRENAMIENTO
+        </button>
+      `);
+    }
+
+    if (!actions.length) {
+      return "";
+    }
+
+    return `<div class="ai-actions">${actions.join("")}</div>`;
+  }
+
+  function bodyHtml() {
+    const html = [];
+
+    if (errorMessage) {
+      html.push(`<div class="ai-error" role="alert">${esc(errorMessage)}</div>`);
+    }
+
+    if (state.ui_status === "NO_DISPONIBLE" && state.blocked_reason) {
+      html.push(`<div class="ai-capture-notice warn">${esc(state.blocked_reason)}</div>`);
+      html.push(metaHtml());
+      return html.join("");
+    }
+
+    if (state.ui_status === "ENTRENANDO") {
+      html.push(
+        `<div class="ai-capture-notice">El entrenamiento se ejecuta en segundo plano. Puede salir de esta pantalla; el estado quedará guardado.</div>`
+      );
+      html.push(progressHtml());
+    } else if (state.ui_status === "ENTRENADO") {
+      html.push(
+        `<div class="ai-summary">
+          <strong>Entrenamiento completado</strong>
+          <span>La versión quedó registrada y está pendiente de validación antes de usarse en inspección.</span>
+        </div>`
+      );
+    } else if (state.ui_status === "FALLIDO") {
+      html.push(
+        `<div class="ai-error" role="alert">${esc(
+          state.error_human ||
+            "El entrenamiento no pudo completarse."
+        )}</div>`
+      );
+      html.push(
+        `<p class="ai-muted-note">Las imágenes capturadas se conservan: puede reintentar cuando lo desee.</p>`
+      );
+    } else if (state.ui_status === "DISPONIBLE") {
+      html.push(
+        `<div class="ai-capture-notice">Dataset listo. Al iniciar, el sistema prepara las imágenes y entrena el modelo en segundo plano.</div>`
+      );
+    }
+
+    html.push(metaHtml());
+    html.push(actionsHtml());
+
+    return html.join("");
+  }
+
+  function render() {
+    panel.innerHTML = `
+      <div class="ai-capture-top">
+        <span class="ai-state-badge ai-state-${esc(state.ui_status)}">
+          ${esc(state.ui_label || state.ui_status)}
+        </span>
+        ${
+          state.job_status
+            ? `<span class="ai-train-note">Estado del trabajo: ${esc(state.job_status)}</span>`
+            : ""
+        }
+      </div>
+      ${bodyHtml()}
+    `;
+  }
+
+  function pollDelay() {
+    if (document.hidden) return 20000;
+    return state.ui_status === "ENTRENANDO" ? 3000 : 15000;
+  }
+
+  function schedulePoll() {
+    window.clearTimeout(pollTimer);
+    pollTimer = window.setTimeout(refresh, pollDelay());
+  }
+
+  async function refresh() {
+    try {
+      const url =
+        config.urls.status +
+        "?garment_model_id=" +
+        encodeURIComponent(config.modelId);
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        credentials: "same-origin"
+      });
+      const data = await response.json();
+
+      if (data && data.ok && data.training) {
+        const previousStatus = state.ui_status;
+        state = Object.assign({}, data.training);
+        errorMessage = "";
+
+        // El HTML del encabezado y de la lista de versiones se pinta en el
+        // servidor: al terminar el entrenamiento se recarga una vez para
+        // que toda la ficha muestre el mismo estado.
+        const finished =
+          previousStatus === "ENTRENANDO" &&
+          (state.ui_status === "ENTRENADO" ||
+            state.ui_status === "FALLIDO");
+
+        if (finished) {
+          const reloadKey =
+            "astrid_ai_reloaded_" +
+            config.modelId +
+            "_" +
+            (state.model_id || "");
+          if (!window.sessionStorage.getItem(reloadKey)) {
+            window.sessionStorage.setItem(reloadKey, "1");
+            window.location.reload();
+            return;
+          }
+        }
+      } else if (data && data.error) {
+        errorMessage = data.error;
+      }
+    } catch (error) {
+      // Conexión intermitente: se reintenta en el siguiente ciclo.
+    }
+
+    render();
+    schedulePoll();
+  }
+
+  async function post(url, payload) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      body: JSON.stringify(payload || {})
+    });
+
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (error) {
+      data = null;
+    }
+
+    if (!response.ok || !data || data.ok !== true) {
+      throw new Error(
+        (data && (data.error || data.message)) ||
+          "No se pudo completar la operación."
+      );
+    }
+
+    return data;
+  }
+
+  async function runAction(request) {
+    if (busy) return;
+    busy = true;
+    errorMessage = "";
+    render();
+
+    try {
+      const data = await request();
+      if (data.training) {
+        state = Object.assign({}, data.training);
+      }
+    } catch (error) {
+      errorMessage = error.message || "No se pudo completar la operación.";
+    } finally {
+      busy = false;
+      render();
+      await refresh();
+    }
+  }
+
+  const doStart = () =>
+    runAction(() =>
+      post(config.urls.start, { garment_model_id: config.modelId })
+    );
+
+  const doCancel = () =>
+    runAction(() =>
+      post(config.urls.cancel, { job_id: state.job_id })
+    );
+
+  function openModal(options) {
+    if (!modal) {
+      if (typeof options.onConfirm === "function") options.onConfirm();
+      return;
+    }
+    modalTitle.textContent = options.title;
+    modalBody.textContent = options.body;
+    modalConfirm.textContent = options.confirmLabel;
+    modalConfirm.className =
+      "detail-button " + (options.danger ? "danger" : "primary");
+    modalConfirmFn = options.onConfirm;
+    modal.hidden = false;
+    modalConfirm.focus();
+  }
+
+  function closeModal() {
+    if (!modal) return;
+    modal.hidden = true;
+    modalConfirmFn = null;
+  }
+
+  if (modalConfirm) {
+    modalConfirm.addEventListener("click", () => {
+      const fn = modalConfirmFn;
+      closeModal();
+      if (typeof fn === "function") fn();
+    });
+  }
+
+  if (modalCancel) {
+    modalCancel.addEventListener("click", closeModal);
+  }
+
+  if (modal) {
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) closeModal();
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && modal && !modal.hidden) {
+      closeModal();
+    }
+  });
+
+  panel.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-action]");
+    if (!trigger) return;
+
+    const action = trigger.getAttribute("data-action");
+
+    if (action === "train") {
+      openModal({
+        title: "Entrenar modelo de IA",
+        body:
+          "Se prepararán las imágenes aceptadas y el modelo se " +
+          "entrenará en segundo plano. No podrá iniciar otro " +
+          "entrenamiento mientras este termine. ¿Desea continuar?",
+        confirmLabel: "Iniciar entrenamiento",
+        onConfirm: doStart
+      });
+    } else if (action === "cancel") {
+      openModal({
+        title: "Cancelar entrenamiento",
+        body:
+          "El entrenamiento aún no comenzó y se cancelará. Las " +
+          "imágenes capturadas se conservan. ¿Desea continuar?",
+        confirmLabel: "Sí, cancelar",
         danger: true,
         onConfirm: doCancel
       });

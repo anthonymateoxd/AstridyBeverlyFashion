@@ -80,5 +80,47 @@ services:
       mysql:
         condition: service_healthy
 
+  # FASE 3A: worker asíncrono de entrenamiento PatchCore.
+  # Proceso separado de la app: nunca entrena dentro de una petición
+  # HTTP y jamás recibe PATCHCORE_CKPT (inferencia productiva intacta).
+  ai-worker:
+    build: .
+    container_name: astrid_ai_worker
+    restart: unless-stopped
+    command: python ai_worker.py
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: '3306'
+      MYSQL_USER: '${MYSQL_USER}'
+      MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
+      MYSQL_DATABASE: '${MYSQL_DATABASE}'
+
+      ROI_X1: '${ROI_X1}'
+      ROI_Y1: '${ROI_Y1}'
+      ROI_X2: '${ROI_X2}'
+      ROI_Y2: '${ROI_Y2}'
+
+      AI_ARTIFACTS_ROOT: '${AI_ARTIFACTS_ROOT:-/app/ai_artifacts}'
+      AI_WORKER_POLL_SECONDS: '${AI_WORKER_POLL_SECONDS:-3}'
+      AI_WORKER_ORPHAN_SECONDS: '${AI_WORKER_ORPHAN_SECONDS:-900}'
+      AI_WORKER_HEARTBEAT_SECONDS: '${AI_WORKER_HEARTBEAT_SECONDS:-15}'
+      AI_WORKER_ID: '${AI_WORKER_ID:-worker-1}'
+
+      # Entrenamiento: input_size=256 = tamaño que la inferencia
+      # productiva aplica hoy (Resize 256). Cambiar solo con análisis.
+      PATCHCORE_INPUT_SIZE: '${PATCHCORE_INPUT_SIZE:-256}'
+      PATCHCORE_BACKBONE: '${PATCHCORE_BACKBONE:-wide_resnet50_2}'
+      PATCHCORE_CORESET_RATIO: '${PATCHCORE_CORESET_RATIO:-0.05}'
+      PATCHCORE_NUM_NEIGHBORS: '${PATCHCORE_NUM_NEIGHBORS:-9}'
+      PATCHCORE_SEED: '${PATCHCORE_SEED:-42}'
+      PATCHCORE_BATCH_SIZE: '${PATCHCORE_BATCH_SIZE:-4}'
+
+    volumes:
+      - ./ai_artifacts:/app/ai_artifacts
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+
 volumes:
   mysql_data:
