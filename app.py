@@ -56,8 +56,11 @@ from ai_domain import (
     sha256_bytes,
     start_ai_capture_session,
     stop_ai_capture_session,
+    VALIDATION_CATEGORIES,
+    VALIDATION_MODEL_STATUSES,
     get_ai_artifacts_root,
 )
+import ai_validation
 import ai_capture
 import patchcore_preprocess
 from ai_capture import (
@@ -18358,6 +18361,18 @@ def _ai_training_status_payload(garment_model_id, allowed=None):
         cur.close()
         conn.close()
 
+    # FASE 3B: enlace directo a la pantalla de validación de la versión.
+    if payload.get("validation_available") and payload.get(
+        "validation_ai_model_id"
+    ):
+        payload["validation_url"] = url_for(
+            "garment_validation_page",
+            model_id=garment_model_id,
+            ai_model_id=payload["validation_ai_model_id"],
+        )
+    else:
+        payload["validation_url"] = None
+
     return _json_sanitize(payload)
 
 
@@ -18702,6 +18717,716 @@ def ai_training_status():
     return jsonify({
         "ok": True,
         "training": payload,
+    })
+
+
+# ============================================================
+# FASE 3B — VALIDACIÓN CONTROLADA DEL MODELO
+#
+# Imágenes NUEVAS, banco propio (validations/) e inferencia
+# aislada por versión: predict(ai_model_id=...) resuelve
+# artefactos -> config -> checkpoint de ESA versión. El checkpoint
+# productivo (PATCHCORE_CKPT) no se lee ni se modifica, y la
+# validación nunca escribe en el dataset de entrenamiento.
+# La activación pertenece a FASE 3C.
+# ============================================================
+
+VALIDATION_IMAGE_KINDS = ("original", "heatmap", "comparison")
+
+
+def _resolve_validation_ai_model(garment_model_id, ai_model_id=None):
+    """Versión a validar: la indicada o la última apta del modelo."""
+    versions = get_garment_ai_versions(garment_model_id)
+
+    if not versions:
+        return None, (
+            "Este modelo todavía no tiene versiones de IA registradas."
+        )
+
+    if ai_model_id is not None:
+        for version in versions:
+            if int(version.get("id")) == int(ai_model_id):
+                if version.get("technically_invalidated"):
+                    return None, (
+                        "Esta versión está marcada NO VALIDADA / NO APTO "
+                        "PARA ACTIVACIÓN: no puede validarse."
+                    )
+                return int(version["id"]), None
+
+        return None, (
+            "La versión solicitada no pertenece a este modelo."
+        )
+
+    for version in versions:
+        if (
+            str(version.get("status") or "").strip().upper()
+            in VALIDATION_MODEL_STATUSES
+            and not version.get("technically_invalidated")
+        ):
+            return int(version["id"]), None
+
+    return None, (
+        "Este modelo todavía no tiene una versión entrenada para validar."
+    )
+
+
+def _validation_api_guard(garment_model_id, ai_model_id=None):
+    """Modelo + permisos + versión. Devuelve (model, ai_model_id, error)."""
+    model = get_garment_model(garment_model_id)
+
+    if not model:
+        return None, None, (jsonify({
+            "ok": False,
+            "error": "El modelo de prenda no existe.",
+        }), 404)
+
+    if not can_manage_garment_model(model):
+        return None, None, (jsonify({
+            "ok": False,
+            "error": "No tiene permisos para validar este modelo.",
+        }), 403)
+
+    if (
+        model.get("status") != "APROBADO"
+        or int(model.get("active") or 0) != 1
+    ):
+        return None, None, (jsonify({
+            "ok": False,
+            "error": (
+                "La validación requiere el modelo aprobado y activo."
+            ),
+        }), 409)
+
+    resolved, error = _resolve_validation_ai_model(
+        garment_model_id,
+        ai_model_id,
+    )
+
+    if error:
+        return None, None, (jsonify({
+            "ok": False,
+            "error": error,
+        }), 404)
+
+    return model, resolved, None
+
+
+def _parse_optional_ai_model_id(body):
+    """ai_model_id opcional del cuerpo JSON o (None, error 400)."""
+    raw = body.get("ai_model_id")
+
+    if raw in (None, ""):
+        return None, None
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None, (jsonify({
+            "ok": False,
+            "error": "ai_model_id inválido.",
+        }), 400)
+
+    if value <= 0:
+        return None, (jsonify({
+            "ok": False,
+            "error": "ai_model_id debe ser positivo.",
+        }), 400)
+
+    return value, None
+
+
+def _validation_image_bytes(body, files):
+    """Imagen NUEVA: archivo, base64 o frame actual de la cámara."""
+    upload = files.get("image") if files else None
+
+    if upload is not None and getattr(upload, "filename", ""):
+        data = upload.read()
+
+        if data:
+            return data, "upload"
+
+    raw = body.get("image_base64")
+
+    if raw:
+        text = str(raw).strip()
+
+        if "," in text and text.lower().startswith("data:"):
+            text = text.split(",", 1)[1]
+
+        try:
+            data = base64.b64decode(text, validate=True)
+        except Exception:
+            raise AIDomainError(
+                "La imagen enviada no es un base64 válido."
+            )
+
+        if data:
+            return data, "upload"
+
+    frame, _, _ = get_latest_camera_frame()
+
+    if frame is None:
+        raise AIDomainError(
+            "No hay un frame de cámara disponible para validar. "
+            "Intente de nuevo en unos segundos."
+        )
+
+    return _ai_capture_encode_jpeg(frame), "frame"
+
+
+@app.route("/modelos-prenda/<int:model_id>/validacion-ia")
+@app.route("/modelos-prenda/<int:model_id>/validacion-ia/<int:ai_model_id>")
+@login_required
+@role_required(
+    ROLE_ADMIN,
+    ROLE_MODEL_MANAGER,
+    ROLE_QUALITY_MANAGER,
+)
+def garment_validation_page(model_id, ai_model_id=None):
+    """Pantalla «Validar modelo» (FASE 3B)."""
+    model = get_garment_model(model_id)
+
+    if not model:
+        flash("El modelo de prenda solicitado no existe.", "error")
+        return redirect(url_for("garment_models_page"))
+
+    role = normalize_role(session.get("role"))
+
+    if (
+        role == ROLE_QUALITY_MANAGER
+        and (
+            model.get("status") != "APROBADO"
+            or int(model.get("active") or 0) != 1
+        )
+    ):
+        flash("No tiene permisos para consultar ese modelo.", "error")
+        return redirect(url_for("garment_models_page"))
+
+    if not can_manage_garment_model(model):
+        flash(
+            "No tiene permisos para validar este modelo.",
+            "error",
+        )
+        return redirect(url_for("garment_models_page"))
+
+    resolved, error = _resolve_validation_ai_model(
+        model_id,
+        ai_model_id,
+    )
+
+    if error:
+        flash(error, "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        state = ai_validation.get_validation_state(cur, resolved)
+    except AIDomainError as error:
+        flash(str(error), "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    except Exception:
+        app.logger.exception(
+            "No se pudo leer el estado de validación "
+            f"(garment_model_id={model_id}, ai_model_id={resolved})."
+        )
+        flash(
+            "No se pudo cargar la validación. Intente de nuevo.",
+            "error",
+        )
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    finally:
+        cur.close()
+        conn.close()
+
+    return render_template(
+        "validation_model.html",
+        model=model,
+        validation=_json_sanitize(state),
+        role=role,
+        can_manage=can_manage_garment_model(model),
+        categories=VALIDATION_CATEGORIES,
+    )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/validacion-ia/frame",
+    methods=["GET"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_validation_frame(model_id):
+    """Frame actual de la cámara para la previsualización de validación."""
+    model = get_garment_model(model_id)
+
+    if not model or not can_manage_garment_model(model):
+        return jsonify({
+            "ok": False,
+            "error": "No tiene permisos para ver esta cámara.",
+        }), 403
+
+    frame, _, _ = get_latest_camera_frame()
+
+    if frame is None:
+        return Response(
+            "",
+            status=204,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    try:
+        jpeg = _ai_capture_encode_jpeg(frame)
+    except Exception:
+        app.logger.exception(
+            f"No se pudo codificar el frame de validación ({model_id})."
+        )
+        return Response("", status=204)
+
+    return Response(
+        jpeg,
+        mimetype="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/validacion-ia/caso/"
+    "<int:case_id>/<kind>",
+    methods=["GET"],
+)
+@login_required
+@role_required(
+    ROLE_ADMIN,
+    ROLE_MODEL_MANAGER,
+    ROLE_QUALITY_MANAGER,
+)
+def garment_validation_case_image(model_id, case_id, kind):
+    """Sirve original/heatmap/comparación de un caso de validación."""
+    return _serve_validation_case_image(model_id, case_id, kind)
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/validacion-ia/imagen",
+    methods=["GET"],
+)
+@login_required
+@role_required(
+    ROLE_ADMIN,
+    ROLE_MODEL_MANAGER,
+    ROLE_QUALITY_MANAGER,
+)
+def garment_validation_case_asset(model_id):
+    """Mismo artefacto consultando ?case_id=&kind= (para la UI)."""
+    raw_case = request.args.get("case_id")
+    kind = request.args.get("kind") or "original"
+
+    try:
+        case_id = int(raw_case)
+    except (TypeError, ValueError):
+        return jsonify({
+            "ok": False,
+            "error": "case_id inválido.",
+        }), 400
+
+    return _serve_validation_case_image(model_id, case_id, kind)
+
+
+def _serve_validation_case_image(model_id, case_id, kind):
+    if kind not in VALIDATION_IMAGE_KINDS:
+        return jsonify({
+            "ok": False,
+            "error": "Artefacto de validación desconocido.",
+        }), 404
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        cur.execute(
+            """
+            SELECT id, garment_model_id, image_path, heatmap_path,
+                   comparison_path
+            FROM ai_validation_cases
+            WHERE id = %s
+            """,
+            (case_id,),
+        )
+        case = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+    if case is None or int(case["garment_model_id"]) != int(model_id):
+        return jsonify({
+            "ok": False,
+            "error": "El caso de validación no existe.",
+        }), 404
+
+    column = {
+        "original": "image_path",
+        "heatmap": "heatmap_path",
+        "comparison": "comparison_path",
+    }[kind]
+
+    relative = case.get(column)
+
+    if not relative:
+        return jsonify({
+            "ok": False,
+            "error": "Este caso no tiene ese artefacto.",
+        }), 404
+
+    try:
+        path = resolve_under_root(get_ai_artifacts_root(), relative)
+    except AIDomainError:
+        return jsonify({
+            "ok": False,
+            "error": "Artefacto de validación inválido.",
+        }), 404
+
+    if not path.exists():
+        return jsonify({
+            "ok": False,
+            "error": "El artefacto de validación no existe.",
+        }), 404
+
+    mimetype = (
+        "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    )
+
+    return send_file(path, mimetype=mimetype, conditional=True)
+
+
+@app.route("/api/ai/validation/session/start", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_session_start():
+    """Abre la sesión de validación (ENTRENADO -> VALIDACION)."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        session_row = ai_validation.start_validation_session(
+            cur,
+            ai_model_id=resolved,
+            actor_id=actor_id,
+        )
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+            "validation": _ai_validation_state(resolved),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo iniciar la validación "
+            f"(ai_model_id={resolved})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo iniciar la validación. Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": "Validación iniciada. La imagen capturada se usará "
+                   "solo para validar.",
+        "session": _json_sanitize(session_row),
+        "validation": _json_sanitize(state),
+    }), 201
+
+
+def _ai_validation_state(ai_model_id):
+    """Estado de validación para respuestas de error (best effort)."""
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        return _json_sanitize(
+            ai_validation.get_validation_state(cur, ai_model_id)
+        )
+    except Exception:
+        return None
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route("/api/ai/validation/case", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_case():
+    """Registra un caso de validación con imagen NUEVA + score bruto."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    category = body.get("category")
+    observation = body.get("observation")
+    actor_id = session.get("user_id")
+
+    try:
+        image_bytes, source = _validation_image_bytes(body, request.files)
+    except AIDomainError as error:
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+        }), 409
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        case = ai_validation.register_validation_case(
+            cur,
+            ai_model_id=resolved,
+            category=category,
+            image_bytes=image_bytes,
+            observation=observation,
+            actor_id=actor_id,
+            preprocess=True,
+        )
+        case["source"] = source
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+            "validation": _ai_validation_state(resolved),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo registrar el caso de validación "
+            f"(ai_model_id={resolved}, category={category})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo registrar el caso de validación. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": (
+            "Caso de validación registrado. "
+            "Imagen de validación — no se utilizará para entrenamiento."
+        ),
+        "case": _json_sanitize(case),
+        "validation": _json_sanitize(state),
+    }), 201
+
+
+@app.route("/api/ai/validation/evaluate", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_evaluate():
+    """«Evaluar validación»: métricas + thresholds candidatos.
+
+    No cambia el estado del modelo (ni lo activa).
+    """
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    thresholds = body.get("thresholds")
+
+    if thresholds is not None and not isinstance(thresholds, list):
+        return jsonify({
+            "ok": False,
+            "error": "thresholds debe ser una lista numérica.",
+        }), 400
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        result = ai_validation.evaluate_validation(
+            cur,
+            ai_model_id=resolved,
+            actor_id=actor_id,
+            thresholds=thresholds,
+        )
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            f"No se pudo evaluar la validación (ai_model_id={resolved})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo evaluar la validación. Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": (
+            "Validación evaluada. El umbral mostrado es un candidato: "
+            "la activación es una acción posterior."
+        ),
+        "result": _json_sanitize(result),
+        "validation": _json_sanitize(state),
+    })
+
+
+@app.route("/api/ai/validation/complete", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def ai_validation_complete():
+    """Cierra la validación (VALIDACION -> VALIDADO). Nunca ACTIVO."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        result = ai_validation.complete_validation(
+            cur,
+            ai_model_id=resolved,
+            actor_id=actor_id,
+        )
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+            "validation": _ai_validation_state(resolved),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            f"No se pudo cerrar la validación (ai_model_id={resolved})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo cerrar la validación. Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": (
+            "Validación completada. La versión quedó VALIDADA; "
+            "la activación es una acción posterior (FASE 3C)."
+        ),
+        "result": _json_sanitize(result),
+        "validation": _json_sanitize(state),
     })
 
 

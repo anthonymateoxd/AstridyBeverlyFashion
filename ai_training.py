@@ -1159,6 +1159,11 @@ def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
         "next_version": None,
         "historical_version": None,
         "invalidated_versions": [],
+        # Validación controlada (FASE 3B): la versión entrenada pasa a
+        # validación, nunca a otra versión ni a activación.
+        "validation_available": False,
+        "validation_ai_model_id": None,
+        "validation_version": None,
     }
 
     if not garment_model_id:
@@ -1224,6 +1229,22 @@ def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
 
     payload["next_version"] = next_version_label(versions) if versions else None
     payload["invalidated_versions"] = [item["version"] for item in invalidated]
+
+    # FASE 3B: la versión entrenada pasa a VALIDACIÓN con imágenes
+    # nuevas (nunca a otra versión ni a activación). Una versión
+    # invalidada técnicamente es histórica y no se valida.
+    if (
+        latest_model
+        and latest_model["status"] in (
+            AI_MODEL_STATUS_ENTRENADO,
+            AI_MODEL_STATUS_VALIDACION,
+            AI_MODEL_STATUS_VALIDADO,
+        )
+        and not is_technically_invalidated(latest_model.get("notes"))
+    ):
+        payload["validation_available"] = True
+        payload["validation_ai_model_id"] = int(latest_model["id"])
+        payload["validation_version"] = latest_model["version"]
 
     cur.execute(
         """

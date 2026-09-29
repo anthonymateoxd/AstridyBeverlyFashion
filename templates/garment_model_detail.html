@@ -2297,11 +2297,19 @@
     }
 
     if (state.ui_status === "ENTRENADO") {
-      actions.push(`
-        <button type="button" class="detail-button" disabled>
-          Continuar a validación
-        </button>
-      `);
+      if (state.validation_available && state.validation_url) {
+        actions.push(`
+          <a class="detail-button primary" href="${esc(state.validation_url)}">
+            Continuar a validación
+          </a>
+        `);
+      } else {
+        actions.push(`
+          <button type="button" class="detail-button" disabled>
+            Continuar a validación
+          </button>
+        `);
+      }
     }
 
     if (state.ui_status === "FALLIDO") {

@@ -793,6 +793,168 @@ def next_dataset_version_label(existing_versions) -> str:
 
 
 # ============================================================
+# FASE 3B — VALIDACIÓN CONTROLADA DE MODELOS
+#
+# Sesiones/casos de validación con imágenes NUEVAS, separadas por
+# diseño del dataset de entrenamiento. La validación nunca modifica
+# el dataset ni los artefactos de entrenamiento.
+# ============================================================
+
+VALIDATION_CATEGORY_NORMAL = "NORMAL"
+VALIDATION_CATEGORY_MANCHA = "MANCHA"
+VALIDATION_CATEGORY_AGUJERO = "AGUJERO"
+
+# Orden estable para la UI y los tests.
+VALIDATION_CATEGORIES = (
+    VALIDATION_CATEGORY_NORMAL,
+    VALIDATION_CATEGORY_MANCHA,
+    VALIDATION_CATEGORY_AGUJERO,
+)
+
+# Directorios del banco de validación (AI_ARTIFACTS_ROOT/validations).
+# La separación por prenda/versión permite servir a futuros modelos.
+VALIDATION_CATEGORY_DIRS = {
+    VALIDATION_CATEGORY_NORMAL: "normal",
+    VALIDATION_CATEGORY_MANCHA: "manchas",
+    VALIDATION_CATEGORY_AGUJERO: "aguajeros",
+}
+
+VALIDATION_CATEGORY_LABELS = {
+    VALIDATION_CATEGORY_NORMAL: "Normal",
+    VALIDATION_CATEGORY_MANCHA: "Mancha",
+    VALIDATION_CATEGORY_AGUJERO: "Agujero",
+}
+
+VALIDATION_SESSION_STATUS_ABIERTA = "ABIERTA"
+VALIDATION_SESSION_STATUS_EVALUADA = "EVALUADA"
+VALIDATION_SESSION_STATUS_CERRADA = "CERRADA"
+
+VALIDATION_SESSION_STATUSES = (
+    VALIDATION_SESSION_STATUS_ABIERTA,
+    VALIDATION_SESSION_STATUS_EVALUADA,
+    VALIDATION_SESSION_STATUS_CERRADA,
+)
+
+# Predicción sin umbral definido: FASE 3B registra el score bruto y
+# deja la calibración para cuando existan muestras reales.
+VALIDATION_PREDICTION_PENDING = "PENDIENTE_CALIBRACION"
+VALIDATION_RESULT_PENDING = "PENDIENTE_CALIBRACION"
+
+VALIDATION_RESULT_CORRECT = "CORRECTO"
+VALIDATION_RESULT_INCORRECT = "INCORRECTO"
+
+# Estados de garment_ai_models desde los cuales se admiten casos.
+VALIDATION_MODEL_STATUSES = (
+    AI_MODEL_STATUS_ENTRENADO,
+    AI_MODEL_STATUS_VALIDACION,
+    AI_MODEL_STATUS_VALIDADO,
+)
+
+VALIDATION_BANK_SUBDIR = "validations"
+
+# Aviso obligatorio en toda captura de validación.
+VALIDATION_IMAGE_NOTICE = (
+    "Imagen de validación — no se utilizará para entrenamiento."
+)
+
+
+def normalize_validation_category(value) -> str:
+    """Normaliza y valida la categoría real de un caso de validación."""
+    raw = str(value or "").strip().upper()
+
+    aliases = {
+        "HUECO": VALIDATION_CATEGORY_AGUJERO,
+        "AGUJEROS": VALIDATION_CATEGORY_AGUJERO,
+        "MANCHAS": VALIDATION_CATEGORY_MANCHA,
+        "SIN_DEFECTO": VALIDATION_CATEGORY_NORMAL,
+        "OK": VALIDATION_CATEGORY_NORMAL,
+    }
+
+    raw = aliases.get(raw, raw)
+
+    if raw not in VALIDATION_CATEGORIES:
+        raise AIDomainError(
+            "Categoría inválida: use NORMAL, MANCHA o AGUJERO."
+        )
+
+    return raw
+
+
+def validate_validation_case_result(category, score, threshold=None) -> str | None:
+    """Resultado CORRECTO/INCORRECTO frente a la etiqueta humana.
+
+    Devuelve None mientras no exista umbral definido (pendiente de
+    calibración): la categoría real la pone la persona, no el modelo.
+    """
+    if threshold is None or score is None:
+        return None
+
+    predicted_anomaly = float(score) >= float(threshold)
+    real_anomaly = str(category) != VALIDATION_CATEGORY_NORMAL
+
+    return (
+        VALIDATION_RESULT_CORRECT
+        if predicted_anomaly == real_anomaly
+        else VALIDATION_RESULT_INCORRECT
+    )
+
+
+def validation_bank_root(root: Path | None = None) -> Path:
+    """AI_ARTIFACTS_ROOT/validations (banco independiente del training)."""
+    base = Path(root) if root is not None else get_ai_artifacts_root()
+    return Path(base) / VALIDATION_BANK_SUBDIR
+
+
+def validation_case_relative_dir(
+    garment_model_id: int,
+    ai_model_id: int,
+    category: str,
+    case_id: int,
+) -> str:
+    """Ruta relativa del caso: validations/garment_X/model_Y/<cat>/case_Z."""
+    try:
+        garment_id = int(garment_model_id)
+        model_id = int(ai_model_id)
+        case = int(case_id)
+    except (TypeError, ValueError) as error:
+        raise AIDomainError(
+            "garment_model_id, ai_model_id y case_id deben ser enteros."
+        ) from error
+
+    if garment_id <= 0 or model_id <= 0 or case <= 0:
+        raise AIDomainError(
+            "garment_model_id, ai_model_id y case_id deben ser positivos."
+        )
+
+    category_key = normalize_validation_category(category)
+    folder = VALIDATION_CATEGORY_DIRS[category_key]
+
+    return (
+        f"{VALIDATION_BANK_SUBDIR}/garment_{garment_id}/"
+        f"model_{model_id}/{folder}/case_{case}"
+    )
+
+
+def validation_case_relative_path(
+    garment_model_id: int,
+    ai_model_id: int,
+    category: str,
+    case_id: int,
+    filename: str,
+) -> str:
+    """Ruta relativa de un artefacto del caso (original/heatmap/comparación)."""
+    safe_name = ensure_safe_relative_path(str(filename).strip())
+
+    if "/" in safe_name or "\\" in safe_name:
+        raise AIDomainError("filename no puede contener separadores.")
+
+    return (
+        f"{validation_case_relative_dir(garment_model_id, ai_model_id, category, case_id)}"
+        f"/{safe_name}"
+    )
+
+
+# ============================================================
 # CÓDIGOS DE MODELO DE PRENDA (alta automática, Fase 2B)
 # ============================================================
 
@@ -1065,6 +1227,8 @@ AI_EVENT_TYPES = {
     "TRAINING_FAILED",
     "TRAINING_CANCELLED",
     "VALIDATION_STARTED",
+    "VALIDATION_CASE_REGISTERED",
+    "VALIDATION_EVALUATED",
     "VALIDATED",
     "REJECTED",
     "ACTIVATED",
@@ -1907,6 +2071,120 @@ def ensure_ai_schema(cur, db_name, ensure_column=None):
         END
         """,
     )
+
+    # --------------------------------------------------------
+    # FASE 3B — SESIONES Y CASOS DE VALIDACIÓN
+    # Banco de imágenes de validación separado del training: una
+    # imagen de validación jamás se registra en ai_training_images
+    # ni en ai_dataset_images.
+    # --------------------------------------------------------
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ai_validation_sessions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            garment_model_id INT NOT NULL,
+            ai_model_id INT NOT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'ABIERTA',
+            threshold_candidate DECIMAL(8,3) NULL,
+            metrics_json JSON NULL,
+            created_by INT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            evaluated_at DATETIME NULL,
+            closed_at DATETIME NULL,
+
+            KEY idx_ai_val_session_garment (garment_model_id),
+            KEY idx_ai_val_session_model (ai_model_id),
+            KEY idx_ai_val_session_status (status),
+
+            CONSTRAINT fk_ai_val_session_garment
+                FOREIGN KEY (garment_model_id)
+                REFERENCES garment_models(id)
+                ON DELETE RESTRICT,
+
+            CONSTRAINT fk_ai_val_session_model
+                FOREIGN KEY (ai_model_id)
+                REFERENCES garment_ai_models(id)
+                ON DELETE RESTRICT,
+
+            CONSTRAINT fk_ai_val_session_user
+                FOREIGN KEY (created_by)
+                REFERENCES users(id)
+                ON DELETE SET NULL
+        ) ENGINE=InnoDB
+          DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ai_validation_cases (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            validation_session_id INT NOT NULL,
+            ai_model_id INT NOT NULL,
+            garment_model_id INT NOT NULL,
+            category VARCHAR(20) NOT NULL,
+            image_path VARCHAR(500) NOT NULL,
+            image_sha256 CHAR(64) NOT NULL,
+            anomaly_score DECIMAL(10,4) NULL,
+            threshold_used DECIMAL(8,3) NULL,
+            prediction VARCHAR(30) NULL,
+            result VARCHAR(30) NULL,
+            observation TEXT NULL,
+            heatmap_path VARCHAR(500) NULL,
+            comparison_path VARCHAR(500) NULL,
+            created_by INT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+            KEY idx_ai_val_case_session (validation_session_id),
+            KEY idx_ai_val_case_model (ai_model_id),
+            KEY idx_ai_val_case_garment (garment_model_id),
+            KEY idx_ai_val_case_category (category),
+            KEY idx_ai_val_case_sha256 (image_sha256),
+
+            CONSTRAINT fk_ai_val_case_session
+                FOREIGN KEY (validation_session_id)
+                REFERENCES ai_validation_sessions(id)
+                ON DELETE CASCADE,
+
+            CONSTRAINT fk_ai_val_case_model
+                FOREIGN KEY (ai_model_id)
+                REFERENCES garment_ai_models(id)
+                ON DELETE RESTRICT,
+
+            CONSTRAINT fk_ai_val_case_garment
+                FOREIGN KEY (garment_model_id)
+                REFERENCES garment_models(id)
+                ON DELETE RESTRICT,
+
+            CONSTRAINT fk_ai_val_case_user
+                FOREIGN KEY (created_by)
+                REFERENCES users(id)
+                ON DELETE SET NULL
+        ) ENGINE=InnoDB
+          DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+        """
+    )
+
+    # «PENDIENTE_CALIBRACION» mide 21 caracteres: una primera versión de
+    # FASE 3B creó la columna con VARCHAR(20) y se amplía aquí.
+    cur.execute(
+        """
+        SELECT CHARACTER_MAXIMUM_LENGTH
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = %s
+          AND TABLE_NAME = 'ai_validation_cases'
+          AND COLUMN_NAME = 'result'
+        """,
+        (db_name,),
+    )
+
+    if int(_scalar(cur.fetchone()) or 0) < 30:
+        cur.execute(
+            "ALTER TABLE ai_validation_cases "
+            "MODIFY COLUMN result VARCHAR(30) NULL"
+        )
 
     # Raíz conceptual de artefactos (sin escribir checkpoints).
     root = get_ai_artifacts_root()

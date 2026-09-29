@@ -1,0 +1,975 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+  .val-wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 24px 18px 56px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+
+  .val-back {
+    color: #0d2a66;
+    font-size: 13px;
+    font-weight: 800;
+    text-decoration: none;
+  }
+
+  .val-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .val-kicker {
+    margin: 0 0 4px;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #67758d;
+  }
+
+  .val-head h1 {
+    margin: 0;
+    font-size: 24px;
+    color: #10233f;
+  }
+
+  .detail-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 7px 11px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+    background: #edf1f6;
+    color: #67758d;
+  }
+
+  .detail-badge.warning { background: #fff3cf; color: #9d7006; }
+  .detail-badge.success { background: #e5f7ed; color: #178553; }
+  .detail-badge.history { background: #f2ecfa; color: #6b3fa0; }
+
+  .ai-capture-notice {
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: #eef4ff;
+    color: #173a7d;
+    font-size: 13px;
+    line-height: 1.5;
+    border: 1px solid #d7e3ff;
+  }
+
+  .ai-capture-notice.warn {
+    background: #fff3cf;
+    border-color: #f3e2ad;
+    color: #8a5f05;
+  }
+
+  .val-card {
+    background: #fff;
+    border: 1px solid #e4e9f2;
+    border-radius: 16px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .val-card h2 {
+    margin: 0;
+    font-size: 16px;
+    color: #10233f;
+  }
+
+  .val-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 14px;
+  }
+
+  .detail-label {
+    display: block;
+    font-size: 12px;
+    color: #67758d;
+    font-weight: 700;
+  }
+
+  .detail-value {
+    display: block;
+    font-size: 15px;
+    color: #10233f;
+    font-weight: 800;
+    word-break: break-word;
+  }
+
+  .val-counts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+  }
+
+  .val-count {
+    border: 1px solid #e4e9f2;
+    border-radius: 12px;
+    padding: 12px 14px;
+    background: #f8fafd;
+  }
+
+  .val-count strong {
+    display: block;
+    font-size: 26px;
+    color: #0d2a66;
+  }
+
+  .val-camera {
+    width: 100%;
+    max-height: 340px;
+    object-fit: contain;
+    background: #0d1522;
+    border-radius: 12px;
+    min-height: 180px;
+  }
+
+  .val-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .val-field label {
+    font-size: 13px;
+    font-weight: 800;
+    color: #10233f;
+  }
+
+  .val-field select,
+  .val-field textarea {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+    padding: 11px 12px;
+    border-radius: 12px;
+    border: 1px solid #cdd7e7;
+    background: #fff;
+    color: #10233f;
+  }
+
+  .val-field textarea { min-height: 74px; resize: vertical; }
+
+  .detail-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 11px 16px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    text-decoration: none;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    font-weight: 800;
+    cursor: pointer;
+    background: #f2f5fa;
+    color: #10233f;
+    border-color: #e0e7f2;
+  }
+
+  .detail-button.primary { background: #0d2a66; color: #fff; }
+  .detail-button.success { background: #e5f7ed; color: #187f50; border-color: #ccebd9; }
+  .detail-button[disabled] { opacity: 0.55; cursor: not-allowed; }
+
+  .val-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .val-error {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #fdeaea;
+    color: #a33c3c;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .val-ok {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #e5f7ed;
+    color: #178553;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .val-result {
+    border: 1px solid #e4e9f2;
+    border-radius: 12px;
+    padding: 14px;
+    background: #f8fafd;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+  }
+
+  .val-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .val-table th,
+  .val-table td {
+    text-align: left;
+    padding: 9px 8px;
+    border-bottom: 1px solid #eef1f7;
+    color: #26364f;
+  }
+
+  .val-table th {
+    font-size: 12px;
+    color: #67758d;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+  }
+
+  .val-table a {
+    color: #0d2a66;
+    font-weight: 800;
+    text-decoration: none;
+  }
+
+  .val-empty {
+    font-size: 14px;
+    color: #67758d;
+  }
+
+  .val-thumbs {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .val-thumb {
+    border: 1px solid #e4e9f2;
+    border-radius: 10px;
+    padding: 6px;
+    background: #f8fafd;
+    text-align: center;
+    font-size: 11px;
+    color: #67758d;
+  }
+
+  .val-thumb img {
+    display: block;
+    max-width: 190px;
+    max-height: 130px;
+    border-radius: 6px;
+    margin-bottom: 4px;
+  }
+
+  .val-metric-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .val-metric {
+    min-width: 130px;
+    background: #f8fafd;
+    border: 1px solid #e4e9f2;
+    border-radius: 12px;
+    padding: 10px 12px;
+  }
+
+  .val-metric span { display: block; font-size: 12px; color: #67758d; }
+  .val-metric strong { font-size: 18px; color: #10233f; }
+
+  @media (max-width: 720px) {
+    .val-card { padding: 16px; }
+    .val-actions .detail-button { width: 100%; }
+    .val-table { display: block; overflow-x: auto; }
+  }
+</style>
+
+<div class="val-wrap">
+  <a class="val-back" href="{{ url_for('garment_model_detail', model_id=model.id) }}">
+    ← Volver a la ficha del modelo
+  </a>
+
+  <header class="val-head">
+    <div>
+      <p class="val-kicker">Validación de modelo IA · FASE 3B</p>
+      <h1>{{ model.code }} · {{ model.name }}</h1>
+    </div>
+
+    {% if validation.model_status == 'VALIDADO' %}
+      <span class="detail-badge success">
+        {{ validation.version }} · VALIDADO
+      </span>
+    {% elif validation.model_status == 'VALIDACION' %}
+      <span class="detail-badge warning">
+        {{ validation.version }} · EN VALIDACIÓN
+      </span>
+    {% elif validation.model_status == 'ENTRENADO' %}
+      <span class="detail-badge warning">
+        {{ validation.version }} · ENTRENADO · PENDIENTE DE VALIDACIÓN
+      </span>
+    {% else %}
+      <span class="detail-badge">
+        {{ validation.version }} · {{ validation.model_status }}
+      </span>
+    {% endif %}
+  </header>
+
+  <div class="ai-capture-notice">
+    <strong>{{ validation.notice }}</strong><br>
+    Las imágenes capturadas aquí se guardan en el banco de validación y
+    nunca se incorporan al dataset de entrenamiento.
+  </div>
+
+  {% if validation.technically_invalidated %}
+  <div class="ai-capture-notice warn">
+    Esta versión está marcada
+    <strong>NO VALIDADA / NO APTO PARA ACTIVACIÓN</strong>: no puede
+    validarse ni activarse.
+  </div>
+  {% endif %}
+
+  <section class="val-card">
+    <h2>Modelo y versión</h2>
+
+    <div class="val-grid">
+      <div>
+        <span class="detail-label">Prenda</span>
+        <span class="detail-value">{{ model.code }}</span>
+      </div>
+      <div>
+        <span class="detail-label">Versión a validar</span>
+        <span class="detail-value">{{ validation.version }}</span>
+      </div>
+      <div>
+        <span class="detail-label">Estado</span>
+        <span class="detail-value" id="valStatus">
+          {% if validation.model_status == 'ENTRENADO' %}
+            ENTRENADO · PENDIENTE DE VALIDACIÓN
+          {% elif validation.model_status == 'VALIDACION' %}
+            EN VALIDACIÓN
+          {% elif validation.model_status == 'VALIDADO' %}
+            VALIDADO
+          {% else %}
+            {{ validation.model_status }}
+          {% endif %}
+        </span>
+      </div>
+      <div>
+        <span class="detail-label">Sesión de validación</span>
+        <span class="detail-value" id="valSessionStatus">
+          {% if validation.session_status %}
+            {{ validation.session_status }}
+          {% else %}
+            SIN SESIÓN
+          {% endif %}
+        </span>
+      </div>
+    </div>
+
+    <div class="val-counts" id="valCounts">
+      {% for category in categories %}
+      <div class="val-count" data-category="{{ category }}">
+        <span class="detail-label">
+          {{ validation.category_labels[category] }}
+        </span>
+        <strong>{{ validation.counts[category] }}</strong>
+        <span class="detail-label">casos</span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  {% if can_manage %}
+  <section class="val-card">
+    <h2>Captura de validación</h2>
+
+    <img
+      id="valFrame"
+      class="val-camera"
+      src="{{ url_for('garment_validation_frame', model_id=model.id) }}"
+      alt="Vista de cámara para validación"
+    >
+
+    <div class="val-field">
+      <label for="valCategory">Categoría real (etiqueta humana)</label>
+      <select id="valCategory">
+        {% for category in categories %}
+        <option value="{{ category }}">
+          {{ validation.category_labels[category] }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="val-field">
+      <label for="valObservation">Observación (opcional)</label>
+      <textarea
+        id="valObservation"
+        placeholder="Ej.: mancha visible en el centro"
+      ></textarea>
+    </div>
+
+    <div class="val-actions">
+      <button
+        type="button"
+        id="valCapture"
+        class="detail-button primary"
+        {% if not validation.can_capture %}disabled{% endif %}
+      >
+        CAPTURAR IMAGEN DE VALIDACIÓN
+      </button>
+
+      {% if not validation.session_id and validation.model_status == 'ENTRENADO' %}
+      <button type="button" id="valStart" class="detail-button">
+        Iniciar validación
+      </button>
+      {% endif %}
+
+      <button
+        type="button"
+        id="valEvaluate"
+        class="detail-button"
+        {% if not validation.can_evaluate %}disabled{% endif %}
+      >
+        Evaluar validación
+      </button>
+
+      <button
+        type="button"
+        id="valComplete"
+        class="detail-button success"
+        {% if not validation.can_complete %}disabled{% endif %}
+      >
+        Marcar como VALIDADA
+      </button>
+    </div>
+
+    <p class="val-empty">
+      Las imágenes se toman de la cámara del puesto. La imagen capturada
+      se usa únicamente para evaluar la versión; la clasificación
+      NORMAL / MANCHA / AGUJERO la define la persona, no el modelo.
+    </p>
+
+    <div id="valCaptureMessage"></div>
+
+    <div id="valResult" hidden></div>
+  </section>
+
+  <section class="val-card">
+    <h2>Métricas de validación</h2>
+    <div id="valMetrics">
+      {% if validation.metrics %}
+        <p class="val-empty">
+          Métricas disponibles: use «Evaluar validación» para recalcular
+          con los candidatos de umbral.
+        </p>
+      {% else %}
+        <p class="val-empty" id="valMetricsEmpty">
+          Todavía no hay métricas: se calculan cuando existen casos
+          registrados («Evaluar validación»).
+        </p>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="val-card">
+    <h2>Casos de validación</h2>
+
+    {% if validation.cases %}
+    <table class="val-table">
+      <thead>
+        <tr>
+          <th>Categoría real</th>
+          <th>Score de anomalía</th>
+          <th>Modelo</th>
+          <th>Resultado</th>
+          <th>Fecha</th>
+          <th>Artefactos</th>
+        </tr>
+      </thead>
+      <tbody id="valCasesBody">
+        {% for case in validation.cases %}
+        <tr>
+          <td>{{ case.category_label }}</td>
+          <td>
+            {% if case.anomaly_score is not none %}
+              {{ '%.2f'|format(case.anomaly_score) }}
+            {% else %}
+              sin score
+            {% endif %}
+          </td>
+          <td>{{ validation.version }}</td>
+          <td>{{ case.result_label or 'Pendiente de calibración' }}</td>
+          <td>{{ case.created_at }}</td>
+          <td>
+            <a href="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='original') }}">original</a>
+            {% if case.heatmap_path %}
+              ·
+              <a href="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='heatmap') }}">heatmap</a>
+              ·
+              <a href="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='comparison') }}">comparación</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="val-thumbs" id="valThumbs">
+      {% for case in validation.cases[-4:] %}
+      <div class="val-thumb">
+        <img
+          src="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='original') }}"
+          alt="Caso de validación"
+        >
+        {{ case.category_label }}
+        {% if case.heatmap_path %}
+          ·
+          <a href="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='comparison') }}">
+            comparación
+          </a>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="val-empty" id="valCasesEmpty">
+      Todavía no hay casos de validación registrados para esta versión.
+    </p>
+    {% endif %}
+  </section>
+</div>
+
+<script>
+  window.ASTRID_AI_VALIDATION = {{ {
+    'modelId': model.id,
+    'garmentCode': model.code,
+    'categories': categories,
+    'urls': {
+      'frame': url_for('garment_validation_frame', model_id=model.id),
+      'start': url_for('ai_validation_session_start'),
+      'case': url_for('ai_validation_case'),
+      'evaluate': url_for('ai_validation_evaluate'),
+      'complete': url_for('ai_validation_complete'),
+      'asset': url_for('garment_validation_case_asset', model_id=model.id, case_id=0, kind='original'),
+      'detail': url_for('garment_model_detail', model_id=model.id)
+    },
+    'state': validation
+  }|tojson }};
+</script>
+
+<script>
+(() => {
+  const config = window.ASTRID_AI_VALIDATION;
+  if (!config) return;
+
+  let state = Object.assign({}, config.state || {});
+  let busy = false;
+
+  const frameEl = document.getElementById("valFrame");
+  const categoryEl = document.getElementById("valCategory");
+  const observationEl = document.getElementById("valObservation");
+  const captureBtn = document.getElementById("valCapture");
+  const startBtn = document.getElementById("valStart");
+  const evaluateBtn = document.getElementById("valEvaluate");
+  const completeBtn = document.getElementById("valComplete");
+  const messageEl = document.getElementById("valCaptureMessage");
+  const resultEl = document.getElementById("valResult");
+  const countsEl = document.getElementById("valCounts");
+  const statusEl = document.getElementById("valStatus");
+  const sessionEl = document.getElementById("valSessionStatus");
+  const metricsEl = document.getElementById("valMetrics");
+  const casesBodyEl = document.getElementById("valCasesBody");
+  const casesEmptyEl = document.getElementById("valCasesEmpty");
+
+  const esc = (value) =>
+    String(value === null || value === undefined ? "" : value).replace(
+      /[&<>"']/g,
+      (character) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;"
+        })[character]
+    );
+
+  const scoreLabel = (score) =>
+    score === null || score === undefined
+      ? "sin score"
+      : Number(score).toFixed(2);
+
+  function setMessage(text, isError) {
+    if (!messageEl) return;
+    messageEl.innerHTML = text
+      ? `<div class="${isError ? "val-error" : "val-ok"}">${esc(text)}</div>`
+      : "";
+  }
+
+  function setBusy(value) {
+    busy = value;
+    [captureBtn, startBtn, evaluateBtn, completeBtn].forEach((button) => {
+      if (button) button.disabled = busy;
+    });
+    renderActions();
+  }
+
+  function assetUrl(caseId, kind) {
+    return config.urls.asset
+      .replace("/caso/0/", `/caso/${caseId}/`)
+      .replace("case_id=0", `case_id=${caseId}`)
+      .replace(/kind=original/, `kind=${kind}`);
+  }
+
+  function renderActions() {
+    if (captureBtn) captureBtn.disabled = busy || !state.can_capture;
+    if (evaluateBtn) evaluateBtn.disabled = busy || !state.can_evaluate;
+    if (completeBtn) completeBtn.disabled = busy || !state.can_complete;
+  }
+
+  function renderCounts() {
+    if (!countsEl || !state.counts) return;
+
+    Array.from(countsEl.children).forEach((card) => {
+      const key = card.getAttribute("data-category");
+      const strong = card.querySelector("strong");
+      if (strong && key) strong.textContent = Number(state.counts[key] || 0);
+    });
+  }
+
+  function renderStatus() {
+    if (statusEl) {
+      const labels = {
+        ENTRENADO: "ENTRENADO · PENDIENTE DE VALIDACIÓN",
+        VALIDACION: "EN VALIDACIÓN",
+        VALIDADO: "VALIDADO"
+      };
+      statusEl.textContent =
+        labels[state.model_status] || state.model_status || "";
+    }
+
+    if (sessionEl) {
+      sessionEl.textContent = state.session_status || "SIN SESIÓN";
+    }
+  }
+
+  function renderMetrics() {
+    if (!metricsEl) return;
+    const metrics = state.metrics;
+
+    if (!metrics) {
+      metricsEl.innerHTML =
+        '<p class="val-empty" id="valMetricsEmpty">' +
+        "Todavía no hay métricas: se calculan cuando existen casos " +
+        "registrados («Evaluar validación»).</p>";
+      return;
+    }
+
+    const html = [];
+
+    html.push(`
+      <div class="val-metric-row">
+        <div class="val-metric"><span>Normales evaluadas</span>
+          <strong>${Number((metrics.by_category || {}).NORMAL ? (metrics.by_category.NORMAL.count || 0) : 0)}</strong></div>
+        <div class="val-metric"><span>Manchas evaluadas</span>
+          <strong>${Number((metrics.by_category || {}).MANCHA ? (metrics.by_category.MANCHA.count || 0) : 0)}</strong></div>
+        <div class="val-metric"><span>Agujeros evaluados</span>
+          <strong>${Number((metrics.by_category || {}).AGUJERO ? (metrics.by_category.AGUJERO.count || 0) : 0)}</strong></div>
+        <div class="val-metric"><span>Casos totales</span>
+          <strong>${Number(metrics.total || 0)}</strong></div>
+      </div>
+    `);
+
+    if (metrics.distribution) {
+      const d = metrics.distribution;
+      html.push(`
+        <div class="val-metric-row">
+          <div class="val-metric"><span>Score mínimo</span><strong>${scoreLabel(d.min)}</strong></div>
+          <div class="val-metric"><span>Score máximo</span><strong>${scoreLabel(d.max)}</strong></div>
+          <div class="val-metric"><span>Media</span><strong>${scoreLabel(d.mean)}</strong></div>
+          <div class="val-metric"><span>Mediana</span><strong>${scoreLabel(d.median)}</strong></div>
+        </div>
+      `);
+    }
+
+    if (metrics.confusion) {
+      html.push(`
+        <div class="val-metric-row">
+          <div class="val-metric"><span>Falsos positivos</span><strong>${Number(metrics.false_positives || 0)}</strong></div>
+          <div class="val-metric"><span>Falsos negativos</span><strong>${Number(metrics.false_negatives || 0)}</strong></div>
+          <div class="val-metric"><span>Precisión</span><strong>${metrics.precision === null || metrics.precision === undefined ? "s/d" : Number(metrics.precision).toFixed(3)}</strong></div>
+          <div class="val-metric"><span>Recall</span><strong>${metrics.recall === null || metrics.recall === undefined ? "s/d" : Number(metrics.recall).toFixed(3)}</strong></div>
+          <div class="val-metric"><span>Especificidad</span><strong>${metrics.specificity === null || metrics.specificity === undefined ? "s/d" : Number(metrics.specificity).toFixed(3)}</strong></div>
+          <div class="val-metric"><span>F1</span><strong>${metrics.f1 === null || metrics.f1 === undefined ? "s/d" : Number(metrics.f1).toFixed(3)}</strong></div>
+        </div>
+      `);
+    }
+
+    if (metrics.best_threshold !== null && metrics.best_threshold !== undefined) {
+      html.push(`
+        <div class="ai-capture-notice warn">
+          Threshold candidato (todavía NO aplicado):
+          <strong>${esc(scoreLabel(metrics.best_threshold))}</strong>.
+          La definición del umbral definitivo y la activación son
+          acciones posteriores.
+        </div>
+      `);
+    }
+
+    if (metrics.candidates && metrics.candidates.length) {
+      const rows = metrics.candidates
+        .slice(0, 12)
+        .map((c) => `
+          <tr>
+            <td>${scoreLabel(c.threshold)}</td>
+            <td>${Number(c.fp || 0)}</td>
+            <td>${Number(c.fn || 0)}</td>
+            <td>${c.precision === null || c.precision === undefined ? "s/d" : Number(c.precision).toFixed(3)}</td>
+            <td>${c.recall === null || c.recall === undefined ? "s/d" : Number(c.recall).toFixed(3)}</td>
+            <td>${c.specificity === null || c.specificity === undefined ? "s/d" : Number(c.specificity).toFixed(3)}</td>
+            <td>${c.f1 === null || c.f1 === undefined ? "s/d" : Number(c.f1).toFixed(3)}</td>
+          </tr>`)
+        .join("");
+
+      html.push(`
+        <table class="val-table">
+          <thead>
+            <tr>
+              <th>Threshold</th><th>FP</th><th>FN</th>
+              <th>Precisión</th><th>Recall</th><th>Espec.</th><th>F1</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `);
+    }
+
+    metricsEl.innerHTML = html.join("");
+  }
+
+  function renderCases() {
+    if (!state.cases) return;
+
+    if (!state.cases.length) {
+      if (casesBodyEl) casesBodyEl.innerHTML = "";
+      if (casesEmptyEl) casesEmptyEl.hidden = false;
+      return;
+    }
+
+    if (casesEmptyEl) casesEmptyEl.hidden = true;
+
+    if (casesBodyEl) {
+      casesBodyEl.innerHTML = state.cases
+        .map((item) => `
+          <tr>
+            <td>${esc(item.category_label || item.category)}</td>
+            <td>${esc(scoreLabel(item.anomaly_score))}</td>
+            <td>${esc(state.version)}</td>
+            <td>${esc(item.result_label || "Pendiente de calibración")}</td>
+            <td>${esc(item.created_at)}</td>
+            <td>
+              <a href="${esc(assetUrl(item.id, "original"))}">original</a>${
+                item.heatmap_path
+                  ? ` · <a href="${esc(assetUrl(item.id, "heatmap"))}">heatmap</a>` +
+                    ` · <a href="${esc(assetUrl(item.id, "comparison"))}">comparación</a>`
+                  : ""
+              }
+            </td>
+          </tr>`)
+        .join("");
+    }
+  }
+
+  function renderResult(item) {
+    if (!resultEl) return;
+
+    if (!item) {
+      resultEl.hidden = true;
+      resultEl.innerHTML = "";
+      return;
+    }
+
+    resultEl.hidden = false;
+    resultEl.innerHTML = `
+      <div class="val-result">
+        <div>
+          <span class="detail-label">Tipo real</span>
+          <span class="detail-value">${esc(item.category_label)}</span>
+        </div>
+        <div>
+          <span class="detail-label">Score de anomalía</span>
+          <span class="detail-value">${esc(scoreLabel(item.anomaly_score))}</span>
+        </div>
+        <div>
+          <span class="detail-label">Modelo</span>
+          <span class="detail-value">${esc(item.version || state.version)}</span>
+        </div>
+        <div>
+          <span class="detail-label">Resultado</span>
+          <span class="detail-value">${esc(item.result_label || "Pendiente de calibración")}</span>
+        </div>
+      </div>
+      ${
+        item.comparison_path
+          ? `<div class="val-thumbs">
+               <div class="val-thumb">
+                 <a href="${esc(assetUrl(item.id, "comparison"))}">
+                   <img src="${esc(assetUrl(item.id, "comparison"))}" alt="Comparación original y heatmap">
+                 </a>
+                 ORIGINAL | HEATMAP
+               </div>
+             </div>`
+          : ""
+      }
+    `;
+  }
+
+  function applyState(next) {
+    if (!next) return;
+    state = Object.assign({}, state, next);
+    renderStatus();
+    renderCounts();
+    renderMetrics();
+    renderCases();
+    renderActions();
+  }
+
+  function post(url, payload) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payload || {})
+    }).then(async (response) => {
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || data.ok === false) {
+        throw new Error(
+          data.error || "La operación no pudo completarse."
+        );
+      }
+
+      return data;
+    });
+  }
+
+  if (captureBtn) {
+    captureBtn.addEventListener("click", () => {
+      if (busy) return;
+      setMessage("");
+      setBusy(true);
+
+      post(config.urls.case, {
+        garment_model_id: config.modelId,
+        ai_model_id: state.ai_model_id,
+        category: categoryEl ? categoryEl.value : "NORMAL",
+        observation: observationEl ? observationEl.value : ""
+      })
+        .then((data) => {
+          setMessage(data.message || "Caso registrado.", false);
+          applyState(data.validation);
+          renderResult(data.case);
+        })
+        .catch((error) => setMessage(error.message, true))
+        .finally(() => setBusy(false));
+    });
+  }
+
+  if (startBtn) {
+    startBtn.addEventListener("click", () => {
+      if (busy) return;
+      setMessage("");
+      setBusy(true);
+
+      post(config.urls.start, {
+        garment_model_id: config.modelId,
+        ai_model_id: state.ai_model_id
+      })
+        .then((data) => {
+          setMessage(data.message || "Validación iniciada.", false);
+          applyState(data.validation);
+          startBtn.hidden = true;
+          if (captureBtn) captureBtn.disabled = !state.can_capture;
+        })
+        .catch((error) => setMessage(error.message, true))
+        .finally(() => setBusy(false));
+    });
+  }
+
+  if (evaluateBtn) {
+    evaluateBtn.addEventListener("click", () => {
+      if (busy) return;
+      setMessage("");
+      setBusy(true);
+
+      post(config.urls.evaluate, {
+        garment_model_id: config.modelId,
+        ai_model_id: state.ai_model_id
+      })
+        .then((data) => {
+          setMessage(data.message || "Validación evaluada.", false);
+          applyState(data.validation);
+        })
+        .catch((error) => setMessage(error.message, true))
+        .finally(() => setBusy(false));
+    });
+  }
+
+  if (completeBtn) {
+    completeBtn.addEventListener("click", () => {
+      if (busy) return;
+
+      const confirmed = window.confirm(
+        "¿Marcar la versión como VALIDADA?\n\n" +
+        "Esto cierra la validación de esta versión. La activación es " +
+        "una acción posterior (FASE 3C)."
+      );
+
+      if (!confirmed) return;
+
+      setMessage("");
+      setBusy(true);
+
+      post(config.urls.complete, {
+        garment_model_id: config.modelId,
+        ai_model_id: state.ai_model_id
+      })
+        .then((data) => {
+          setMessage(data.message || "Validación completada.", false);
+          applyState(data.validation);
+        })
+        .catch((error) => setMessage(error.message, true))
+        .finally(() => setBusy(false));
+    });
+  }
+
+  if (frameEl) {
+    setInterval(() => {
+      if (document.hidden) return;
+      frameEl.src =
+        config.urls.frame + "?t=" + Date.now();
+    }, 1500);
+  }
+
+  renderActions();
+  renderStatus();
+})();
+</script>
+{% endblock %}
