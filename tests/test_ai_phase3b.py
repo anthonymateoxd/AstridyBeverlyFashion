@@ -38,6 +38,12 @@ from ai_domain import (  # noqa: E402
     AIDomainError,
     VALIDATION_CATEGORIES,
     VALIDATION_CATEGORY_DIRS,
+    VALIDATION_CLASSIFICATION_LABELS,
+    VALIDATION_DEFECT_TYPE_LABELS,
+    VALIDATION_DEFECT_TYPES,
+    VALIDATION_ESTADO_LABELS,
+    VALIDATION_ESTADOS,
+    VALIDATION_BINARY_NOTICE,
     VALIDATION_IMAGE_NOTICE,
     VALIDATION_RESULT_INCORRECT,
     VALIDATION_RESULT_CORRECT,
@@ -46,11 +52,16 @@ from ai_domain import (  # noqa: E402
     VALIDATION_SESSION_STATUS_CERRADA,
     VALIDATION_SESSION_STATUS_EVALUADA,
     annotate_technical_invalidation,
+    category_from_estado,
+    defect_type_from_category,
+    estado_real_from_category,
     get_ai_artifacts_root,
     normalize_validation_category,
+    resolve_validation_category,
     validation_bank_root,
     validation_case_relative_dir,
     validation_case_relative_path,
+    validation_classification,
     validate_validation_case_result,
 )
 import ai_validation  # noqa: E402
@@ -173,6 +184,118 @@ class ValidationDomainTests(unittest.TestCase):
             VALIDATION_RESULT_INCORRECT,
         )
 
+    # --------------------------------------------------------
+    # FASE 3B.2 — dominio binario BUENA / DEFECTUOSA
+    # --------------------------------------------------------
+
+    def test_binary_state_derives_from_historical_categories(self):
+        self.assertEqual(estado_real_from_category("NORMAL"), "BUENA")
+        self.assertIsNone(defect_type_from_category("NORMAL"))
+
+        self.assertEqual(estado_real_from_category("MANCHA"), "DEFECTUOSA")
+        self.assertEqual(defect_type_from_category("MANCHA"), "MANCHA")
+
+        self.assertEqual(estado_real_from_category("AGUJERO"), "DEFECTUOSA")
+        self.assertEqual(defect_type_from_category("AGUJERO"), "AGUJERO")
+
+    def test_binary_labels_and_notice(self):
+        self.assertEqual(VALIDATION_ESTADOS, ("BUENA", "DEFECTUOSA"))
+        self.assertEqual(VALIDATION_ESTADO_LABELS["BUENA"], "Buena")
+        self.assertEqual(VALIDATION_ESTADO_LABELS["DEFECTUOSA"], "Defectuosa")
+        self.assertEqual(
+            VALIDATION_DEFECT_TYPES,
+            ("MANCHA", "AGUJERO"),
+        )
+        self.assertEqual(
+            VALIDATION_CLASSIFICATION_LABELS["NORMAL"], "Buena"
+        )
+        self.assertEqual(
+            VALIDATION_CLASSIFICATION_LABELS["MANCHA"],
+            "Defectuosa · Mancha",
+        )
+        self.assertEqual(
+            VALIDATION_CLASSIFICATION_LABELS["AGUJERO"],
+            "Defectuosa · Agujero",
+        )
+        self.assertIn("PatchCore evalúa si la prenda", VALIDATION_BINARY_NOTICE)
+        self.assertIn(
+            "tipo de defecto lo indica la persona", VALIDATION_BINARY_NOTICE
+        )
+        self.assertNotEqual(
+            VALIDATION_DEFECT_TYPE_LABELS["MANCHA"],
+            VALIDATION_DEFECT_TYPE_LABELS["AGUJERO"],
+        )
+
+    def test_binary_resolution_rules(self):
+        self.assertEqual(
+            resolve_validation_category(estado_real="BUENA"), "NORMAL"
+        )
+        self.assertEqual(
+            resolve_validation_category(
+                estado_real="defectuosa", tipo_defecto="mancha"
+            ),
+            "MANCHA",
+        )
+        self.assertEqual(
+            resolve_validation_category(
+                estado_real="DEFECTUOSA", tipo_defecto="Agujero"
+            ),
+            "AGUJERO",
+        )
+
+        with self.assertRaises(AIDomainError):
+            resolve_validation_category(estado_real="DEFECTUOSA")
+
+        with self.assertRaises(AIDomainError):
+            resolve_validation_category(
+                estado_real="BUENA", tipo_defecto="MANCHA"
+            )
+
+        with self.assertRaises(AIDomainError):
+            resolve_validation_category(estado_real="DEFECTUOSA",
+                                        tipo_defecto="RASGADO")
+
+        with self.assertRaises(AIDomainError):
+            resolve_validation_category()
+
+        with self.assertRaises(AIDomainError):
+            category_from_estado("BUENA", "AGUJERO")
+
+        # El formato histórico sigue funcionando (compatibilidad).
+        self.assertEqual(
+            resolve_validation_category(category="NORMAL"), "NORMAL"
+        )
+        self.assertEqual(
+            resolve_validation_category(category="AGUJERO"), "AGUJERO"
+        )
+
+        with self.assertRaises(AIDomainError):
+            resolve_validation_category(
+                category="NORMAL", tipo_defecto="MANCHA"
+            )
+
+        with self.assertRaises(AIDomainError):
+            resolve_validation_category(
+                category="MANCHA", tipo_defecto="AGUJERO"
+            )
+
+    def test_classification_payload_for_the_ui(self):
+        buena = validation_classification("NORMAL")
+        self.assertEqual(buena["estado_real"], "BUENA")
+        self.assertIsNone(buena["tipo_defecto"])
+        self.assertIsNone(buena["tipo_defecto_label"])
+        self.assertEqual(buena["classification"], "Buena")
+
+        mancha = validation_classification("MANCHA")
+        self.assertEqual(mancha["estado_real"], "DEFECTUOSA")
+        self.assertEqual(mancha["tipo_defecto"], "MANCHA")
+        self.assertEqual(mancha["tipo_defecto_label"], "Mancha")
+        self.assertEqual(mancha["classification"], "Defectuosa · Mancha")
+
+        agujero = validation_classification("AGUJERO")
+        self.assertEqual(agujero["tipo_defecto"], "AGUJERO")
+        self.assertEqual(agujero["classification"], "Defectuosa · Agujero")
+
     @staticmethod
     def _synthetic_cases():
         return [
@@ -226,6 +349,57 @@ class ValidationDomainTests(unittest.TestCase):
         self.assertEqual(metrics["f1"], 0.8)
         self.assertEqual(metrics["accuracy"], 0.8)
         self.assertEqual(metrics["status"], "EVALUADO")
+
+    def test_metrics_are_binary_and_keep_the_defect_breakdown(self):
+        cases = self._synthetic_cases()
+
+        pending = ai_validation.compute_validation_metrics(cases)
+
+        self.assertEqual(
+            pending["estado_counts"], {"BUENA": 2, "DEFECTUOSA": 3}
+        )
+        self.assertEqual(pending["by_estado"]["BUENA"]["count"], 2)
+        self.assertEqual(pending["by_estado"]["DEFECTUOSA"]["count"], 3)
+        self.assertEqual(pending["defect_counts"], {"MANCHA": 2, "AGUJERO": 1})
+
+        # Sin umbral el desglose sólo cuenta casos (sin detectadas).
+        self.assertIsNone(pending["defects"]["threshold"])
+        self.assertEqual(pending["defects"]["MANCHA"]["evaluated"], 2)
+        self.assertIsNone(pending["defects"]["MANCHA"]["detected"])
+
+        evaluated = ai_validation.compute_validation_metrics(
+            cases, threshold=50.0, candidates=[30.0, 50.0]
+        )
+
+        self.assertEqual(
+            evaluated["confusion"], {"tp": 2, "fp": 0, "fn": 1, "tn": 2}
+        )
+        self.assertEqual(evaluated["threshold_reference"], 50.0)
+        self.assertEqual(evaluated["threshold_source"], "applied")
+        self.assertEqual(evaluated["defects"]["threshold"], 50.0)
+        self.assertEqual(
+            evaluated["defects"]["MANCHA"],
+            {"evaluated": 2, "detected": 1, "missed": 1},
+        )
+        self.assertEqual(
+            evaluated["defects"]["AGUJERO"],
+            {"evaluated": 1, "detected": 1, "missed": 0},
+        )
+
+        # Con sólo candidatos se conserva el umbral aplicado = None y
+        # las métricas binarias quedan en threshold_candidate_metrics.
+        candidate = ai_validation.compute_validation_metrics(
+            cases, candidates=[50.0]
+        )
+        self.assertIsNone(candidate["threshold"])
+        self.assertIsNone(candidate["confusion"])
+        self.assertEqual(candidate["threshold_source"], "candidate")
+        self.assertEqual(
+            candidate["threshold_candidate_metrics"]["fp"], 0
+        )
+        self.assertEqual(
+            candidate["threshold_candidate_metrics"]["fn"], 1
+        )
 
     def test_threshold_candidates_are_ranked_by_f1(self):
         cases = self._synthetic_cases()
@@ -527,6 +701,8 @@ class ValidationDbTests(_TrainingDbCase):
               AND e.event_type IN (
                     'VALIDATION_STARTED',
                     'VALIDATION_CASE_REGISTERED',
+                    'VALIDATION_CASE_CATEGORY_CHANGED',
+                    'VALIDATION_CASE_DELETED',
                     'VALIDATION_EVALUATED',
                     'VALIDATED'
                 )
@@ -1412,3 +1588,1304 @@ class ValidationDbTests(_TrainingDbCase):
 
         if response.status_code == 200:
             self.assertEqual(response.mimetype, "image/jpeg")
+
+
+# ============================================================
+# FASE 3B.1 — CORRECCIÓN DEL GROUND TRUTH Y BORRADO DE CASOS
+# ============================================================
+
+
+@unittest.skipUnless(
+    DB_AVAILABLE,
+    "MySQL no disponible; tests de FASE 3B.1 omitidos.",
+)
+class ValidationCaseEditDbTests(_TrainingDbCase):
+    """Editar la etiqueta humana o eliminar un caso, sin re-inferir."""
+
+    ADMIN_USERNAME = "ph3e_admin"
+    MM_USERNAME = "ph3e_mm"
+    QM_USERNAME = "ph3e_qm"
+
+    MODEL_CODE = "TEST-PH3E-EDIT"
+    MODELS = (MODEL_CODE,)
+
+    USERS = (
+        (ADMIN_USERNAME, "ADMIN"),
+        (MM_USERNAME, "MODEL_MANAGER"),
+        (QM_USERNAME, "QUALITY_MANAGER"),
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+
+        actor = cls.user_ids[cls.ADMIN_USERNAME]
+        manager = cls.user_ids[cls.MM_USERNAME]
+
+        for code in cls.MODELS:
+            model_id = cls.model_ids[code]
+
+            cls._delete_model(model_id)
+            cls._seed_accepted(model_id, actor)
+
+            # El MODEL_MANAGER «creador» puede gestionar el modelo.
+            cls.cur.execute(
+                "UPDATE garment_models SET created_by = %s WHERE id = %s",
+                (manager, model_id),
+            )
+            cls.conn.commit()
+
+            cls._train_model(model_id, actor)
+
+    @classmethod
+    def tearDownClass(cls):
+        for code in cls.MODELS:
+            model_id = cls.model_ids.get(code)
+
+            if model_id:
+                cls._clear_validation(model_id)
+
+        ai_validation.clear_model_inspectors()
+        super().tearDownClass()
+
+    # --------------------------------------------------------
+    # utilidades
+    # --------------------------------------------------------
+
+    def _case_row(self, case_id):
+        self.conn.commit()
+        self.cur.execute(
+            "SELECT * FROM ai_validation_cases WHERE id = %s",
+            (case_id,),
+        )
+        return self.cur.fetchone()
+
+    def _update_case(self, model_id, case_id, category, *,
+                     ai_model_id=None, username=None):
+        payload = {
+            "garment_model_id": model_id,
+            "case_id": case_id,
+            "category": category,
+        }
+
+        if ai_model_id is not None:
+            payload["ai_model_id"] = ai_model_id
+
+        return self._post(
+            "/api/ai/validation/case/update",
+            payload,
+            username,
+        )
+
+    def _delete_case(self, model_id, case_id, *,
+                     ai_model_id=None, username=None):
+        payload = {
+            "garment_model_id": model_id,
+            "case_id": case_id,
+        }
+
+        if ai_model_id is not None:
+            payload["ai_model_id"] = ai_model_id
+
+        return self._post(
+            "/api/ai/validation/case/delete",
+            payload,
+            username,
+        )
+
+    @staticmethod
+    def _file_digests(relative_paths):
+        root = Path(get_ai_artifacts_root())
+        return {
+            relative: hashlib.sha256(
+                (root / relative).read_bytes()
+            ).hexdigest()
+            for relative in relative_paths
+            if (root / relative).is_file()
+        }
+
+    @staticmethod
+    def _candidate(metrics, threshold=50.0):
+        """Fila de métricas de un threshold candidato concreto."""
+        for item in metrics.get("candidates") or []:
+            if float(item["threshold"]) == float(threshold):
+                return item
+
+        raise AssertionError(
+            f"No evaluó el threshold {threshold}: {metrics}"
+        )
+
+    def _latest_event(self, ai_model_id, event_type):
+        self.conn.commit()
+        self.cur.execute(
+            """
+            SELECT actor_id, payload_json, created_at
+            FROM ai_events
+            WHERE ai_model_id = %s AND event_type = %s
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (ai_model_id, event_type),
+        )
+        row = self.cur.fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "actor_id": row["actor_id"],
+            "created_at": row["created_at"],
+            "payload": (
+                json.loads(row["payload_json"])
+                if row["payload_json"]
+                else None
+            ),
+        }
+
+    # --------------------------------------------------------
+    # 1-2. la edición preserva score, hash y artefactos
+    # --------------------------------------------------------
+
+    def test_category_edit_preserves_score_and_never_reinfers(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        response, _ = self._post_case(model_id, "NORMAL", score=47.25)
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case = self._json(response)["case"]
+        before = self._case_row(case["id"])
+
+        with patch.object(
+            ai_validation,
+            "predict_with_ai_model",
+            side_effect=AssertionError("la edición no debe inferir"),
+        ):
+            edited = self._update_case(
+                model_id,
+                case["id"],
+                "MANCHA",
+                ai_model_id=ai_model_id,
+            )
+
+        self.assertEqual(edited.status_code, 200, self._json(edited))
+        body = self._json(edited)
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["result"]["changed"])
+        self.assertEqual(body["result"]["case"]["category"], "MANCHA")
+        self.assertEqual(body["validation"]["counts"]["MANCHA"], 1)
+        self.assertEqual(body["validation"]["counts"]["NORMAL"], 0)
+
+        after = self._case_row(case["id"])
+        self.assertEqual(after["category"], "MANCHA")
+
+        # Todo lo demás del caso queda idéntico (incluye el score
+        # predicho por el modelo y la fecha de registro).
+        for key in set(before) - {"category"}:
+            self.assertEqual(before[key], after.get(key), key)
+
+        self.assertEqual(float(after["anomaly_score"]), 47.25)
+        self.assertEqual(after["result"], VALIDATION_RESULT_PENDING)
+        self.assertEqual(after["prediction"], "NORMAL")
+        self.assertEqual(
+            after["image_sha256"],
+            hashlib.sha256(
+                (Path(get_ai_artifacts_root()) / after["image_path"]).read_bytes()
+            ).hexdigest(),
+        )
+
+        event = self._latest_event(
+            ai_model_id, "VALIDATION_CASE_CATEGORY_CHANGED"
+        )
+        self.assertIsNotNone(event)
+        self.assertEqual(
+            event["actor_id"],
+            self.user_ids[self.ADMIN_USERNAME],
+        )
+        self.assertIsNotNone(event["created_at"])
+        self.assertEqual(event["payload"]["validation_case_id"], case["id"])
+        self.assertEqual(event["payload"]["before_category"], "NORMAL")
+        self.assertEqual(event["payload"]["after_category"], "MANCHA")
+        self.assertEqual(event["payload"]["image_sha256"],
+                         before["image_sha256"])
+        self.assertAlmostEqual(
+            float(event["payload"]["anomaly_score"]), 47.25
+        )
+
+    def test_category_edit_preserves_heatmap_and_comparison(self):
+        try:
+            import numpy as np
+        except Exception:  # pragma: no cover
+            self.skipTest("numpy no disponible")
+
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+        anomaly_map = np.linspace(0.0, 1.0, 32 * 32).reshape(32, 32)
+
+        response, _ = self._post_case(
+            model_id,
+            "MANCHA",
+            score=88.0,
+            is_anomaly=True,
+            anomaly_map=anomaly_map,
+        )
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case = self._json(response)["case"]
+
+        paths = [case["image_path"], case["heatmap_path"],
+                 case["comparison_path"]]
+        self.assertTrue(all(paths), case)
+        before_files = self._file_digests(paths)
+        self.assertEqual(len(before_files), 3)
+
+        edited = self._update_case(
+            model_id, case["id"], "AGUJERO", ai_model_id=ai_model_id
+        )
+        self.assertEqual(edited.status_code, 200, self._json(edited))
+
+        after = self._case_row(case["id"])
+        self.assertEqual(after["category"], "AGUJERO")
+
+        for key in ("image_path", "heatmap_path", "comparison_path",
+                    "image_sha256", "anomaly_score", "created_at",
+                    "ai_model_id", "prediction"):
+            self.assertEqual(after[key], case.get(key, after[key]), key)
+
+        self.assertEqual(after["heatmap_path"], case["heatmap_path"])
+        self.assertEqual(after["comparison_path"], case["comparison_path"])
+        self.assertEqual(self._file_digests(paths), before_files)
+
+    # --------------------------------------------------------
+    # 3-4. categoría inválida y permisos
+    # --------------------------------------------------------
+
+    def test_invalid_category_is_rejected(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        response, _ = self._post_case(model_id, "NORMAL", score=21.0)
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case_id = self._json(response)["case"]["id"]
+
+        rejected = self._update_case(
+            model_id, case_id, "RASGADO", ai_model_id=ai_model_id
+        )
+
+        self.assertEqual(rejected.status_code, 400, self._json(rejected))
+        self.assertIn(
+            "Categoría inválida", self._json(rejected)["error"]
+        )
+        self.assertEqual(self._case_row(case_id)["category"], "NORMAL")
+
+    def test_edit_and_delete_require_permissions(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        response, _ = self._post_case(model_id, "NORMAL", score=15.0)
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case_id = self._json(response)["case"]["id"]
+
+        blocked = self._update_case(
+            model_id, case_id, "MANCHA", username=self.QM_USERNAME
+        )
+        self.assertEqual(blocked.status_code, 403, self._json(blocked))
+
+        blocked_delete = self._delete_case(
+            model_id, case_id, username=self.QM_USERNAME
+        )
+        self.assertEqual(
+            blocked_delete.status_code, 403, self._json(blocked_delete)
+        )
+        self.assertEqual(self._case_count(ai_model_id), 1)
+
+        with self.client.session_transaction() as sess:
+            sess.clear()
+
+        anonymous = self.client.post(
+            "/api/ai/validation/case/update",
+            json={
+                "garment_model_id": model_id,
+                "case_id": case_id,
+                "category": "MANCHA",
+            },
+        )
+        self.assertIn(anonymous.status_code, (302, 401))
+
+        allowed = self._update_case(
+            model_id, case_id, "MANCHA", username=self.MM_USERNAME
+        )
+        self.assertEqual(allowed.status_code, 200, self._json(allowed))
+
+        missing = self._update_case(model_id, 99999999, "MANCHA")
+        self.assertEqual(missing.status_code, 409, self._json(missing))
+        self.assertIn("no existe", self._json(missing)["error"])
+
+    # --------------------------------------------------------
+    # 5-6. la edición invalida las métricas de la sesión
+    # --------------------------------------------------------
+
+    def test_edit_invalidates_previous_session_metrics(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        for category, score in (("NORMAL", 12.0), ("MANCHA", 88.0)):
+            response, _ = self._post_case(model_id, category, score=score)
+            self.assertEqual(response.status_code, 201, self._json(response))
+
+        case_id = self._json(response)["case"]["id"]
+
+        evaluated = self._evaluate(model_id, ai_model_id, thresholds=[50])
+        self.assertEqual(evaluated.status_code, 200, self._json(evaluated))
+
+        session = self._session_row(ai_model_id)
+        self.assertEqual(
+            session["status"], VALIDATION_SESSION_STATUS_EVALUADA
+        )
+        self.assertIsNotNone(session["metrics_json"])
+        self.assertIsNotNone(session["threshold_candidate"])
+        self.assertIsNotNone(session["evaluated_at"])
+
+        state = self._json(evaluated)["validation"]
+        self.assertIsNotNone(state["metrics"])
+        self.assertTrue(state["can_complete"])
+
+        edited = self._update_case(
+            model_id, case_id, "AGUJERO", ai_model_id=ai_model_id
+        )
+        self.assertEqual(edited.status_code, 200, self._json(edited))
+        self.assertTrue(self._json(edited)["result"]["metrics_invalidated"])
+
+        session = self._session_row(ai_model_id)
+        self.assertEqual(
+            session["status"], VALIDATION_SESSION_STATUS_ABIERTA
+        )
+        self.assertIsNone(session["metrics_json"])
+        self.assertIsNone(session["threshold_candidate"])
+        self.assertIsNone(session["evaluated_at"])
+
+        state = self._json(edited)["validation"]
+        self.assertIsNone(state["metrics"])
+        self.assertTrue(state["can_evaluate"])
+        self.assertFalse(state["can_complete"])
+
+        # La sesión vuelve a exigir «Evaluar validación».
+        reevaluate = self._evaluate(model_id, ai_model_id, thresholds=[50])
+        self.assertEqual(
+            reevaluate.status_code, 200, self._json(reevaluate)
+        )
+        self.assertIsNotNone(self._session_row(ai_model_id)["metrics_json"])
+
+    def test_recalculated_metrics_use_the_new_category(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        normal, _ = self._post_case(model_id, "NORMAL", score=20.0)
+        self.assertEqual(normal.status_code, 201, self._json(normal))
+        normal_case = self._json(normal)["case"]
+
+        response, _ = self._post_case(model_id, "MANCHA", score=80.0,
+                                      is_anomaly=True)
+        self.assertEqual(response.status_code, 201, self._json(response))
+
+        evaluated = self._evaluate(model_id, ai_model_id, thresholds=[50])
+        metrics = self._json(evaluated)["result"]["metrics"]
+
+        self.assertEqual(
+            metrics["counts"], {"NORMAL": 1, "MANCHA": 1, "AGUJERO": 0}
+        )
+        candidate = self._candidate(metrics)
+        self.assertEqual(candidate["tp"], 1)
+        self.assertEqual(candidate["tn"], 1)
+        self.assertEqual(candidate["fn"], 0)
+
+        # La etiqueta real cambia: el mismo score pasa a ser FN.
+        edited = self._update_case(
+            model_id, normal_case["id"], "MANCHA", ai_model_id=ai_model_id
+        )
+        self.assertEqual(edited.status_code, 200, self._json(edited))
+
+        reevaluate = self._evaluate(model_id, ai_model_id, thresholds=[50])
+        metrics = self._json(reevaluate)["result"]["metrics"]
+
+        self.assertEqual(
+            metrics["counts"], {"NORMAL": 0, "MANCHA": 2, "AGUJERO": 0}
+        )
+        candidate = self._candidate(metrics)
+        self.assertEqual(candidate["tp"], 1)
+        self.assertEqual(candidate["fn"], 1)
+        self.assertEqual(candidate["tn"], 0)
+        self.assertEqual(candidate["fp"], 0)
+
+    # --------------------------------------------------------
+    # 7-8. training intacto y versión sin activar
+    # --------------------------------------------------------
+
+    def test_training_is_not_touched_by_a_category_edit(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        counts_before = self._counts(model_id)
+        artifacts_before = self._snapshot(
+            self._model_artifacts_dir(model_id, ai_model_id)
+        )
+        threshold_before = self.A.PATCHCORE_SCORE_THRESHOLD
+        checkpoint_before = self.A.PATCHCORE_CKPT
+
+        response, _ = self._post_case(model_id, "NORMAL", score=33.0)
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case_id = self._json(response)["case"]["id"]
+
+        edited = self._update_case(
+            model_id, case_id, "AGUJERO", ai_model_id=ai_model_id
+        )
+        self.assertEqual(edited.status_code, 200, self._json(edited))
+
+        self.assertEqual(self._counts(model_id), counts_before)
+        self.assertEqual(
+            self._snapshot(self._model_artifacts_dir(model_id, ai_model_id)),
+            artifacts_before,
+        )
+        self.assertEqual(self.A.PATCHCORE_SCORE_THRESHOLD, threshold_before)
+        self.assertEqual(self.A.PATCHCORE_CKPT, checkpoint_before)
+
+        deleted = self._delete_case(
+            model_id, case_id, ai_model_id=ai_model_id
+        )
+        self.assertEqual(deleted.status_code, 200, self._json(deleted))
+
+        self.assertEqual(self._counts(model_id), counts_before)
+        self.assertEqual(
+            self._snapshot(self._model_artifacts_dir(model_id, ai_model_id)),
+            artifacts_before,
+        )
+
+    def test_version_stays_unactivated_after_editing(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        response, _ = self._post_case(model_id, "NORMAL", score=33.0)
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case_id = self._json(response)["case"]["id"]
+
+        edited = self._update_case(
+            model_id, case_id, "MANCHA", ai_model_id=ai_model_id
+        )
+        self.assertEqual(edited.status_code, 200, self._json(edited))
+
+        model = self._ai_row(ai_model_id)
+        self.assertEqual(model["status"], "VALIDACION")
+        self.assertEqual(int(model["active"] or 0), 0)
+        self.assertIsNone(model["activated_by"])
+        self.assertIsNone(model["activated_at"])
+        self.assertIsNone(model["validated_by"])
+        self.assertIsNone(model["validated_at"])
+
+        self.assertEqual(self._event_count(ai_model_id, "ACTIVATED"), 0)
+        self.assertEqual(self._event_count(ai_model_id, "VALIDATED"), 0)
+        self.assertEqual(
+            self._event_count(ai_model_id, "VALIDATION_CASE_REGISTERED"), 1
+        )
+
+        # Ninguna versión de este modelo quedó activa.
+        self.conn.commit()
+        self.cur.execute(
+            """
+            SELECT COUNT(*) AS total FROM garment_ai_models
+            WHERE garment_model_id = %s AND active = 1
+            """,
+            (model_id,),
+        )
+        self.assertEqual(int(self.cur.fetchone()["total"]), 0)
+
+    # --------------------------------------------------------
+    # eliminación de un caso
+    # --------------------------------------------------------
+
+    def test_delete_case_removes_row_and_artifacts(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+        counts_before = self._counts(model_id)
+
+        first, _ = self._post_case(model_id, "NORMAL", score=18.0)
+        self.assertEqual(first.status_code, 201, self._json(first))
+        first_case = self._json(first)["case"]
+
+        second, _ = self._post_case(model_id, "MANCHA", score=77.0,
+                                    is_anomaly=True)
+        self.assertEqual(second.status_code, 201, self._json(second))
+        second_case = self._json(second)["case"]
+
+        evaluated = self._evaluate(model_id, ai_model_id, thresholds=[50])
+        self.assertEqual(evaluated.status_code, 200, self._json(evaluated))
+
+        removed_paths = [first_case["image_path"]]
+        kept_paths = [second_case["image_path"]]
+        self.assertEqual(len(self._file_digests(removed_paths)), 1)
+        self.assertEqual(len(self._file_digests(kept_paths)), 1)
+
+        deleted = self._delete_case(
+            model_id, first_case["id"], ai_model_id=ai_model_id
+        )
+        self.assertEqual(deleted.status_code, 200, self._json(deleted))
+        body = self._json(deleted)
+
+        self.assertTrue(body["result"]["deleted"])
+        self.assertTrue(body["result"]["metrics_invalidated"])
+        self.assertEqual(body["result"]["case"]["category"], "NORMAL")
+        self.assertEqual(body["validation"]["total_cases"], 1)
+
+        self.assertIsNone(self._case_row(first_case["id"]))
+        self.assertIsNotNone(self._case_row(second_case["id"]))
+        self.assertEqual(self._case_count(ai_model_id), 1)
+
+        self.assertEqual(self._file_digests(removed_paths), {})
+        self.assertEqual(len(self._file_digests(kept_paths)), 1)
+
+        session = self._session_row(ai_model_id)
+        self.assertEqual(
+            session["status"], VALIDATION_SESSION_STATUS_ABIERTA
+        )
+        self.assertIsNone(session["metrics_json"])
+        self.assertIsNone(session["threshold_candidate"])
+
+        event = self._latest_event(ai_model_id, "VALIDATION_CASE_DELETED")
+        self.assertIsNotNone(event)
+        self.assertEqual(
+            event["actor_id"], self.user_ids[self.ADMIN_USERNAME]
+        )
+        self.assertEqual(
+            event["payload"]["validation_case_id"], first_case["id"]
+        )
+        self.assertEqual(event["payload"]["category"], "NORMAL")
+        self.assertIn(first_case["image_path"],
+                      event["payload"]["files_removed"])
+
+        self.assertEqual(self._counts(model_id), counts_before)
+
+    def test_validation_page_shows_the_case_actions(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        response, _ = self._post_case(model_id, "NORMAL", score=12.0)
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case_id = self._json(response)["case"]["id"]
+
+        self._login(self.ADMIN_USERNAME)
+        page = self.client.get(
+            f"/modelos-prenda/{model_id}/validacion-ia/{ai_model_id}"
+        )
+        self.assertEqual(page.status_code, 200, page.status_code)
+        html = page.get_data(as_text=True)
+
+        self.assertIn("Editar clasificación real", html)
+        self.assertIn("Eliminar caso de validación", html)
+        self.assertIn(f"data-case-id=\"{case_id}\"", html)
+        self.assertIn(f"data-case-estado=\"{case_id}\"", html)
+        self.assertIn(f"data-case-tipo=\"{case_id}\"", html)
+        self.assertIn("can_edit_cases", html)
+        self.assertIn('"canManage": true', html)
+
+        # Tras cerrar la validación los casos dejan de ser editables.
+        self.assertEqual(
+            self._evaluate(model_id, ai_model_id).status_code, 200
+        )
+        self.assertEqual(self._complete(model_id, ai_model_id).status_code, 200)
+
+        page = self.client.get(
+            f"/modelos-prenda/{model_id}/validacion-ia/{ai_model_id}"
+        )
+        html = page.get_data(as_text=True)
+        self.assertNotIn(f"data-case-id=\"{case_id}\"", html)
+        self.assertIn('"can_edit_cases": false', html)
+
+    def test_edit_is_blocked_after_the_validation_closes(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        response, _ = self._post_case(model_id, "NORMAL", score=24.0)
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case_id = self._json(response)["case"]["id"]
+
+        self.assertEqual(
+            self._evaluate(model_id, ai_model_id).status_code, 200
+        )
+        self.assertEqual(self._complete(model_id, ai_model_id).status_code, 200)
+
+        session = self._session_row(ai_model_id)
+        self.assertEqual(
+            session["status"], VALIDATION_SESSION_STATUS_CERRADA
+        )
+
+        blocked = self._update_case(
+            model_id, case_id, "MANCHA", ai_model_id=ai_model_id
+        )
+        self.assertEqual(blocked.status_code, 409, self._json(blocked))
+        self.assertIn("ya fue cerrada", self._json(blocked)["error"])
+
+        blocked_delete = self._delete_case(
+            model_id, case_id, ai_model_id=ai_model_id
+        )
+        self.assertEqual(
+            blocked_delete.status_code, 409, self._json(blocked_delete)
+        )
+
+        self.assertEqual(self._case_row(case_id)["category"], "NORMAL")
+        self.assertEqual(self._case_count(ai_model_id), 1)
+
+
+# Reutiliza el andamiaje de FASE 3B (entrenamiento falso, limpieza de
+# sesión/casos, helpers de API) sin volver a ejecutar sus tests.
+for _helper_name in (
+    "_FakeTrainer",
+    "setUp",
+    "_cancel_stray_jobs",
+    "_train_model",
+    "_invalidate_latest",
+    "_clear_validation",
+    "_ai_row",
+    "_ai_row_by_model",
+    "_session_row",
+    "_case_count",
+    "_event_count",
+    "_counts",
+    "_snapshot",
+    "_model_artifacts_dir",
+    "_new_validation_image",
+    "_fake_predict",
+    "_post",
+    "_post_case",
+    "_start_session",
+    "_evaluate",
+    "_complete",
+):
+    setattr(
+        ValidationCaseEditDbTests,
+        _helper_name,
+        vars(ValidationDbTests)[_helper_name],
+    )
+
+
+# ============================================================
+# FASE 3B.2 — VALIDACIÓN BINARIA BUENA / DEFECTUOSA
+# ============================================================
+
+
+@unittest.skipUnless(
+    DB_AVAILABLE,
+    "MySQL no disponible; tests de FASE 3B.2 omitidos.",
+)
+class ValidationBinaryDbTests(_TrainingDbCase):
+    """Captura/edición binaria BUENA vs DEFECTUOSA + desglose."""
+
+    ADMIN_USERNAME = "ph3b2_admin"
+    MM_USERNAME = "ph3b2_mm"
+    QM_USERNAME = "ph3b2_qm"
+
+    MODEL_CODE = "TEST-PH3B2-BIN"
+    MODELS = (MODEL_CODE,)
+
+    USERS = (
+        (ADMIN_USERNAME, "ADMIN"),
+        (MM_USERNAME, "MODEL_MANAGER"),
+        (QM_USERNAME, "QUALITY_MANAGER"),
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+
+        actor = cls.user_ids[cls.ADMIN_USERNAME]
+        manager = cls.user_ids[cls.MM_USERNAME]
+
+        for code in cls.MODELS:
+            model_id = cls.model_ids[code]
+
+            cls._delete_model(model_id)
+            cls._seed_accepted(model_id, actor)
+
+            cls.cur.execute(
+                "UPDATE garment_models SET created_by = %s WHERE id = %s",
+                (manager, model_id),
+            )
+            cls.conn.commit()
+
+            cls._train_model(model_id, actor)
+
+    @classmethod
+    def tearDownClass(cls):
+        for code in cls.MODELS:
+            model_id = cls.model_ids.get(code)
+
+            if model_id:
+                cls._clear_validation(model_id)
+
+        ai_validation.clear_model_inspectors()
+        super().tearDownClass()
+
+    # --------------------------------------------------------
+    # utilidades
+    # --------------------------------------------------------
+
+    def _post_binary_case(
+        self,
+        model_id,
+        estado_real,
+        tipo_defecto=None,
+        *,
+        score=42.0,
+        is_anomaly=None,
+        anomaly_map=None,
+        observation="",
+        username=None,
+        ai_model_id=None,
+        category=None,
+    ):
+        payload = {
+            "garment_model_id": model_id,
+            "estado_real": estado_real,
+            "observation": observation,
+        }
+
+        if tipo_defecto is not None:
+            payload["tipo_defecto"] = tipo_defecto
+
+        if category is not None:
+            payload["category"] = category
+
+        if ai_model_id is not None:
+            payload["ai_model_id"] = ai_model_id
+
+        payload["image_base64"] = base64.b64encode(
+            self._new_validation_image(
+                f"{estado_real}-{tipo_defecto}-{category}"
+            )
+        ).decode("ascii")
+
+        fake = self._fake_predict(
+            score=score,
+            is_anomaly=is_anomaly,
+            anomaly_map=anomaly_map,
+        )
+
+        with patch.object(ai_validation, "predict_with_ai_model", fake):
+            response = self._post(
+                "/api/ai/validation/case",
+                payload,
+                username=username,
+            )
+
+        return response, fake
+
+    def _update_case_binary(
+        self, model_id, case_id, estado_real, tipo_defecto=None,
+        *, ai_model_id=None, username=None,
+    ):
+        payload = {
+            "garment_model_id": model_id,
+            "case_id": case_id,
+            "estado_real": estado_real,
+        }
+
+        if tipo_defecto is not None:
+            payload["tipo_defecto"] = tipo_defecto
+
+        if ai_model_id is not None:
+            payload["ai_model_id"] = ai_model_id
+
+        return self._post(
+            "/api/ai/validation/case/update",
+            payload,
+            username,
+        )
+
+    def _case_row(self, case_id):
+        self.conn.commit()
+        self.cur.execute(
+            "SELECT * FROM ai_validation_cases WHERE id = %s",
+            (case_id,),
+        )
+        return self.cur.fetchone()
+
+    @staticmethod
+    def _file_digests(relative_paths):
+        root = Path(get_ai_artifacts_root())
+        return {
+            relative: hashlib.sha256(
+                (root / relative).read_bytes()
+            ).hexdigest()
+            for relative in relative_paths
+            if (root / relative).is_file()
+        }
+
+    @staticmethod
+    def _candidate(metrics, threshold=50.0):
+        for item in metrics.get("candidates") or []:
+            if float(item["threshold"]) == float(threshold):
+                return item
+
+        raise AssertionError(
+            f"No evaluó el threshold {threshold}: {metrics}"
+        )
+
+    def _latest_event(self, ai_model_id, event_type):
+        self.conn.commit()
+        self.cur.execute(
+            """
+            SELECT actor_id, payload_json, created_at
+            FROM ai_events
+            WHERE ai_model_id = %s AND event_type = %s
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (ai_model_id, event_type),
+        )
+        row = self.cur.fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "actor_id": row["actor_id"],
+            "created_at": row["created_at"],
+            "payload": (
+                json.loads(row["payload_json"])
+                if row["payload_json"]
+                else None
+            ),
+        }
+
+    # --------------------------------------------------------
+    # 1-4. captura binaria
+    # --------------------------------------------------------
+
+    def test_buena_is_stored_as_normal_without_defect_type(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        response, _ = self._post_binary_case(
+            model_id, "BUENA", score=41.5
+        )
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case = self._json(response)["case"]
+
+        self.assertEqual(case["category"], "NORMAL")
+        self.assertEqual(case["estado_real"], "BUENA")
+        self.assertIsNone(case["tipo_defecto"])
+        self.assertIsNone(case["tipo_defecto_label"])
+        self.assertEqual(case["classification"], "Buena")
+        self.assertEqual(case["anomaly_score"], 41.5)
+
+        stored = self._case_row(case["id"])
+        self.assertEqual(stored["category"], "NORMAL")
+
+        state = self._json(response)["validation"]
+        self.assertEqual(state["counts_estado"]["BUENA"], 1)
+        self.assertEqual(state["counts_estado"]["DEFECTUOSA"], 0)
+        self.assertEqual(state["counts"]["NORMAL"], 1)
+        self.assertEqual(state["binary_notice"], VALIDATION_BINARY_NOTICE)
+
+    def test_defectuosa_requires_a_defect_type(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        missing, _ = self._post_binary_case(model_id, "DEFECTUOSA")
+        self.assertEqual(missing.status_code, 409, self._json(missing))
+        self.assertIn("tipo de defecto", self._json(missing)["error"])
+
+        with_type, _ = self._post_binary_case(
+            model_id, "BUENA", "MANCHA"
+        )
+        self.assertEqual(with_type.status_code, 409, self._json(with_type))
+        self.assertIn(
+            "no puede indicar tipo", self._json(with_type)["error"]
+        )
+
+        self.assertEqual(self._case_count(ai_model_id), 0)
+
+    def test_defectuosa_stores_mancha_or_agujero(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        for tipo, score in (("MANCHA", 88.0), ("AGUJERO", 61.5)):
+            response, _ = self._post_binary_case(
+                model_id,
+                "DEFECTUOSA",
+                tipo,
+                score=score,
+                is_anomaly=True,
+            )
+            self.assertEqual(
+                response.status_code, 201, self._json(response)
+            )
+            case = self._json(response)["case"]
+
+            self.assertEqual(case["category"], tipo)
+            self.assertEqual(case["estado_real"], "DEFECTUOSA")
+            self.assertEqual(case["tipo_defecto"], tipo)
+            self.assertEqual(
+                case["tipo_defecto_label"],
+                VALIDATION_DEFECT_TYPE_LABELS[tipo],
+            )
+            self.assertEqual(
+                case["classification"],
+                VALIDATION_CLASSIFICATION_LABELS[tipo],
+            )
+
+        state = self._json(response)["validation"]
+        self.assertEqual(state["counts_estado"]["DEFECTUOSA"], 2)
+        self.assertEqual(state["counts_defects"], {"MANCHA": 1, "AGUJERO": 1})
+
+    def test_legacy_category_payload_still_works(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        response, _ = self._post_case(model_id, "MANCHA", score=70.0)
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case = self._json(response)["case"]
+        self.assertEqual(case["estado_real"], "DEFECTUOSA")
+        self.assertEqual(case["tipo_defecto"], "MANCHA")
+
+        mismatch, _ = self._post_binary_case(
+            model_id, "BUENA", category="MANCHA"
+        )
+        self.assertEqual(mismatch.status_code, 409, self._json(mismatch))
+
+        self.assertEqual(self._case_count(ai_model_id), 1)
+
+    # --------------------------------------------------------
+    # 6-7. métricas binarias + desglose Mancha/Agujero
+    # --------------------------------------------------------
+
+    def test_evaluation_uses_buena_vs_defectuosa(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        for estado, tipo, score in (
+            ("BUENA", None, 40.0),
+            ("DEFECTUOSA", "MANCHA", 80.0),
+            ("DEFECTUOSA", "AGUJERO", 30.0),
+        ):
+            response, _ = self._post_binary_case(
+                model_id,
+                estado,
+                tipo,
+                score=score,
+                is_anomaly=estado == "DEFECTUOSA",
+            )
+            self.assertEqual(
+                response.status_code, 201, self._json(response)
+            )
+
+        evaluated = self._evaluate(
+            model_id, ai_model_id, thresholds=[50.0]
+        )
+        self.assertEqual(evaluated.status_code, 200, self._json(evaluated))
+        metrics = self._json(evaluated)["result"]["metrics"]
+
+        self.assertEqual(
+            metrics["estado_counts"], {"BUENA": 1, "DEFECTUOSA": 2}
+        )
+        self.assertEqual(
+            metrics["counts_estado"], {"BUENA": 1, "DEFECTUOSA": 2}
+        )
+        self.assertEqual(
+            metrics["counts"], {"NORMAL": 1, "MANCHA": 1, "AGUJERO": 1}
+        )
+        self.assertEqual(
+            metrics["defect_counts"], {"MANCHA": 1, "AGUJERO": 1}
+        )
+        self.assertEqual(metrics["threshold"], None)
+        self.assertEqual(metrics["confusion"], None)
+
+        candidate = self._candidate(metrics, 50.0)
+        self.assertEqual(candidate["tp"], 1)
+        self.assertEqual(candidate["fn"], 1)
+        self.assertEqual(candidate["fp"], 0)
+        self.assertEqual(candidate["tn"], 1)
+
+        binary = metrics["threshold_candidate_metrics"]
+        self.assertEqual(binary["fp"], 0)
+        self.assertEqual(binary["fn"], 1)
+        self.assertEqual(metrics["threshold_source"], "candidate")
+
+        self.assertEqual(metrics["defects"]["MANCHA"], {
+            "evaluated": 1, "detected": 1, "missed": 0,
+        })
+        self.assertEqual(metrics["defects"]["AGUJERO"], {
+            "evaluated": 1, "detected": 0, "missed": 1,
+        })
+        self.assertEqual(metrics["defects"]["threshold"], 50.0)
+
+        session = self._session_row(ai_model_id)
+        self.assertEqual(
+            session["status"], VALIDATION_SESSION_STATUS_EVALUADA
+        )
+        self.assertEqual(
+            float(session["threshold_candidate"]), 50.0
+        )
+
+    # --------------------------------------------------------
+    # 9. editar estado/tipo sin re-inferir
+    # --------------------------------------------------------
+
+    def test_binary_edit_preserves_artifacts_and_invalidates(self):
+        try:
+            import numpy as np
+        except Exception:  # pragma: no cover
+            self.skipTest("numpy no disponible")
+
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+        anomaly_map = np.linspace(0.0, 1.0, 32 * 32).reshape(32, 32)
+
+        response, _ = self._post_binary_case(
+            model_id,
+            "BUENA",
+            score=47.25,
+            anomaly_map=anomaly_map,
+        )
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case = self._json(response)["case"]
+        before = self._case_row(case["id"])
+
+        paths = [
+            before["image_path"],
+            before["heatmap_path"],
+            before["comparison_path"],
+        ]
+        self.assertTrue(all(paths), before)
+        digests_before = self._file_digests(paths)
+        self.assertEqual(len(digests_before), 3)
+
+        self.assertEqual(
+            self._evaluate(model_id, ai_model_id, thresholds=[50.0])
+            .status_code,
+            200,
+        )
+
+        with patch.object(
+            ai_validation,
+            "predict_with_ai_model",
+            side_effect=AssertionError("la edición no debe inferir"),
+        ):
+            edited = self._update_case_binary(
+                model_id,
+                case["id"],
+                "DEFECTUOSA",
+                "MANCHA",
+                ai_model_id=ai_model_id,
+            )
+
+        self.assertEqual(edited.status_code, 200, self._json(edited))
+        result = self._json(edited)["result"]
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["metrics_invalidated"])
+        self.assertEqual(result["case"]["category"], "MANCHA")
+        self.assertEqual(result["case"]["estado_real"], "DEFECTUOSA")
+        self.assertEqual(result["case"]["tipo_defecto"], "MANCHA")
+        self.assertEqual(
+            result["case"]["classification"], "Defectuosa · Mancha"
+        )
+        self.assertIn("Defectuosa · Mancha", result["message"])
+
+        after = self._case_row(case["id"])
+        self.assertEqual(after["category"], "MANCHA")
+
+        for key in set(before) - {"category"}:
+            self.assertEqual(before[key], after.get(key), key)
+
+        self.assertEqual(float(after["anomaly_score"]), 47.25)
+        self.assertEqual(self._file_digests(paths), digests_before)
+
+        session = self._session_row(ai_model_id)
+        self.assertEqual(
+            session["status"], VALIDATION_SESSION_STATUS_ABIERTA
+        )
+        self.assertIsNone(session["metrics_json"])
+        self.assertIsNone(session["threshold_candidate"])
+
+        event = self._latest_event(
+            ai_model_id, "VALIDATION_CASE_CATEGORY_CHANGED"
+        )
+        self.assertIsNotNone(event)
+        self.assertEqual(event["payload"]["before_estado_real"], "BUENA")
+        self.assertEqual(event["payload"]["before_tipo_defecto"], None)
+        self.assertEqual(
+            event["payload"]["after_estado_real"], "DEFECTUOSA"
+        )
+        self.assertEqual(
+            event["payload"]["after_tipo_defecto"], "MANCHA"
+        )
+
+        # Vuelve a validarse sin tocar el modelo ni el umbral.
+        self.assertEqual(
+            self._evaluate(model_id, ai_model_id, thresholds=[50.0])
+            .status_code,
+            200,
+        )
+        row = self._ai_row(ai_model_id)
+        self.assertEqual(row["status"], "VALIDACION")
+        self.assertEqual(int(row["active"] or 0), 0)
+
+    def test_defectuosa_without_type_is_rejected_on_edit(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        response, _ = self._post_binary_case(model_id, "BUENA", score=22.0)
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case_id = self._json(response)["case"]["id"]
+
+        missing = self._update_case_binary(
+            model_id, case_id, "DEFECTUOSA", ai_model_id=ai_model_id
+        )
+        self.assertEqual(missing.status_code, 400, self._json(missing))
+        self.assertIn("tipo de defecto", self._json(missing)["error"])
+
+        with_type = self._update_case_binary(
+            model_id, case_id, "BUENA", "AGUJERO",
+            ai_model_id=ai_model_id,
+        )
+        self.assertEqual(with_type.status_code, 400, self._json(with_type))
+
+        self.assertEqual(self._case_row(case_id)["category"], "NORMAL")
+
+    # --------------------------------------------------------
+    # 10. tabla y miniaturas usan la clasificación persistida
+    # --------------------------------------------------------
+
+    def test_page_shows_binary_classification_and_thumbnails(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+        url = f"/modelos-prenda/{model_id}/validacion-ia/{ai_model_id}"
+
+        response, _ = self._post_binary_case(
+            model_id, "DEFECTUOSA", "MANCHA", score=91.0, is_anomaly=True
+        )
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case_id = self._json(response)["case"]["id"]
+
+        self._login(self.ADMIN_USERNAME)
+        page = self.client.get(url)
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+
+        self.assertIn("Estado real de la prenda", html)
+        self.assertIn(VALIDATION_BINARY_NOTICE, html)
+        self.assertIn("Defectuosa · Mancha", html)
+        self.assertIn(f"data-case-estado=\"{case_id}\"", html)
+        self.assertIn(f"data-case-tipo=\"{case_id}\"", html)
+
+        thumbs = (
+            html.split('id="valThumbs"', 1)[-1].split("</section>", 1)[0]
+        )
+        self.assertIn("Defectuosa · Mancha", thumbs)
+
+        # Editar el caso refresca la miniatura con la nueva etiqueta.
+        edited = self._update_case_binary(
+            model_id, case_id, "BUENA", ai_model_id=ai_model_id
+        )
+        self.assertEqual(edited.status_code, 200, self._json(edited))
+
+        page = self.client.get(url)
+        html = page.get_data(as_text=True)
+        thumbs = (
+            html.split('id="valThumbs"', 1)[-1].split("</section>", 1)[0]
+        )
+
+        self.assertIn("Buena", thumbs)
+        self.assertNotIn("Defectuosa · Mancha", thumbs)
+
+    # --------------------------------------------------------
+    # 12. training y versión intactos
+    # --------------------------------------------------------
+
+    def test_training_and_version_are_untouched(self):
+        model_id = self.model_ids[self.MODEL_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+
+        counts_before = self._counts(model_id)
+        artifacts_before = self._snapshot(
+            self._model_artifacts_dir(model_id, ai_model_id)
+        )
+        model_before = self._ai_row(ai_model_id)
+
+        for estado, tipo in (
+            ("BUENA", None),
+            ("DEFECTUOSA", "MANCHA"),
+            ("DEFECTUOSA", "AGUJERO"),
+        ):
+            response, _ = self._post_binary_case(
+                model_id, estado, tipo, score=55.0
+            )
+            self.assertEqual(
+                response.status_code, 201, self._json(response)
+            )
+
+        self.assertEqual(self._counts(model_id), counts_before)
+        self.assertEqual(
+            self._snapshot(
+                self._model_artifacts_dir(model_id, ai_model_id)
+            ),
+            artifacts_before,
+        )
+
+        model_after = self._ai_row(ai_model_id)
+        # Registrar el primer caso abre la sesión (ENTRENADO ->
+        # VALIDACIÓN): la versión nunca queda ACTIVA ni VALIDADA.
+        self.assertEqual(model_after["status"], "VALIDACION")
+        self.assertEqual(int(model_after["active"] or 0), 0)
+        self.assertEqual(int(model_before["active"] or 0), 0)
+        self.assertEqual(
+            model_after["checkpoint_path"],
+            model_before["checkpoint_path"],
+        )
+        self.assertEqual(
+            self._event_count(ai_model_id, "ACTIVATED"), 0
+        )
+
+        self.conn.commit()
+        self.cur.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM ai_training_images t
+            WHERE t.garment_model_id = %s
+              AND t.sha256 IN (
+                  SELECT c.image_sha256
+                  FROM ai_validation_cases c
+                  WHERE c.ai_model_id = %s
+              )
+            """,
+            (model_id, ai_model_id),
+        )
+        self.assertEqual(int(self.cur.fetchone()["total"]), 0)
+
+
+# Reutiliza el andamiaje de FASE 3B (entrenamiento falso, limpieza de
+# sesión/casos, helpers de API) sin volver a ejecutar sus tests.
+for _helper_name in (
+    "_FakeTrainer",
+    "setUp",
+    "_cancel_stray_jobs",
+    "_train_model",
+    "_invalidate_latest",
+    "_clear_validation",
+    "_ai_row",
+    "_ai_row_by_model",
+    "_session_row",
+    "_case_count",
+    "_event_count",
+    "_counts",
+    "_snapshot",
+    "_model_artifacts_dir",
+    "_new_validation_image",
+    "_fake_predict",
+    "_post",
+    "_post_case",
+    "_start_session",
+    "_evaluate",
+    "_complete",
+):
+    setattr(
+        ValidationBinaryDbTests,
+        _helper_name,
+        vars(ValidationDbTests)[_helper_name],
+    )

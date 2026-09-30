@@ -56,7 +56,12 @@ from ai_domain import (
     sha256_bytes,
     start_ai_capture_session,
     stop_ai_capture_session,
+    resolve_validation_category,
     VALIDATION_CATEGORIES,
+    VALIDATION_DEFECT_TYPES,
+    VALIDATION_DEFECT_TYPE_LABELS,
+    VALIDATION_ESTADO_LABELS,
+    VALIDATION_ESTADOS,
     VALIDATION_MODEL_STATUSES,
     get_ai_artifacts_root,
 )
@@ -18947,6 +18952,10 @@ def garment_validation_page(model_id, ai_model_id=None):
         role=role,
         can_manage=can_manage_garment_model(model),
         categories=VALIDATION_CATEGORIES,
+        estados=VALIDATION_ESTADOS,
+        estado_labels=VALIDATION_ESTADO_LABELS,
+        defect_types=VALIDATION_DEFECT_TYPES,
+        defect_type_labels=VALIDATION_DEFECT_TYPE_LABELS,
     )
 
 
@@ -19210,6 +19219,8 @@ def ai_validation_case():
         return guard_error
 
     category = body.get("category")
+    estado_real = body.get("estado_real")
+    tipo_defecto = body.get("tipo_defecto")
     observation = body.get("observation")
     actor_id = session.get("user_id")
 
@@ -19230,6 +19241,8 @@ def ai_validation_case():
             cur,
             ai_model_id=resolved,
             category=category,
+            estado_real=estado_real,
+            tipo_defecto=tipo_defecto,
             image_bytes=image_bytes,
             observation=observation,
             actor_id=actor_id,
@@ -19425,6 +19438,209 @@ def ai_validation_complete():
             "Validación completada. La versión quedó VALIDADA; "
             "la activación es una acción posterior (FASE 3C)."
         ),
+        "result": _json_sanitize(result),
+        "validation": _json_sanitize(state),
+    })
+
+
+def _parse_required_case_id(body):
+    """case_id obligatorio del cuerpo JSON o (None, error 400)."""
+    raw = body.get("case_id")
+
+    if raw in (None, ""):
+        return None, (jsonify({
+            "ok": False,
+            "error": "case_id es obligatorio.",
+        }), 400)
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None, (jsonify({
+            "ok": False,
+            "error": "case_id inválido.",
+        }), 400)
+
+    if value <= 0:
+        return None, (jsonify({
+            "ok": False,
+            "error": "case_id debe ser positivo.",
+        }), 400)
+
+    return value, None
+
+
+@app.route("/api/ai/validation/case/update", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_case_update():
+    """Corrige la clasificación real (ground truth) de un caso.
+
+    Solo cambia la etiqueta humana: la imagen, el score y los
+    artefactos no se tocan y no se vuelve a inferir. La edición
+    invalida las métricas de la sesión.
+    """
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    case_id, case_error = _parse_required_case_id(body)
+
+    if case_error is not None:
+        return case_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    try:
+        category_key = resolve_validation_category(
+            category=body.get("category"),
+            estado_real=body.get("estado_real"),
+            tipo_defecto=body.get("tipo_defecto"),
+        )
+    except AIDomainError as error:
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+        }), 400
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        result = ai_validation.update_validation_case_category(
+            cur,
+            case_id=case_id,
+            ai_model_id=resolved,
+            category=category_key,
+            actor_id=actor_id,
+        )
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+            "validation": _ai_validation_state(resolved),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo editar la clasificación real "
+            f"(ai_model_id={resolved}, case_id={case_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo editar la clasificación real. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": result.get("message"),
+        "result": _json_sanitize(result),
+        "validation": _json_sanitize(state),
+    })
+
+
+@app.route("/api/ai/validation/case/delete", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_case_delete():
+    """Elimina un caso mal registrado (error operativo).
+
+    No toca el entrenamiento, la versión ni los demás casos; la
+    operación queda registrada en el historial de auditoría.
+    """
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    case_id, case_error = _parse_required_case_id(body)
+
+    if case_error is not None:
+        return case_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        result = ai_validation.delete_validation_case(
+            cur,
+            case_id=case_id,
+            ai_model_id=resolved,
+            actor_id=actor_id,
+        )
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+            "validation": _ai_validation_state(resolved),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo eliminar el caso de validación "
+            f"(ai_model_id={resolved}, case_id={case_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo eliminar el caso de validación. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": result.get("message"),
         "result": _json_sanitize(result),
         "validation": _json_sanitize(state),
     })

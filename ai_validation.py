@@ -31,6 +31,14 @@ from ai_domain import (
     VALIDATION_CATEGORIES,
     VALIDATION_CATEGORY_LABELS,
     VALIDATION_CATEGORY_NORMAL,
+    VALIDATION_CLASSIFICATION_LABELS,
+    VALIDATION_BINARY_NOTICE,
+    VALIDATION_DEFECT_TYPE_LABELS,
+    VALIDATION_DEFECT_TYPES,
+    VALIDATION_ESTADO_BUENA,
+    VALIDATION_ESTADO_DEFECTUOSA,
+    VALIDATION_ESTADO_LABELS,
+    VALIDATION_ESTADOS,
     VALIDATION_IMAGE_NOTICE,
     VALIDATION_MODEL_STATUSES,
     VALIDATION_RESULT_PENDING,
@@ -38,16 +46,20 @@ from ai_domain import (
     VALIDATION_SESSION_STATUS_CERRADA,
     VALIDATION_SESSION_STATUS_EVALUADA,
     atomic_write_bytes,
+    defect_type_from_category,
+    estado_real_from_category,
     get_ai_artifacts_root,
     is_technically_invalidated,
     normalize_validation_category,
     record_ai_event,
     resolve_under_root,
+    resolve_validation_category,
     sha256_bytes,
     transition_ai_model_status,
     validate_validation_case_result,
     validation_case_relative_dir,
     validation_case_relative_path,
+    validation_classification,
 )
 from ai_training import default_connect, get_roi_fractions
 
@@ -55,6 +67,13 @@ from ai_training import default_connect, get_roi_fractions
 # ============================================================
 # SCORE
 # ============================================================
+
+# Estados desde los cuales un caso todavía puede corregirse o
+# eliminarse (la validación abierta; nunca una sesión CERRADA).
+CASE_EDITABLE_MODEL_STATUSES = (
+    AI_MODEL_STATUS_ENTRENADO,
+    AI_MODEL_STATUS_VALIDACION,
+)
 
 def normalize_score_percent(raw) -> float | None:
     """Score en escala porcentual 0..100 (misma regla que producción).
@@ -621,22 +640,31 @@ def training_sha256_match(cur, sha256: str) -> dict | None:
     return dict(row) if row else None
 
 
+def _classification_fields(category_key) -> dict:
+    """Campos binarios (estado/tipo) de una categoría persistida."""
+    return validation_classification(category_key)
+
+
 def register_validation_case(
     cur,
     *,
     ai_model_id,
-    category,
+    category=None,
     image_bytes,
     observation=None,
     actor_id=None,
     predict_fn=None,
     preprocess=False,
+    estado_real=None,
+    tipo_defecto=None,
 ) -> dict:
     """Registra un caso de validación con su score y artefactos.
 
     - exige imagen nueva (SHA-256 distinto de todo el training);
     - usa los artefactos de la versión (o ``predict_fn`` en tests);
-    - guarda el score bruto con resultado pendiente de calibración.
+    - guarda el score bruto con resultado pendiente de calibración;
+    - acepta el estado binario (BUENA/DEFECTUOSA + tipo de defecto)
+      o la categoría histórica (NORMAL/MANCHA/AGUJERO).
     """
     if not image_bytes:
         raise AIDomainError(
@@ -647,7 +675,11 @@ def register_validation_case(
         raise AIDomainError("La imagen de validación es inválida.")
 
     image_bytes = bytes(image_bytes)
-    category_key = normalize_validation_category(category)
+    category_key = resolve_validation_category(
+        category=category,
+        estado_real=estado_real,
+        tipo_defecto=tipo_defecto,
+    )
 
     bundle = load_model_bundle(cur, ai_model_id)
     sha256 = sha256_bytes(image_bytes)
@@ -863,6 +895,8 @@ def register_validation_case(
             "validation_session_id": int(session["id"]),
             "validation_case_id": case_id,
             "category": category_key,
+            "estado_real": estado_real_from_category(category_key),
+            "tipo_defecto": defect_type_from_category(category_key),
             "anomaly_score": score_percent,
             "prediction": prediction_label,
             "result": result,
@@ -880,6 +914,7 @@ def register_validation_case(
         "version": bundle["version"],
         "category": category_key,
         "category_label": VALIDATION_CATEGORY_LABELS[category_key],
+        **_classification_fields(category_key),
         "image_path": original_relative,
         "image_sha256": sha256,
         "anomaly_score": score_percent,
@@ -926,6 +961,36 @@ def count_cases_by_category(cases) -> dict:
     return counts
 
 
+def count_cases_by_estado(cases) -> dict:
+    """Conteo binario BUENA/DEFECTUOSA derivado de ``category``."""
+    counts = {key: 0 for key in VALIDATION_ESTADOS}
+
+    for case in cases or []:
+        key = str(case.get("category") or "").strip().upper()
+        if key not in VALIDATION_CATEGORIES:
+            continue
+
+        counts[estado_real_from_category(key)] += 1
+
+    return counts
+
+
+def count_defect_cases(cases) -> dict:
+    """Desglose secundario: cuántos Mancha y cuántos Agujero."""
+    counts = {key: 0 for key in VALIDATION_DEFECT_TYPES}
+
+    for case in cases or []:
+        key = str(case.get("category") or "").strip().upper()
+        if key not in VALIDATION_CATEGORIES:
+            continue
+
+        tipo = defect_type_from_category(key)
+        if tipo in counts:
+            counts[tipo] += 1
+
+    return counts
+
+
 def get_validation_state(cur, ai_model_id) -> dict:
     """Estado completo de la validación para la UI."""
     model = _fetch_validation_model(cur, ai_model_id)
@@ -960,33 +1025,9 @@ def get_validation_state(cur, ai_model_id) -> dict:
     invalidated = is_technically_invalidated(model.get("notes"))
     status = str(model["status"] or "").strip().upper()
 
-    cases_ui = []
-
-    for case in cases:
-        score = case.get("anomaly_score")
-        cases_ui.append(
-            {
-                **case,
-                "anomaly_score": (
-                    float(score) if score is not None else None
-                ),
-                "threshold_used": (
-                    float(case["threshold_used"])
-                    if case.get("threshold_used") is not None
-                    else None
-                ),
-                "category_label": VALIDATION_CATEGORY_LABELS.get(
-                    str(case.get("category") or "").strip().upper(),
-                    str(case.get("category") or ""),
-                ),
-                "result_label": (
-                    "Pendiente de calibración"
-                    if str(case.get("result") or "")
-                    == VALIDATION_RESULT_PENDING
-                    else case.get("result")
-                ),
-            }
-        )
+    # Fuente única de verdad: cada caso serializado con su estado
+    # binario derivado (tabla, miniaturas y edición usan esto).
+    cases_ui = [_case_ui_payload(case) for case in cases]
 
     return {
         "ai_model_id": int(model["id"]),
@@ -1004,9 +1045,17 @@ def get_validation_state(cur, ai_model_id) -> dict:
             else None
         ),
         "counts": counts,
+        "counts_estado": count_cases_by_estado(cases),
+        "counts_defects": count_defect_cases(cases),
         "total_cases": len(cases),
         "categories": list(VALIDATION_CATEGORIES),
         "category_labels": dict(VALIDATION_CATEGORY_LABELS),
+        "estados": list(VALIDATION_ESTADOS),
+        "estado_labels": dict(VALIDATION_ESTADO_LABELS),
+        "defect_types": list(VALIDATION_DEFECT_TYPES),
+        "defect_type_labels": dict(VALIDATION_DEFECT_TYPE_LABELS),
+        "classification_labels": dict(VALIDATION_CLASSIFICATION_LABELS),
+        "binary_notice": VALIDATION_BINARY_NOTICE,
         "cases": cases_ui,
         "last_case": cases_ui[-1] if cases_ui else None,
         "metrics": metrics,
@@ -1017,6 +1066,14 @@ def get_validation_state(cur, ai_model_id) -> dict:
         and status in (AI_MODEL_STATUS_ENTRENADO, AI_MODEL_STATUS_VALIDACION),
         "can_complete": bool(metrics)
         and status == AI_MODEL_STATUS_VALIDACION,
+        "can_edit_cases": bool(cases)
+        and (not invalidated)
+        and status in CASE_EDITABLE_MODEL_STATUSES
+        and (
+            session is None
+            or str(session.get("status") or "").strip().upper()
+            != VALIDATION_SESSION_STATUS_CERRADA
+        ),
         "notice": VALIDATION_IMAGE_NOTICE,
         "pending_calibration": True,
     }
@@ -1085,7 +1142,7 @@ def default_threshold_candidates(cases=None) -> list[float]:
 
 
 def binary_metrics(cases, threshold) -> dict:
-    """NORMAL vs ANOMALÍA para un umbral dado."""
+    """BUENA (negativa) vs DEFECTUOSA (positiva) para un umbral dado."""
     limit = float(threshold)
     tp = fp = fn = tn = 0
     false_positives = false_negatives = 0
@@ -1098,10 +1155,8 @@ def binary_metrics(cases, threshold) -> dict:
             continue
 
         evaluated += 1
-        real_anomaly = (
-            str(case.get("category") or "").strip().upper()
-            != VALIDATION_CATEGORY_NORMAL
-        )
+        estado = _case_estado(case)
+        real_anomaly = estado == VALIDATION_ESTADO_DEFECTUOSA
         predicted_anomaly = score >= limit
 
         if real_anomaly and predicted_anomaly:
@@ -1164,17 +1219,74 @@ def evaluate_threshold_candidates(cases, candidates) -> list[dict]:
     return results
 
 
+def _case_estado(case) -> str | None:
+    """Estado binario de un caso; None si la categoría es desconocida."""
+    key = str(case.get("category") or "").strip().upper()
+
+    if key not in VALIDATION_CATEGORIES:
+        return None
+
+    return estado_real_from_category(key)
+
+
+def compute_defect_breakdown(cases, threshold=None) -> dict:
+    """Desglose secundario Mancha/Agujero (detalle humano, no IA).
+
+    «Detectada» = score >= umbral de referencia. La decisión del
+    modelo sigue siendo binaria (BUENA vs DEFECTUOSA): este desglose
+    permite demostrar los dos defectos de la tesis sin afirmar que
+    PatchCore clasifica semánticamente el tipo.
+    """
+    limit = None if threshold is None else float(threshold)
+
+    breakdown = {
+        "threshold": (
+            round(float(threshold), 4) if threshold is not None else None
+        ),
+        "labels": dict(VALIDATION_DEFECT_TYPE_LABELS),
+    }
+
+    for tipo in VALIDATION_DEFECT_TYPES:
+        evaluated = 0
+        detected = 0
+
+        for case in cases or []:
+            if str(case.get("category") or "").strip().upper() != tipo:
+                continue
+
+            score = _numeric_score(case.get("anomaly_score"))
+
+            if score is None:
+                continue
+
+            evaluated += 1
+
+            if limit is not None and score >= limit:
+                detected += 1
+
+        breakdown[tipo] = {
+            "evaluated": evaluated,
+            "detected": detected if limit is not None else None,
+            "missed": (
+                (evaluated - detected) if limit is not None else None
+            ),
+        }
+
+    return breakdown
+
+
 def compute_validation_metrics(
     cases,
     *,
     threshold=None,
     candidates=None,
 ) -> dict:
-    """Métricas descriptivas + (opcional) evaluación de candidatos."""
+    """Métricas binarias (BUENA/DEFECTUOSA) + candidatos de umbral."""
     rows = list(cases or [])
 
     by_category = {}
     scored_by_category = {}
+    by_estado = {}
 
     for key in VALIDATION_CATEGORIES:
         scores = [
@@ -1191,6 +1303,22 @@ def compute_validation_metrics(
         }
         scored_by_category[key] = numeric
 
+    # Desglose binario principal: BUENA (clase negativa) frente a
+    # DEFECTUOSA (clase positiva).
+    for estado in VALIDATION_ESTADOS:
+        scores = [
+            _numeric_score(case.get("anomaly_score"))
+            for case in rows
+            if _case_estado(case) == estado
+        ]
+        numeric = [score for score in scores if score is not None]
+
+        by_estado[estado] = {
+            "count": len(scores),
+            "evaluated": len(numeric),
+            "distribution": _distribution(numeric),
+        }
+
     all_scores = [
         _numeric_score(case.get("anomaly_score")) for case in rows
     ]
@@ -1200,12 +1328,20 @@ def compute_validation_metrics(
     metrics = {
         "total": len(rows),
         "by_category": by_category,
+        "by_estado": by_estado,
+        "estado_counts": count_cases_by_estado(rows),
+        "defect_counts": count_defect_cases(rows),
+        "estado_labels": dict(VALIDATION_ESTADO_LABELS),
+        "defect_labels": dict(VALIDATION_DEFECT_TYPE_LABELS),
+        "classification_labels": dict(VALIDATION_CLASSIFICATION_LABELS),
         "scored": len(numeric_scores),
         "pending_scores": missing,
         "pending_calibration": threshold is None,
         "threshold": (
             round(float(threshold), 4) if threshold is not None else None
         ),
+        "threshold_reference": None,
+        "threshold_source": None,
         "distribution": _distribution(numeric_scores),
         "confusion": None,
         "false_positives": None,
@@ -1217,6 +1353,8 @@ def compute_validation_metrics(
         "accuracy": None,
         "candidates": [],
         "best_threshold": None,
+        "threshold_candidate_metrics": None,
+        "defects": compute_defect_breakdown(rows, None),
         "status": (
             "PENDIENTE_CALIBRACION"
             if threshold is None
@@ -1233,6 +1371,25 @@ def compute_validation_metrics(
 
         if evaluated and evaluated[0]["f1"] is not None:
             metrics["best_threshold"] = evaluated[0]["threshold"]
+
+    # Umbral de referencia para el desglose y las métricas binarias
+    # NUNCA sustituye el umbral aplicado: es sólo el candidato.
+    reference = (
+        threshold if threshold is not None else metrics["best_threshold"]
+    )
+
+    if reference is not None:
+        metrics["threshold_reference"] = round(float(reference), 4)
+        metrics["threshold_source"] = (
+            "applied" if threshold is not None else "candidate"
+        )
+
+        if threshold is None:
+            metrics["threshold_candidate_metrics"] = binary_metrics(
+                rows, reference
+            )
+
+    metrics["defects"] = compute_defect_breakdown(rows, reference)
 
     return metrics
 
@@ -1310,6 +1467,9 @@ def evaluate_validation(
     )
     metrics["by_category_labels"] = dict(VALIDATION_CATEGORY_LABELS)
     metrics["counts"] = count_cases_by_category(cases)
+    metrics["counts_estado"] = count_cases_by_estado(cases)
+    metrics["counts_defects"] = count_defect_cases(cases)
+    metrics["binary_notice"] = VALIDATION_BINARY_NOTICE
 
     best = metrics.get("best_threshold")
 
@@ -1339,6 +1499,8 @@ def evaluate_validation(
             "validation_session_id": int(session["id"]),
             "cases": len(cases),
             "best_threshold": best,
+            "counts_estado": count_cases_by_estado(cases),
+            "counts_defects": count_defect_cases(cases),
             "model_status": model.get("status"),
         },
     )
@@ -1449,4 +1611,393 @@ def complete_validation(cur, *, ai_model_id, actor_id=None) -> dict:
         "version": model.get("version"),
         "status": AI_MODEL_STATUS_VALIDADO,
         "already_validated": False,
+    }
+
+
+# ============================================================
+# FASE 3B.1 — CORRECCIÓN DEL GROUND TRUTH Y ELIMINACIÓN DE CASOS
+#
+# Permite corregir la etiqueta humana de un caso (o eliminarlo si
+# fue un error operativo) SIN repetir la inferencia: la imagen, su
+# SHA-256, el score, los artefactos y la fecha quedan intactos.
+# Toda edición invalida las métricas de la sesión.
+# ============================================================
+
+_VALIDATION_CASE_COLUMNS = """
+    c.id, c.validation_session_id, c.ai_model_id,
+    c.garment_model_id, c.category, c.image_path,
+    c.image_sha256, c.anomaly_score, c.threshold_used,
+    c.prediction, c.result, c.observation,
+    c.heatmap_path, c.comparison_path, c.created_at,
+    c.created_by
+"""
+
+
+def _case_ui_payload(case: dict) -> dict:
+    """Caso serializado para la UI/API (score y umbral como float)."""
+    score = case.get("anomaly_score")
+    threshold = case.get("threshold_used")
+    category = str(case.get("category") or "").strip().upper()
+
+    try:
+        derived = validation_classification(category)
+    except AIDomainError:
+        # Fila con categoría fuera de catálogo: la UI nunca debe romperse.
+        derived = {
+            "estado_real": None,
+            "estado_label": None,
+            "tipo_defecto": None,
+            "tipo_defecto_label": None,
+            "classification": category,
+        }
+
+    return {
+        **case,
+        "id": int(case["id"]),
+        "anomaly_score": float(score) if score is not None else None,
+        "threshold_used": (
+            float(threshold) if threshold is not None else None
+        ),
+        "category": category,
+        "category_label": VALIDATION_CATEGORY_LABELS.get(category, category),
+        **derived,
+        "result_label": (
+            "Pendiente de calibración"
+            if str(case.get("result") or "") == VALIDATION_RESULT_PENDING
+            else case.get("result")
+        ),
+    }
+
+
+def _fetch_validation_case(
+    cur, case_id, ai_model_id=None
+) -> dict:
+    """Trae un caso por id (y opcionalmente por versión)."""
+    try:
+        case_key = int(case_id)
+    except (TypeError, ValueError) as error:
+        raise AIDomainError("case_id inválido.") from error
+
+    sql = (
+        f"SELECT {_VALIDATION_CASE_COLUMNS} "
+        "FROM ai_validation_cases c "
+        "WHERE c.id = %s"
+    )
+    params: list = [case_key]
+
+    if ai_model_id is not None:
+        sql += " AND c.ai_model_id = %s"
+        params.append(int(ai_model_id))
+
+    cur.execute(sql, tuple(params))
+    row = cur.fetchone()
+
+    if row is None:
+        raise AIDomainError(
+            "El caso de validación solicitado no existe en esta versión."
+        )
+
+    return dict(row)
+
+
+def _fetch_validation_session_by_id(cur, session_id) -> dict:
+    try:
+        session_key = int(session_id)
+    except (TypeError, ValueError) as error:
+        raise AIDomainError("validation_session_id inválido.") from error
+
+    cur.execute(
+        """
+        SELECT id, ai_model_id, status, metrics_json,
+               threshold_candidate, evaluated_at, closed_at
+        FROM ai_validation_sessions
+        WHERE id = %s
+        """,
+        (session_key,),
+    )
+    row = cur.fetchone()
+
+    if row is None:
+        raise AIDomainError("La sesión de validación del caso no existe.")
+
+    return dict(row)
+
+
+def _ensure_case_editable(model: dict, session: dict | None) -> None:
+    """Guardas comunes: versión en validación y sesión abierta."""
+    if is_technically_invalidated(model.get("notes")):
+        raise AIDomainError(
+            "Esta versión está marcada NO VALIDADA / NO APTO PARA "
+            "ACTIVACIÓN: no se pueden editar sus casos."
+        )
+
+    if session is None:
+        raise AIDomainError(
+            "No existe una sesión de validación para este caso."
+        )
+
+    session_status = str(session.get("status") or "").strip().upper()
+
+    if session_status == VALIDATION_SESSION_STATUS_CERRADA:
+        raise AIDomainError(
+            "La validación de esta versión ya fue cerrada: no se "
+            "pueden editar ni eliminar sus casos."
+        )
+
+    status = str(model.get("status") or "").strip().upper()
+
+    if status not in CASE_EDITABLE_MODEL_STATUSES:
+        raise AIDomainError(
+            "Los casos solo pueden editarse mientras la versión está "
+            "ENTRENADO o EN VALIDACIÓN (estado actual: "
+            f"{status or 'SIN ESTADO'})."
+        )
+
+
+def _invalidate_session_metrics(cur, session: dict) -> dict:
+    """Deja la sesión ABIERTA y sin métricas tras tocar sus casos.
+
+    Las métricas derivadas del ground truth quedan obsoletas: vuelve
+    a exigirse la acción «Evaluar validación».
+    """
+    session_id = int(session["id"])
+    previous_status = str(session.get("status") or "").strip().upper()
+    had_metrics = bool(session.get("metrics_json"))
+
+    cur.execute(
+        """
+        UPDATE ai_validation_sessions
+        SET status = %s,
+            metrics_json = NULL,
+            threshold_candidate = NULL,
+            evaluated_at = NULL
+        WHERE id = %s
+        """,
+        (VALIDATION_SESSION_STATUS_ABIERTA, session_id),
+    )
+
+    return {
+        "validation_session_id": session_id,
+        "previous_status": previous_status,
+        "status": VALIDATION_SESSION_STATUS_ABIERTA,
+        "had_metrics": had_metrics,
+        "invalidated": had_metrics
+        or previous_status == VALIDATION_SESSION_STATUS_EVALUADA,
+    }
+
+
+def _remove_case_artifacts(case: dict) -> list[str]:
+    """Borra los archivos del caso; devuelve las rutas eliminadas."""
+    root = get_ai_artifacts_root()
+    removed: list[str] = []
+
+    for key in ("image_path", "heatmap_path", "comparison_path"):
+        relative = str(case.get(key) or "").strip()
+
+        if not relative:
+            continue
+
+        try:
+            target = resolve_under_root(root, relative)
+        except AIDomainError:
+            continue
+
+        try:
+            if target.is_file():
+                target.unlink()
+                removed.append(relative)
+        except OSError:
+            continue
+
+    try:
+        case_dir = resolve_under_root(
+            root,
+            validation_case_relative_dir(
+                case.get("garment_model_id"),
+                case.get("ai_model_id"),
+                case.get("category"),
+                case.get("id"),
+            ),
+        )
+
+        if case_dir.is_dir() and not any(case_dir.iterdir()):
+            case_dir.rmdir()
+    except (AIDomainError, OSError):
+        pass
+
+    return removed
+
+
+def update_validation_case_category(
+    cur,
+    *,
+    case_id,
+    ai_model_id,
+    category=None,
+    actor_id=None,
+    estado_real=None,
+    tipo_defecto=None,
+) -> dict:
+    """Corrige la clasificación real (ground truth) de un caso.
+
+    Acepta el estado binario (BUENA/DEFECTUOSA + tipo de defecto) o la
+    categoría histórica. Solo cambia la columna ``category``: imagen,
+    SHA-256, score de anomalía, artefactos, versión y fecha permanecen
+    intactos, y NO se vuelve a ejecutar la inferencia. La edición
+    invalida las métricas de la sesión.
+    """
+    model = _fetch_validation_model(cur, ai_model_id)
+    case = _fetch_validation_case(cur, case_id, ai_model_id)
+    session = _fetch_validation_session_by_id(
+        cur, case["validation_session_id"]
+    )
+    _ensure_case_editable(model, session)
+
+    new_category = resolve_validation_category(
+        category=category,
+        estado_real=estado_real,
+        tipo_defecto=tipo_defecto,
+    )
+    previous_category = normalize_validation_category(case.get("category"))
+    new_label = VALIDATION_CLASSIFICATION_LABELS[new_category]
+    previous_label = VALIDATION_CLASSIFICATION_LABELS[previous_category]
+
+    if new_category == previous_category:
+        return {
+            "changed": False,
+            "message": (
+                f"La clasificación real ya era {previous_label}."
+            ),
+            "ai_model_id": int(model["id"]),
+            "validation_session_id": int(session["id"]),
+            "case": _case_ui_payload(case),
+            "metrics_invalidated": False,
+            "notice": VALIDATION_IMAGE_NOTICE,
+        }
+
+    cur.execute(
+        "UPDATE ai_validation_cases SET category = %s WHERE id = %s",
+        (new_category, int(case["id"])),
+    )
+
+    invalidation = _invalidate_session_metrics(cur, session)
+    updated = _fetch_validation_case(cur, case["id"])
+
+    record_ai_event(
+        cur,
+        "VALIDATION_CASE_CATEGORY_CHANGED",
+        actor_id=actor_id,
+        ai_model_id=int(model["id"]),
+        payload={
+            "validation_session_id": int(session["id"]),
+            "validation_case_id": int(case["id"]),
+            "before_category": previous_category,
+            "after_category": new_category,
+            "before_estado_real": estado_real_from_category(
+                previous_category
+            ),
+            "after_estado_real": estado_real_from_category(new_category),
+            "before_tipo_defecto": defect_type_from_category(
+                previous_category
+            ),
+            "after_tipo_defecto": defect_type_from_category(new_category),
+            "image_sha256": case.get("image_sha256"),
+            "image_path": case.get("image_path"),
+            "anomaly_score": (
+                float(case["anomaly_score"])
+                if case.get("anomaly_score") is not None
+                else None
+            ),
+            "session_status_before": invalidation["previous_status"],
+            "session_status_after": invalidation["status"],
+            "metrics_invalidated": invalidation["invalidated"],
+        },
+    )
+
+    return {
+        "changed": True,
+        "message": (
+            f"Clasificación real actualizada a {new_label}. El score y "
+            "los artefactos no se modificaron; vuelva a «Evaluar "
+            "validación» para recalcular las métricas."
+        ),
+        "ai_model_id": int(model["id"]),
+        "validation_session_id": int(session["id"]),
+        "case": _case_ui_payload(updated),
+        "metrics_invalidated": invalidation["invalidated"],
+        "notice": VALIDATION_IMAGE_NOTICE,
+    }
+
+
+def delete_validation_case(
+    cur,
+    *,
+    case_id,
+    ai_model_id,
+    actor_id=None,
+) -> dict:
+    """Elimina un caso registrado por error operativo.
+
+    No toca el entrenamiento, la versión ni los demás casos; solo
+    borra la fila del caso y sus artefactos, e invalida las métricas
+    de la sesión. Queda registrado en el historial de auditoría.
+    """
+    model = _fetch_validation_model(cur, ai_model_id)
+    case = _fetch_validation_case(cur, case_id, ai_model_id)
+    session = _fetch_validation_session_by_id(
+        cur, case["validation_session_id"]
+    )
+    _ensure_case_editable(model, session)
+
+    removed_case = _case_ui_payload(case)
+
+    cur.execute(
+        "DELETE FROM ai_validation_cases WHERE id = %s",
+        (int(case["id"]),),
+    )
+
+    if cur.rowcount == 0:
+        raise AIDomainError("El caso de validación ya no existe.")
+
+    removed_files = _remove_case_artifacts(case)
+    invalidation = _invalidate_session_metrics(cur, session)
+
+    record_ai_event(
+        cur,
+        "VALIDATION_CASE_DELETED",
+        actor_id=actor_id,
+        ai_model_id=int(model["id"]),
+        payload={
+            "validation_session_id": int(session["id"]),
+            "validation_case_id": int(case["id"]),
+            "category": removed_case["category"],
+            "estado_real": removed_case.get("estado_real"),
+            "tipo_defecto": removed_case.get("tipo_defecto"),
+            "image_sha256": case.get("image_sha256"),
+            "image_path": case.get("image_path"),
+            "anomaly_score": (
+                float(case["anomaly_score"])
+                if case.get("anomaly_score") is not None
+                else None
+            ),
+            "files_removed": removed_files,
+            "session_status_before": invalidation["previous_status"],
+            "session_status_after": invalidation["status"],
+            "metrics_invalidated": invalidation["invalidated"],
+        },
+    )
+
+    return {
+        "deleted": True,
+        "message": (
+            "Caso de validación eliminado. Las métricas de la sesión "
+            "quedaron invalidadas; vuelva a «Evaluar validación» antes "
+            "de cerrar la validación."
+        ),
+        "ai_model_id": int(model["id"]),
+        "validation_session_id": int(session["id"]),
+        "case": removed_case,
+        "files_removed": removed_files,
+        "metrics_invalidated": invalidation["invalidated"],
+        "notice": VALIDATION_IMAGE_NOTICE,
     }

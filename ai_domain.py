@@ -825,6 +825,60 @@ VALIDATION_CATEGORY_LABELS = {
     VALIDATION_CATEGORY_AGUJERO: "Agujero",
 }
 
+# ============================================================
+# FASE 3B.2 — VALIDACIÓN BINARIA BUENA / DEFECTUOSA
+#
+# La decisión del modelo es binaria: patrón normal vs anomalía.
+# El TIPO de defecto lo aporta la persona que valida y se conserva
+# como detalle secundario (la tesis necesita Mancha/Agujero), pero
+# PatchCore NO clasifica semánticamente MANCHA vs AGUJERO.
+#
+# Compatibilidad hacia atrás (sin migración destructiva): la columna
+# ``category`` sigue siendo la fuente única de verdad y el estado
+# binario se deriva de ella de forma reversible:
+#   NORMAL   -> BUENA   (tipo_defecto NULL)
+#   MANCHA   -> DEFECTUOSA / MANCHA
+#   AGUJERO  -> DEFECTUOSA / AGUJERO
+# ============================================================
+
+VALIDATION_ESTADO_BUENA = "BUENA"
+VALIDATION_ESTADO_DEFECTUOSA = "DEFECTUOSA"
+
+# Orden estable para la UI y los tests.
+VALIDATION_ESTADOS = (
+    VALIDATION_ESTADO_BUENA,
+    VALIDATION_ESTADO_DEFECTUOSA,
+)
+
+VALIDATION_ESTADO_LABELS = {
+    VALIDATION_ESTADO_BUENA: "Buena",
+    VALIDATION_ESTADO_DEFECTUOSA: "Defectuosa",
+}
+
+# Tipos de defecto admitidos (detalle secundario, decisión humana).
+VALIDATION_DEFECT_TYPES = (
+    VALIDATION_CATEGORY_MANCHA,
+    VALIDATION_CATEGORY_AGUJERO,
+)
+
+VALIDATION_DEFECT_TYPE_LABELS = {
+    VALIDATION_CATEGORY_MANCHA: "Mancha",
+    VALIDATION_CATEGORY_AGUJERO: "Agujero",
+}
+
+# Etiqueta única que ve la persona (tabla y miniaturas).
+VALIDATION_CLASSIFICATION_LABELS = {
+    VALIDATION_CATEGORY_NORMAL: "Buena",
+    VALIDATION_CATEGORY_MANCHA: "Defectuosa · Mancha",
+    VALIDATION_CATEGORY_AGUJERO: "Defectuosa · Agujero",
+}
+
+# Mensaje obligatorio junto al capturador de validación.
+VALIDATION_BINARY_NOTICE = (
+    "PatchCore evalúa si la prenda se aparta del patrón normal. "
+    "El tipo de defecto lo indica la persona que realiza la validación."
+)
+
 VALIDATION_SESSION_STATUS_ABIERTA = "ABIERTA"
 VALIDATION_SESSION_STATUS_EVALUADA = "EVALUADA"
 VALIDATION_SESSION_STATUS_CERRADA = "CERRADA"
@@ -880,6 +934,175 @@ def normalize_validation_category(value) -> str:
     return raw
 
 
+def normalize_validation_estado(value) -> str:
+    """Normaliza y valida el estado real binario (BUENA/DEFECTUOSA)."""
+    raw = str(value or "").strip().upper().replace("-", "_")
+
+    aliases = {
+        "BUENAS": VALIDATION_ESTADO_BUENA,
+        "BIEN": VALIDATION_ESTADO_BUENA,
+        "OK": VALIDATION_ESTADO_BUENA,
+        "SIN_DEFECTO": VALIDATION_ESTADO_BUENA,
+        "SIN DEFECTO": VALIDATION_ESTADO_BUENA,
+        "DEFECTUOSO": VALIDATION_ESTADO_DEFECTUOSA,
+        "DEFECTUOSOS": VALIDATION_ESTADO_DEFECTUOSA,
+        "CON_DEFECTO": VALIDATION_ESTADO_DEFECTUOSA,
+        "CON DEFECTO": VALIDATION_ESTADO_DEFECTUOSA,
+        "ANOMALIA": VALIDATION_ESTADO_DEFECTUOSA,
+        "ANOMALÍA": VALIDATION_ESTADO_DEFECTUOSA,
+    }
+
+    raw = aliases.get(raw, raw)
+
+    if raw not in VALIDATION_ESTADOS:
+        raise AIDomainError(
+            "Estado real inválido: use BUENA o DEFECTUOSA."
+        )
+
+    return raw
+
+
+def normalize_validation_defect_type(value) -> str | None:
+    """Normaliza el tipo de defecto; vacío/None => sin tipo."""
+    if value is None:
+        return None
+
+    raw = str(value).strip().upper()
+
+    if not raw:
+        return None
+
+    aliases = {
+        "MANCHAS": VALIDATION_CATEGORY_MANCHA,
+        "AGUJEROS": VALIDATION_CATEGORY_AGUJERO,
+        "HUECO": VALIDATION_CATEGORY_AGUJERO,
+    }
+
+    raw = aliases.get(raw, raw)
+
+    if raw not in VALIDATION_DEFECT_TYPES:
+        raise AIDomainError(
+            "Tipo de defecto inválido: use MANCHA o AGUJERO "
+            "(déjelo vacío si la prenda está BUENA)."
+        )
+
+    return raw
+
+
+def estado_real_from_category(category) -> str:
+    """Estado binario derivado de la categoría histórica."""
+    key = normalize_validation_category(category)
+
+    if key == VALIDATION_CATEGORY_NORMAL:
+        return VALIDATION_ESTADO_BUENA
+
+    return VALIDATION_ESTADO_DEFECTUOSA
+
+
+def defect_type_from_category(category) -> str | None:
+    """Tipo de defecto derivado; NULL cuando la prenda está BUENA."""
+    key = normalize_validation_category(category)
+
+    if key == VALIDATION_CATEGORY_NORMAL:
+        return None
+
+    return key
+
+
+def category_from_estado(estado_real, tipo_defecto=None) -> str:
+    """Traduce estado binario + tipo al valor persistido (``category``).
+
+    Reglas:
+    - BUENA  => tipo_defecto debe ser NULL (se limpia si llega vacío);
+    - DEFECTUOSA => tipo_defecto obligatorio (MANCHA o AGUJERO).
+    """
+    estado = normalize_validation_estado(estado_real)
+    tipo = normalize_validation_defect_type(tipo_defecto)
+
+    if estado == VALIDATION_ESTADO_BUENA:
+        if tipo is not None:
+            raise AIDomainError(
+                "Una prenda BUENA no puede indicar tipo de defecto."
+            )
+        return VALIDATION_CATEGORY_NORMAL
+
+    if tipo is None:
+        raise AIDomainError(
+            "La prenda DEFECTUOSA debe indicar el tipo de defecto "
+            "(MANCHA o AGUJERO)."
+        )
+
+    return tipo
+
+
+def resolve_validation_category(
+    *,
+    category=None,
+    estado_real=None,
+    tipo_defecto=None,
+) -> str:
+    """Resuelve la categoría persistible desde el formato nuevo o el antiguo.
+
+    Formato nuevo (FASE 3B.2): ``estado_real`` (+ ``tipo_defecto``).
+    Formato histórico: ``category`` (NORMAL/MANCHA/AGUJERO).
+    """
+    has_estado = estado_real is not None and str(estado_real).strip() != ""
+    has_category = category is not None and str(category).strip() != ""
+    has_tipo = tipo_defecto is not None and str(tipo_defecto).strip() != ""
+
+    if has_estado:
+        resolved = category_from_estado(estado_real, tipo_defecto)
+
+        if has_category:
+            legacy = normalize_validation_category(category)
+
+            if legacy != resolved:
+                raise AIDomainError(
+                    "El estado real indicado no coincide con la "
+                    "categoría del caso."
+                )
+
+        return resolved
+
+    if has_category:
+        key = normalize_validation_category(category)
+
+        if has_tipo:
+            tipo = normalize_validation_defect_type(tipo_defecto)
+
+            if tipo != defect_type_from_category(key):
+                raise AIDomainError(
+                    "El tipo de defecto no coincide con la categoría "
+                    "indicada."
+                )
+
+        return key
+
+    raise AIDomainError(
+        "Debe indicar el estado real (BUENA/DEFECTUOSA) o la "
+        "categoría del caso."
+    )
+
+
+def validation_classification(category) -> dict:
+    """Estado binario + tipo de defecto derivados de ``category``."""
+    key = normalize_validation_category(category)
+
+    return {
+        "estado_real": estado_real_from_category(key),
+        "estado_label": VALIDATION_ESTADO_LABELS[
+            estado_real_from_category(key)
+        ],
+        "tipo_defecto": defect_type_from_category(key),
+        "tipo_defecto_label": (
+            VALIDATION_DEFECT_TYPE_LABELS[key]
+            if defect_type_from_category(key) is not None
+            else None
+        ),
+        "classification": VALIDATION_CLASSIFICATION_LABELS[key],
+    }
+
+
 def validate_validation_case_result(category, score, threshold=None) -> str | None:
     """Resultado CORRECTO/INCORRECTO frente a la etiqueta humana.
 
@@ -889,8 +1112,11 @@ def validate_validation_case_result(category, score, threshold=None) -> str | No
     if threshold is None or score is None:
         return None
 
+    # Decisión binaria: BUENA (negativo) vs DEFECTUOSA (positivo).
     predicted_anomaly = float(score) >= float(threshold)
-    real_anomaly = str(category) != VALIDATION_CATEGORY_NORMAL
+    real_anomaly = (
+        estado_real_from_category(category) == VALIDATION_ESTADO_DEFECTUOSA
+    )
 
     return (
         VALIDATION_RESULT_CORRECT
@@ -1228,6 +1454,8 @@ AI_EVENT_TYPES = {
     "TRAINING_CANCELLED",
     "VALIDATION_STARTED",
     "VALIDATION_CASE_REGISTERED",
+    "VALIDATION_CASE_CATEGORY_CHANGED",
+    "VALIDATION_CASE_DELETED",
     "VALIDATION_EVALUATED",
     "VALIDATED",
     "REJECTED",

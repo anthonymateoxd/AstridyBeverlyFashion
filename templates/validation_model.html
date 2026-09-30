@@ -246,6 +246,30 @@
     text-decoration: none;
   }
 
+  .val-case-actions {
+    min-width: 240px;
+  }
+
+  .val-case-actions select {
+    display: block;
+    width: 100%;
+    margin-bottom: 6px;
+    padding: 6px 8px;
+    border: 1px solid #d6ddeb;
+    border-radius: 8px;
+    background: #fff;
+    font-size: 12px;
+    color: #26364f;
+  }
+
+  .val-case-actions .detail-button {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    font-size: 11px;
+    padding: 6px 8px;
+  }
+
   .val-empty {
     font-size: 14px;
     color: #67758d;
@@ -291,6 +315,45 @@
 
   .val-metric span { display: block; font-size: 12px; color: #67758d; }
   .val-metric strong { font-size: 18px; color: #10233f; }
+
+  .val-estado-toggle {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .val-estado-btn {
+    min-width: 120px;
+    background: #f2f5fa;
+    color: #10233f;
+    border-color: #e0e7f2;
+  }
+
+  .val-estado-btn.is-active {
+    background: #0d2a66;
+    border-color: #0d2a66;
+    color: #fff;
+  }
+
+  .val-binary-note {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #eef4ff;
+    border: 1px solid #d7e3ff;
+    color: #173a7d;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .val-defect-detail {
+    font-size: 13px;
+    color: #67758d;
+    margin: 0;
+  }
+
+  .val-defect-detail strong { color: #10233f; }
+
+  .val-case-actions select[data-case-tipo][hidden] { display: none; }
 
   @media (max-width: 720px) {
     .val-card { padding: 16px; }
@@ -382,16 +445,22 @@
     </div>
 
     <div class="val-counts" id="valCounts">
-      {% for category in categories %}
-      <div class="val-count" data-category="{{ category }}">
+      {% for estado in estados %}
+      <div class="val-count" data-estado="{{ estado }}">
         <span class="detail-label">
-          {{ validation.category_labels[category] }}
+          {{ estado_labels[estado] }}
         </span>
-        <strong>{{ validation.counts[category] }}</strong>
-        <span class="detail-label">casos</span>
+        <strong>{{ validation.counts_estado[estado] }}</strong>
+        <span class="detail-label">prendas</span>
       </div>
       {% endfor %}
     </div>
+
+    <p class="val-defect-detail" id="valDefectDetail">
+      Defectuosas —
+      Manchas: <strong id="valManchasCount">{{ validation.counts_defects['MANCHA'] }}</strong>
+      · Agujeros: <strong id="valAgujerosCount">{{ validation.counts_defects['AGUJERO'] }}</strong>
+    </p>
   </section>
 
   {% if can_manage %}
@@ -406,15 +475,40 @@
     >
 
     <div class="val-field">
-      <label for="valCategory">Categoría real (etiqueta humana)</label>
-      <select id="valCategory">
-        {% for category in categories %}
-        <option value="{{ category }}">
-          {{ validation.category_labels[category] }}
-        </option>
+      <label id="valEstadoLabel">Estado real de la prenda</label>
+      <div
+        class="val-estado-toggle"
+        id="valEstadoToggle"
+        role="group"
+        aria-labelledby="valEstadoLabel"
+      >
+        {% for estado in estados %}
+        <button
+          type="button"
+          class="detail-button val-estado-btn{% if loop.first %} is-active{% endif %}"
+          data-estado="{{ estado }}"
+          aria-pressed="{% if loop.first %}true{% else %}false{% endif %}"
+        >
+          {{ estado_labels[estado] }}
+        </button>
+        {% endfor %}
+      </div>
+      <input type="hidden" id="valEstado" value="BUENA">
+    </div>
+
+    <div class="val-field" id="valDefectTypeField" hidden>
+      <label for="valTipoDefecto">
+        Tipo de defecto (obligatorio cuando es DEFECTUOSA)
+      </label>
+      <select id="valTipoDefecto">
+        <option value="">— Seleccione el tipo —</option>
+        {% for tipo in defect_types %}
+        <option value="{{ tipo }}">{{ defect_type_labels[tipo] }}</option>
         {% endfor %}
       </select>
     </div>
+
+    <div class="val-binary-note">{{ validation.binary_notice }}</div>
 
     <div class="val-field">
       <label for="valObservation">Observación (opcional)</label>
@@ -460,9 +554,10 @@
     </div>
 
     <p class="val-empty">
-      Las imágenes se toman de la cámara del puesto. La imagen capturada
-      se usa únicamente para evaluar la versión; la clasificación
-      NORMAL / MANCHA / AGUJERO la define la persona, no el modelo.
+      Las imágenes se toman de la cámara del puesto y cada una es NUEVA
+      y exclusiva de validación. La persona indica si la prenda está
+      BUENA o DEFECTUOSA (y, si lo está, si es Mancha o Agujero):
+      PatchCore sólo decide patrón normal frente a anomalía.
     </p>
 
     <div id="valCaptureMessage"></div>
@@ -491,22 +586,25 @@
   <section class="val-card">
     <h2>Casos de validación</h2>
 
-    {% if validation.cases %}
+    {% set can_edit_cases = can_manage and validation.can_edit_cases %}
+
+    <div id="valCasesWrap" {% if not validation.cases %}hidden{% endif %}>
     <table class="val-table">
       <thead>
         <tr>
-          <th>Categoría real</th>
+          <th>Clasificación real</th>
           <th>Score de anomalía</th>
           <th>Modelo</th>
           <th>Resultado</th>
           <th>Fecha</th>
           <th>Artefactos</th>
+          {% if can_manage %}<th>Acciones</th>{% endif %}
         </tr>
       </thead>
       <tbody id="valCasesBody">
         {% for case in validation.cases %}
         <tr>
-          <td>{{ case.category_label }}</td>
+          <td>{{ case.classification or case.category_label }}</td>
           <td>
             {% if case.anomaly_score is not none %}
               {{ '%.2f'|format(case.anomaly_score) }}
@@ -526,6 +624,56 @@
               <a href="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='comparison') }}">comparación</a>
             {% endif %}
           </td>
+          {% if can_manage %}
+          <td class="val-case-actions">
+            {% if can_edit_cases %}
+            <select
+              data-case-estado="{{ case.id }}"
+              aria-label="Estado real del caso {{ case.id }}"
+            >
+              {% for estado in estados %}
+              <option
+                value="{{ estado }}"
+                {% if case.estado_real == estado %}selected{% endif %}
+              >
+                {{ estado_labels[estado] }}
+              </option>
+              {% endfor %}
+            </select>
+            <select
+              data-case-tipo="{{ case.id }}"
+              aria-label="Tipo de defecto del caso {{ case.id }}"
+              {% if case.estado_real != 'DEFECTUOSA' %}hidden{% endif %}
+            >
+              <option value="">— Tipo —</option>
+              {% for tipo in defect_types %}
+              <option
+                value="{{ tipo }}"
+                {% if case.tipo_defecto == tipo %}selected{% endif %}
+              >
+                {{ defect_type_labels[tipo] }}
+              </option>
+              {% endfor %}
+            </select>
+            <button
+              type="button"
+              class="detail-button"
+              data-action="update"
+              data-case-id="{{ case.id }}"
+            >
+              Editar clasificación real
+            </button>
+            <button
+              type="button"
+              class="detail-button"
+              data-action="delete"
+              data-case-id="{{ case.id }}"
+            >
+              Eliminar caso de validación
+            </button>
+            {% endif %}
+          </td>
+          {% endif %}
         </tr>
         {% endfor %}
       </tbody>
@@ -538,7 +686,7 @@
           src="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='original') }}"
           alt="Caso de validación"
         >
-        {{ case.category_label }}
+        {{ case.classification or case.category_label }}
         {% if case.heatmap_path %}
           ·
           <a href="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='comparison') }}">
@@ -548,11 +696,11 @@
       </div>
       {% endfor %}
     </div>
-    {% else %}
-    <p class="val-empty" id="valCasesEmpty">
+    </div>
+
+    <p class="val-empty" id="valCasesEmpty" {% if validation.cases %}hidden{% endif %}>
       Todavía no hay casos de validación registrados para esta versión.
     </p>
-    {% endif %}
   </section>
 </div>
 
@@ -561,10 +709,18 @@
     'modelId': model.id,
     'garmentCode': model.code,
     'categories': categories,
+    'estados': estados,
+    'estadoLabels': estado_labels,
+    'defectTypes': defect_types,
+    'defectTypeLabels': defect_type_labels,
+    'classificationLabels': validation.classification_labels,
+    'canManage': can_manage,
     'urls': {
       'frame': url_for('garment_validation_frame', model_id=model.id),
       'start': url_for('ai_validation_session_start'),
       'case': url_for('ai_validation_case'),
+      'caseUpdate': url_for('ai_validation_case_update'),
+      'caseDelete': url_for('ai_validation_case_delete'),
       'evaluate': url_for('ai_validation_evaluate'),
       'complete': url_for('ai_validation_complete'),
       'asset': url_for('garment_validation_case_asset', model_id=model.id, case_id=0, kind='original'),
@@ -583,7 +739,12 @@
   let busy = false;
 
   const frameEl = document.getElementById("valFrame");
-  const categoryEl = document.getElementById("valCategory");
+  const estadoEl = document.getElementById("valEstado");
+  const defectFieldEl = document.getElementById("valDefectTypeField");
+  const tipoEl = document.getElementById("valTipoDefecto");
+  const estadoButtons = Array.from(
+    document.querySelectorAll(".val-estado-btn")
+  );
   const observationEl = document.getElementById("valObservation");
   const captureBtn = document.getElementById("valCapture");
   const startBtn = document.getElementById("valStart");
@@ -592,6 +753,10 @@
   const messageEl = document.getElementById("valCaptureMessage");
   const resultEl = document.getElementById("valResult");
   const countsEl = document.getElementById("valCounts");
+  const manchasEl = document.getElementById("valManchasCount");
+  const agujerosEl = document.getElementById("valAgujerosCount");
+  const casesWrapEl = document.getElementById("valCasesWrap");
+  const thumbsEl = document.getElementById("valThumbs");
   const statusEl = document.getElementById("valStatus");
   const sessionEl = document.getElementById("valSessionStatus");
   const metricsEl = document.getElementById("valMetrics");
@@ -615,6 +780,44 @@
     score === null || score === undefined
       ? "sin score"
       : Number(score).toFixed(2);
+
+  // Fuente única de verdad: la clasificación persistida del caso.
+  const classificationOf = (item) =>
+    (item && (item.classification || item.category_label)) || "";
+
+  const estadoOf = (item) =>
+    (item && item.estado_real) ||
+    ((item && item.category) === "NORMAL" ? "BUENA" : "DEFECTUOSA");
+
+  function setEstado(estado) {
+    const value = estado === "DEFECTUOSA" ? "DEFECTUOSA" : "BUENA";
+
+    if (estadoEl) estadoEl.value = value;
+
+    estadoButtons.forEach((button) => {
+      const active = button.getAttribute("data-estado") === value;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+
+    if (defectFieldEl) defectFieldEl.hidden = value !== "DEFECTUOSA";
+
+    if (value !== "DEFECTUOSA" && tipoEl) tipoEl.value = "";
+  }
+
+  function currentCapture() {
+    const estado = estadoEl ? estadoEl.value : "BUENA";
+    const tipo =
+      estado === "DEFECTUOSA" && tipoEl && tipoEl.value ? tipoEl.value : null;
+
+    return { estado, tipo };
+  }
+
+  estadoButtons.forEach((button) => {
+    button.addEventListener("click", () =>
+      setEstado(button.getAttribute("data-estado"))
+    );
+  });
 
   function setMessage(text, isError) {
     if (!messageEl) return;
@@ -645,13 +848,20 @@
   }
 
   function renderCounts() {
-    if (!countsEl || !state.counts) return;
+    if (countsEl && state.counts_estado) {
+      Array.from(countsEl.children).forEach((card) => {
+        const key = card.getAttribute("data-estado");
+        const strong = card.querySelector("strong");
+        if (strong && key) {
+          strong.textContent = Number(state.counts_estado[key] || 0);
+        }
+      });
+    }
 
-    Array.from(countsEl.children).forEach((card) => {
-      const key = card.getAttribute("data-category");
-      const strong = card.querySelector("strong");
-      if (strong && key) strong.textContent = Number(state.counts[key] || 0);
-    });
+    const defects = state.counts_defects || {};
+
+    if (manchasEl) manchasEl.textContent = Number(defects.MANCHA || 0);
+    if (agujerosEl) agujerosEl.textContent = Number(defects.AGUJERO || 0);
   }
 
   function renderStatus() {
@@ -684,14 +894,15 @@
 
     const html = [];
 
+    const estadoCounts = metrics.estado_counts || {};
+    const byEstado = metrics.by_estado || {};
+
     html.push(`
       <div class="val-metric-row">
-        <div class="val-metric"><span>Normales evaluadas</span>
-          <strong>${Number((metrics.by_category || {}).NORMAL ? (metrics.by_category.NORMAL.count || 0) : 0)}</strong></div>
-        <div class="val-metric"><span>Manchas evaluadas</span>
-          <strong>${Number((metrics.by_category || {}).MANCHA ? (metrics.by_category.MANCHA.count || 0) : 0)}</strong></div>
-        <div class="val-metric"><span>Agujeros evaluados</span>
-          <strong>${Number((metrics.by_category || {}).AGUJERO ? (metrics.by_category.AGUJERO.count || 0) : 0)}</strong></div>
+        <div class="val-metric"><span>Prendas buenas evaluadas</span>
+          <strong>${Number((byEstado.BUENA || {}).evaluated || estadoCounts.BUENA || 0)}</strong></div>
+        <div class="val-metric"><span>Prendas defectuosas evaluadas</span>
+          <strong>${Number((byEstado.DEFECTUOSA || {}).evaluated || estadoCounts.DEFECTUOSA || 0)}</strong></div>
         <div class="val-metric"><span>Casos totales</span>
           <strong>${Number(metrics.total || 0)}</strong></div>
       </div>
@@ -709,16 +920,77 @@
       `);
     }
 
-    if (metrics.confusion) {
+    const applied = metrics.confusion ? metrics : null;
+    const candidate = metrics.threshold_candidate_metrics || null;
+    const binary = applied || candidate;
+
+    if (binary) {
+      const note = applied
+        ? "En el umbral aplicado"
+        : "En el threshold candidato " + scoreLabel(binary.threshold);
+
       html.push(`
         <div class="val-metric-row">
-          <div class="val-metric"><span>Falsos positivos</span><strong>${Number(metrics.false_positives || 0)}</strong></div>
-          <div class="val-metric"><span>Falsos negativos</span><strong>${Number(metrics.false_negatives || 0)}</strong></div>
-          <div class="val-metric"><span>Precisión</span><strong>${metrics.precision === null || metrics.precision === undefined ? "s/d" : Number(metrics.precision).toFixed(3)}</strong></div>
-          <div class="val-metric"><span>Recall</span><strong>${metrics.recall === null || metrics.recall === undefined ? "s/d" : Number(metrics.recall).toFixed(3)}</strong></div>
-          <div class="val-metric"><span>Especificidad</span><strong>${metrics.specificity === null || metrics.specificity === undefined ? "s/d" : Number(metrics.specificity).toFixed(3)}</strong></div>
-          <div class="val-metric"><span>F1</span><strong>${metrics.f1 === null || metrics.f1 === undefined ? "s/d" : Number(metrics.f1).toFixed(3)}</strong></div>
+          <div class="val-metric"><span>Falsos positivos</span><strong>${Number(binary.false_positives || 0)}</strong></div>
+          <div class="val-metric"><span>Falsos negativos</span><strong>${Number(binary.false_negatives || 0)}</strong></div>
+          <div class="val-metric"><span>Precisión</span><strong>${binary.precision === null || binary.precision === undefined ? "s/d" : Number(binary.precision).toFixed(3)}</strong></div>
+          <div class="val-metric"><span>Recall</span><strong>${binary.recall === null || binary.recall === undefined ? "s/d" : Number(binary.recall).toFixed(3)}</strong></div>
+          <div class="val-metric"><span>Especificidad</span><strong>${binary.specificity === null || binary.specificity === undefined ? "s/d" : Number(binary.specificity).toFixed(3)}</strong></div>
+          <div class="val-metric"><span>F1</span><strong>${binary.f1 === null || binary.f1 === undefined ? "s/d" : Number(binary.f1).toFixed(3)}</strong></div>
         </div>
+        <p class="val-defect-detail">${esc(note)} (BUENA frente a DEFECTUOSA).</p>
+      `);
+    }
+
+    const defects = metrics.defects || {};
+    const defectCounts = metrics.defect_counts || {};
+
+    html.push(`
+      <p class="val-defect-detail">
+        Defectuosas — Manchas: <strong>${Number(defectCounts.MANCHA || (defects.MANCHA || {}).evaluated || 0)}</strong>
+        · Agujeros: <strong>${Number(defectCounts.AGUJERO || (defects.AGUJERO || {}).evaluated || 0)}</strong>
+      </p>
+    `);
+
+    const defectRows = ["MANCHA", "AGUJERO"]
+      .filter((key) => defects[key])
+      .map((key) => {
+        const row = defects[key];
+        const label = (defects.labels || {})[key] || key;
+        const detected =
+          row.detected === null || row.detected === undefined
+            ? "s/d"
+            : Number(row.detected);
+        const missed =
+          row.missed === null || row.missed === undefined
+            ? "s/d"
+            : Number(row.missed);
+
+        return `
+          <tr>
+            <td>${esc(label)}</td>
+            <td>${Number(row.evaluated || 0)}</td>
+            <td>${detected}</td>
+            <td>${missed}</td>
+          </tr>`;
+      })
+      .join("");
+
+    if (defectRows) {
+      html.push(`
+        <table class="val-table">
+          <thead>
+            <tr>
+              <th>Defecto (detalle humano)</th><th>Casos evaluados</th>
+              <th>Detectados como anomalía</th><th>No detectados</th>
+            </tr>
+          </thead>
+          <tbody>${defectRows}</tbody>
+        </table>
+        <p class="val-defect-detail">
+          PatchCore no clasifica el tipo de defecto: sólo decide BUENA
+          frente a DEFECTUOSA. Esta tabla es el detalle para la tesis.
+        </p>
       `);
     }
 
@@ -769,17 +1041,20 @@
 
     if (!state.cases.length) {
       if (casesBodyEl) casesBodyEl.innerHTML = "";
+      if (thumbsEl) thumbsEl.innerHTML = "";
+      if (casesWrapEl) casesWrapEl.hidden = true;
       if (casesEmptyEl) casesEmptyEl.hidden = false;
       return;
     }
 
     if (casesEmptyEl) casesEmptyEl.hidden = true;
+    if (casesWrapEl) casesWrapEl.hidden = false;
 
     if (casesBodyEl) {
       casesBodyEl.innerHTML = state.cases
         .map((item) => `
           <tr>
-            <td>${esc(item.category_label || item.category)}</td>
+            <td>${esc(classificationOf(item))}</td>
             <td>${esc(scoreLabel(item.anomaly_score))}</td>
             <td>${esc(state.version)}</td>
             <td>${esc(item.result_label || "Pendiente de calibración")}</td>
@@ -792,9 +1067,85 @@
                   : ""
               }
             </td>
+            ${caseActionsCell(item)}
           </tr>`)
         .join("");
     }
+
+    renderThumbs();
+  }
+
+  function renderThumbs() {
+    if (!thumbsEl || !state.cases) return;
+
+    thumbsEl.innerHTML = state.cases
+      .slice(-4)
+      .map((item) => `
+        <div class="val-thumb">
+          <img src="${esc(assetUrl(item.id, "original"))}" alt="Caso de validación">
+          ${esc(classificationOf(item))}${
+            item.heatmap_path
+              ? ` · <a href="${esc(assetUrl(item.id, "comparison"))}">comparación</a>`
+              : ""
+          }
+        </div>`)
+      .join("");
+  }
+
+  function caseActionsCell(item) {
+    if (!config.canManage) return "";
+
+    if (!state.can_edit_cases) {
+      return '<td class="val-case-actions"></td>';
+    }
+
+    const estadoLabels = state.estado_labels || config.estadoLabels || {};
+    const tipoLabels = state.defect_type_labels || config.defectTypeLabels || {};
+    const estado = estadoOf(item);
+    const tipo = item.tipo_defecto || "";
+
+    const estadoOptions = (config.estados || [])
+      .map((key) => `
+        <option
+          value="${esc(key)}"
+          ${estado === key ? "selected" : ""}
+        >${esc(estadoLabels[key] || key)}</option>`)
+      .join("");
+
+    const tipoOptions = (config.defectTypes || [])
+      .map((key) => `
+        <option
+          value="${esc(key)}"
+          ${tipo === key ? "selected" : ""}
+        >${esc(tipoLabels[key] || key)}</option>`)
+      .join("");
+
+    return `
+      <td class="val-case-actions">
+        <select
+          data-case-estado="${esc(item.id)}"
+          aria-label="Estado real del caso ${esc(item.id)}"
+        >${estadoOptions}</select>
+        <select
+          data-case-tipo="${esc(item.id)}"
+          aria-label="Tipo de defecto del caso ${esc(item.id)}"
+          ${estado === "DEFECTUOSA" ? "" : "hidden"}
+        >
+          <option value="">— Tipo —</option>${tipoOptions}
+        </select>
+        <button
+          type="button"
+          class="detail-button"
+          data-action="update"
+          data-case-id="${esc(item.id)}"
+        >Editar clasificación real</button>
+        <button
+          type="button"
+          class="detail-button"
+          data-action="delete"
+          data-case-id="${esc(item.id)}"
+        >Eliminar caso de validación</button>
+      </td>`;
   }
 
   function renderResult(item) {
@@ -810,8 +1161,8 @@
     resultEl.innerHTML = `
       <div class="val-result">
         <div>
-          <span class="detail-label">Tipo real</span>
-          <span class="detail-value">${esc(item.category_label)}</span>
+          <span class="detail-label">Clasificación real</span>
+          <span class="detail-value">${esc(classificationOf(item))}</span>
         </div>
         <div>
           <span class="detail-label">Score de anomalía</span>
@@ -874,12 +1225,25 @@
     captureBtn.addEventListener("click", () => {
       if (busy) return;
       setMessage("");
+
+      const { estado, tipo } = currentCapture();
+
+      if (estado === "DEFECTUOSA" && !tipo) {
+        setMessage(
+          "Indique el tipo de defecto (Mancha o Agujero): no se puede "
+          + "guardar una prenda DEFECTUOSA sin su tipo.",
+          true
+        );
+        return;
+      }
+
       setBusy(true);
 
       post(config.urls.case, {
         garment_model_id: config.modelId,
         ai_model_id: state.ai_model_id,
-        category: categoryEl ? categoryEl.value : "NORMAL",
+        estado_real: estado,
+        tipo_defecto: tipo,
         observation: observationEl ? observationEl.value : ""
       })
         .then((data) => {
@@ -957,6 +1321,133 @@
         })
         .catch((error) => setMessage(error.message, true))
         .finally(() => setBusy(false));
+    });
+  }
+
+  if (casesBodyEl) {
+    casesBodyEl.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-action]");
+
+      if (!button || busy || !state.can_edit_cases) return;
+
+      const action = button.getAttribute("data-action");
+      const caseId = Number(button.getAttribute("data-case-id"));
+
+      if (!Number.isFinite(caseId)) return;
+
+      const estadoSelect = casesBodyEl.querySelector(
+        `select[data-case-estado="${caseId}"]`
+      );
+      const tipoSelect = casesBodyEl.querySelector(
+        `select[data-case-tipo="${caseId}"]`
+      );
+      const classificationLabels =
+        state.classification_labels || config.classificationLabels || {};
+
+      if (action === "update") {
+        const nextEstado = estadoSelect ? estadoSelect.value : "";
+        const nextTipo =
+          nextEstado === "DEFECTUOSA" && tipoSelect && tipoSelect.value
+            ? tipoSelect.value
+            : null;
+
+        if (!nextEstado) {
+          setMessage("Seleccione el estado real de la prenda.", true);
+          return;
+        }
+
+        if (nextEstado === "DEFECTUOSA" && !nextTipo) {
+          setMessage(
+            "Indique el tipo de defecto (Mancha o Agujero).",
+            true
+          );
+          return;
+        }
+
+        const previewLabel =
+          classificationLabels[
+            nextEstado === "DEFECTUOSA" ? nextTipo : "NORMAL"
+          ] || nextEstado;
+
+        const confirmed = window.confirm(
+          "¿Guardar la clasificación real de este caso como " +
+          `${previewLabel}?\n\n` +
+          "Solo se corrige la etiqueta humana: la imagen, el score y " +
+          "los artefactos NO cambian. Las métricas de la sesión " +
+          "quedan invalidadas y deberá evaluarlas de nuevo."
+        );
+
+        if (!confirmed) return;
+
+        setMessage("");
+        setBusy(true);
+
+        post(config.urls.caseUpdate, {
+          garment_model_id: config.modelId,
+          ai_model_id: state.ai_model_id,
+          case_id: caseId,
+          estado_real: nextEstado,
+          tipo_defecto: nextTipo
+        })
+          .then((data) => {
+            setMessage(
+              data.message || "Clasificación real actualizada.",
+              false
+            );
+            applyState(data.validation);
+          })
+          .catch((error) => setMessage(error.message, true))
+          .finally(() => setBusy(false));
+
+        return;
+      }
+
+      if (action === "delete") {
+        const confirmed = window.confirm(
+          "¿Eliminar este caso de validación?\n\n" +
+          "Reserve esta acción para errores operativos claros (imagen " +
+          "equivocada o captura fallida). El caso y sus artefactos se " +
+          "borran de forma definitiva; el entrenamiento y las demás " +
+          "versiones no se tocan."
+        );
+
+        if (!confirmed) return;
+
+        setMessage("");
+        setBusy(true);
+
+        post(config.urls.caseDelete, {
+          garment_model_id: config.modelId,
+          ai_model_id: state.ai_model_id,
+          case_id: caseId
+        })
+          .then((data) => {
+            setMessage(data.message || "Caso de validación eliminado.", false);
+            applyState(data.validation);
+          })
+          .catch((error) => setMessage(error.message, true))
+          .finally(() => setBusy(false));
+      }
+    });
+
+    // Al pasar a DEFECTUOSA se obliga a elegir el tipo de defecto.
+    casesBodyEl.addEventListener("change", (event) => {
+      const estadoSelect = event.target.closest(
+        "select[data-case-estado]"
+      );
+
+      if (!estadoSelect) return;
+
+      const tipoSelect = casesBodyEl.querySelector(
+        `select[data-case-tipo="${estadoSelect.getAttribute("data-case-estado")}"]`
+      );
+
+      if (!tipoSelect) return;
+
+      const defective = estadoSelect.value === "DEFECTUOSA";
+      tipoSelect.hidden = !defective;
+
+      if (!defective) tipoSelect.value = "";
     });
   }
 
