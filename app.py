@@ -19194,6 +19194,36 @@ def _ai_validation_state(ai_model_id):
         conn.close()
 
 
+@app.route("/api/ai/validation/bank/export", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_bank_export():
+    """Actualiza el banco derivado desde los casos persistidos de una versión."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+    _, resolved, guard_error = _validation_api_guard(garment_model_id, raw_ai)
+    if guard_error is not None:
+        return guard_error
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        result = ai_validation.export_validation_bank(cur, ai_model_id=resolved)
+    except AIDomainError as error:
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        app.logger.exception("No se pudo exportar el banco de validación (ai_model_id=%s).", resolved)
+        return jsonify({"ok": False, "error": "No se pudo actualizar el banco de validación."}), 500
+    finally:
+        cur.close()
+        conn.close()
+    return jsonify({"ok": True, "bank": _json_sanitize(result)})
+
+
 @app.route("/api/ai/validation/case", methods=["POST"])
 @login_required
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)

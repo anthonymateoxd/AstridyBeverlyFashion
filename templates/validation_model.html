@@ -463,6 +463,22 @@
     </p>
   </section>
 
+  <section class="val-card" id="validationBank">
+    <h2>Banco de validación</h2>
+    <p class="val-empty">
+      Buenas: <strong id="bankBuenas">{{ validation.counts_estado['BUENA'] }}</strong>
+      · Manchas: <strong id="bankManchas">{{ validation.counts_defects['MANCHA'] }}</strong>
+      · Agujeros: <strong id="bankAgujeros">{{ validation.counts_defects['AGUJERO'] }}</strong>
+      · Total: <strong id="bankTotal">{{ validation.total_cases }}</strong>
+      · Sesiones fuente: <strong id="bankSessions">{{ validation.source_session_count }}</strong>
+    </p>
+    <p class="val-empty" id="bankStatus">Sin exportar</p>
+    {% if can_manage %}
+    <button type="button" class="detail-button" id="bankExport">Actualizar banco de validación</button>
+    <span id="bankMessage" role="status"></span>
+    {% endif %}
+  </section>
+
   {% if can_manage %}
   <section class="val-card">
     <h2>Captura de validación</h2>
@@ -723,6 +739,7 @@
       'caseDelete': url_for('ai_validation_case_delete'),
       'evaluate': url_for('ai_validation_evaluate'),
       'complete': url_for('ai_validation_complete'),
+      'bankExport': url_for('ai_validation_bank_export'),
       'asset': url_for('garment_validation_case_asset', model_id=model.id, case_id=0, kind='original'),
       'detail': url_for('garment_model_detail', model_id=model.id)
     },
@@ -750,6 +767,8 @@
   const startBtn = document.getElementById("valStart");
   const evaluateBtn = document.getElementById("valEvaluate");
   const completeBtn = document.getElementById("valComplete");
+  const bankExportBtn = document.getElementById("bankExport");
+  const bankMessageEl = document.getElementById("bankMessage");
   const messageEl = document.getElementById("valCaptureMessage");
   const resultEl = document.getElementById("valResult");
   const countsEl = document.getElementById("valCounts");
@@ -1218,6 +1237,32 @@
       }
 
       return data;
+    });
+  }
+
+  if (bankExportBtn) {
+    bankExportBtn.addEventListener("click", async () => {
+      bankExportBtn.disabled = true;
+      if (bankMessageEl) bankMessageEl.textContent = "Actualizando…";
+      try {
+        const result = await post(config.urls.bankExport, {
+          garment_model_id: config.modelId,
+          ai_model_id: state.ai_model_id
+        });
+        const counts = result.bank.counts || {};
+        document.getElementById("bankBuenas").textContent = counts.buenas || 0;
+        document.getElementById("bankManchas").textContent = counts.manchas || 0;
+        document.getElementById("bankAgujeros").textContent = counts.agujeros || 0;
+        document.getElementById("bankTotal").textContent = counts.total || 0;
+        document.getElementById("bankSessions").textContent = (result.bank.source_validation_sessions || []).length;
+        document.getElementById("bankStatus").textContent = "Actualizado";
+        if (bankMessageEl) bankMessageEl.textContent = "Banco verificado y actualizado.";
+      } catch (error) {
+        document.getElementById("bankStatus").textContent = "Error de integridad";
+        if (bankMessageEl) bankMessageEl.textContent = error.message;
+      } finally {
+        bankExportBtn.disabled = false;
+      }
     });
   }
 

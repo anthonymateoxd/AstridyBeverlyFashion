@@ -18,9 +18,12 @@ Este módulo no importa Flask ni app.py.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 import threading
+from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 from ai_domain import (
@@ -60,6 +63,8 @@ from ai_domain import (
     validation_case_relative_dir,
     validation_case_relative_path,
     validation_classification,
+    sha256_file,
+    compute_manifest_hash,
 )
 from ai_training import default_connect, get_roi_fractions
 
@@ -991,6 +996,211 @@ def count_defect_cases(cases) -> dict:
     return counts
 
 
+def export_validation_bank(cur, *, ai_model_id, artifacts_root=None) -> dict:
+    """Exporta todos los casos vigentes de una versión a un banco derivado.
+
+    La BD sigue siendo la fuente de verdad. Se verifica cada fuente y copia,
+    y cualquier colisión exacta con training impide completar la exportación.
+    No ejecuta inferencia ni modifica sesiones, scores o umbrales.
+    """
+    cur.execute(
+        """SELECT id, garment_model_id, version, dataset_id, active, status
+           FROM garment_ai_models WHERE id = %s""",
+        (int(ai_model_id),),
+    )
+    model = cur.fetchone()
+    if not model:
+        raise AIDomainError("La versión de IA solicitada no existe.")
+    model = dict(model)
+    root = Path(artifacts_root) if artifacts_root is not None else get_ai_artifacts_root()
+    root = root.expanduser().resolve()
+    cur.execute(
+        """SELECT c.id, c.validation_session_id, c.ai_model_id,
+                  c.garment_model_id, c.category, c.image_path,
+                  c.image_sha256, c.anomaly_score, c.heatmap_path,
+                  c.comparison_path, c.created_at
+           FROM ai_validation_cases c
+           JOIN ai_validation_sessions s ON s.id = c.validation_session_id
+           WHERE c.ai_model_id = %s ORDER BY c.id""",
+        (int(ai_model_id),),
+    )
+    cases = [dict(row) for row in cur.fetchall()]
+    categories = {"NORMAL": "buenas", "MANCHA": "manchas", "AGUJERO": "agujeros"}
+    counts = {name: 0 for name in categories.values()}
+    seen_case_ids = set()
+    by_hash = defaultdict(list)
+    resolved = []
+    for case in cases:
+        case_id = int(case["id"])
+        if case_id in seen_case_ids:
+            raise AIDomainError(f"case_id duplicado en BD: {case_id}.")
+        seen_case_ids.add(case_id)
+        category = str(case.get("category") or "").strip().upper()
+        if category not in categories:
+            raise AIDomainError(f"Clasificación inválida en case_id={case_id}.")
+        case_dir = categories[category]
+        counts[case_dir] += 1
+        source = resolve_under_root(root, case["image_path"])
+        if not source.is_file():
+            raise AIDomainError(f"No existe el original del case_id={case_id}.")
+        digest = sha256_file(source)
+        if digest.lower() != str(case.get("image_sha256") or "").lower():
+            raise AIDomainError(f"SHA-256 del original no coincide, case_id={case_id}.")
+        by_hash[digest].append(case_id)
+        case["_source"] = source
+        case["_digest"] = digest
+        case["_category_dir"] = case_dir
+        resolved.append(case)
+    duplicates = {digest: ids for digest, ids in by_hash.items() if len(ids) > 1}
+    if duplicates:
+        detail = ", ".join(f"{digest}: case_ids={ids}" for digest, ids in duplicates.items())
+        raise AIDomainError("Hashes duplicados dentro de VALIDATION: " + detail)
+
+    dataset_id = model.get("dataset_id")
+    if dataset_id is None:
+        raise AIDomainError("La versión no referencia su dataset de training.")
+    cur.execute(
+        """SELECT ti.id, ti.sha256, ti.image_path
+           FROM ai_dataset_images di JOIN ai_training_images ti ON ti.id = di.image_id
+           WHERE di.dataset_id = %s ORDER BY ti.id""",
+        (int(dataset_id),),
+    )
+    training_rows = [dict(row) for row in cur.fetchall()]
+    training_hashes = {str(row["sha256"]).lower() for row in training_rows}
+    contaminated = [(c["id"], c["_digest"]) for c in resolved if c["_digest"].lower() in training_hashes]
+    if contaminated:
+        raise AIDomainError(f"Contaminación TRAIN/VALIDATION: {contaminated}.")
+    # Also validate every physical training image and the dataset manifest itself.
+    for row in training_rows:
+        training_path = resolve_under_root(root, row["image_path"])
+        if not training_path.is_file() or sha256_file(training_path).lower() != str(row["sha256"]).lower():
+            raise AIDomainError(f"Training source/hash inválido, image_id={row['id']}.")
+    cur.execute("SELECT manifest_path, manifest_hash, image_count FROM ai_datasets WHERE id = %s", (int(dataset_id),))
+    dataset = cur.fetchone()
+    if not dataset or int(dataset["image_count"] or 0) != len(training_rows):
+        raise AIDomainError("Conteo del dataset de training no coincide.")
+    manifest_source = resolve_under_root(root, dataset["manifest_path"])
+    if not manifest_source.is_file():
+        raise AIDomainError("Manifest del dataset de training inexistente.")
+    try:
+        training_manifest = json.loads(manifest_source.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise AIDomainError("Manifest del dataset de training ilegible.") from error
+    if (
+        int(training_manifest.get("image_count") or 0) != len(training_rows)
+        or str(training_manifest.get("manifest_hash") or "").lower()
+        != str(dataset["manifest_hash"]).lower()
+        or compute_manifest_hash([
+            {"id": item.get("image_id"), "sha256": item.get("sha256")}
+            for item in training_manifest.get("images", [])
+        ]) != str(dataset["manifest_hash"]).lower()
+    ):
+        raise AIDomainError("El contenido del manifest de training no coincide con su snapshot registrado.")
+
+    bank_rel = f"garment_{int(model['garment_model_id'])}/validation_datasets/ai_model_{int(model['id'])}_{str(model['version']).lower()}"
+    bank = resolve_under_root(root, bank_rel)
+    for folder in (*counts.keys(), "artifacts/heatmaps", "artifacts/comparisons"):
+        (bank / folder).mkdir(parents=True, exist_ok=True)
+    manifest_cases = []
+    desired_files = set()
+    for case in resolved:
+        case_id = int(case["id"])
+        digest = case["_digest"]
+        suffix = case["_source"].suffix.lower() or ".img"
+        filename = f"case_{case_id}_{digest[:12]}{suffix}"
+        original_rel = f"{case['_category_dir']}/{filename}"
+        destination = resolve_under_root(bank, original_rel)
+        payload = case["_source"].read_bytes()
+        if destination.exists():
+            if sha256_file(destination) != digest:
+                raise AIDomainError(f"Destino existente con contenido distinto: {original_rel}.")
+        else:
+            from ai_domain import atomic_write_bytes
+            atomic_write_bytes(destination, payload)
+        if sha256_file(destination) != digest:
+            raise AIDomainError(f"La copia no verifica SHA-256: {original_rel}.")
+        desired_files.add(original_rel)
+        output = {
+            "case_id": case_id,
+            "validation_session_id": int(case["validation_session_id"]),
+            "ai_model_id": int(case["ai_model_id"]),
+            "estado_real": estado_real_from_category(case["category"]),
+            "tipo_defecto": defect_type_from_category(case["category"]),
+            "classification": validation_classification(case["category"])["classification"],
+            "category_current": str(case["category"]).upper(),
+            "anomaly_score": float(case["anomaly_score"]) if case.get("anomaly_score") is not None else None,
+            "captured_at": case["created_at"].isoformat(sep=" ") if hasattr(case["created_at"], "isoformat") else str(case.get("created_at")),
+            "original_relative_path": original_rel,
+            "original_sha256": digest,
+        }
+        for db_key, artifact_folder, out_path, out_hash in (
+            ("heatmap_path", "artifacts/heatmaps", "heatmap_relative_path", "heatmap_sha256"),
+            ("comparison_path", "artifacts/comparisons", "comparison_relative_path", "comparison_sha256"),
+        ):
+            rel = case.get(db_key)
+            if rel:
+                artifact = resolve_under_root(root, rel)
+                if artifact.is_file():
+                    artifact_hash = sha256_file(artifact)
+                    artifact_dest_rel = f"{artifact_folder}/case_{case_id}_{artifact_hash[:12]}{artifact.suffix.lower()}"
+                    artifact_dest = resolve_under_root(bank, artifact_dest_rel)
+                    if artifact_dest.exists() and sha256_file(artifact_dest) != artifact_hash:
+                        raise AIDomainError(f"Artefacto destino distinto: {artifact_dest_rel}.")
+                    if not artifact_dest.exists():
+                        from ai_domain import atomic_write_bytes
+                        atomic_write_bytes(artifact_dest, artifact.read_bytes())
+                    if sha256_file(artifact_dest) != artifact_hash:
+                        raise AIDomainError(f"No verifica el artefacto: {artifact_dest_rel}.")
+                    output[out_path] = artifact_dest_rel
+                    output[out_hash] = artifact_hash
+                    desired_files.add(artifact_dest_rel)
+        manifest_cases.append(output)
+
+    for category in counts:
+        if sum(1 for item in manifest_cases if item["original_relative_path"].startswith(category + "/")) != counts[category]:
+            raise AIDomainError("Conteos del banco no coinciden con casos exportados.")
+    # Elimina únicamente copias derivadas no referenciadas en este banco (nunca originales).
+    for candidate in bank.rglob("*"):
+        if candidate.is_file() and candidate.name != "manifest.json":
+            relative = candidate.relative_to(bank).as_posix()
+            if relative not in desired_files:
+                candidate.unlink()
+    sessions = sorted({int(case["validation_session_id"]) for case in resolved})
+    logical_manifest = {
+        "dataset_type": "VALIDATION",
+        "garment_model_id": int(model["garment_model_id"]),
+        "ai_model_id": int(model["id"]),
+        "ai_model_version": model["version"],
+        "created_at": min((c["created_at"].isoformat(sep=" ") for c in resolved if hasattr(c["created_at"], "isoformat")), default=datetime.utcnow().isoformat(sep=" ")),
+        "source_validation_sessions": sessions,
+        "training_dataset_reference": {"dataset_id": int(dataset_id), "manifest_path": dataset["manifest_path"], "manifest_sha256": dataset["manifest_hash"], "image_count": len(training_rows)},
+        "counts": {**counts, "total": len(manifest_cases)},
+        "validation_unique_hashes": len(by_hash),
+        "validation_duplicate_hashes": len(duplicates),
+        "cases": manifest_cases,
+    }
+    snapshot_payload = json.dumps(logical_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    snapshot_hash = hashlib.sha256(snapshot_payload).hexdigest()
+    previous_exported_at = None
+    existing_manifest = bank / "manifest.json"
+    if existing_manifest.is_file():
+        try:
+            old_manifest = json.loads(existing_manifest.read_text(encoding="utf-8"))
+            if old_manifest.get("snapshot_sha256") == snapshot_hash:
+                previous_exported_at = old_manifest.get("exported_at")
+        except (OSError, ValueError):
+            pass
+    manifest = {
+        **logical_manifest,
+        "exported_at": previous_exported_at or datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "snapshot_sha256": snapshot_hash,
+    }
+    from ai_domain import atomic_write_bytes
+    manifest_bytes = (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    atomic_write_bytes(bank / "manifest.json", manifest_bytes)
+    return {"path": str(bank), "manifest_path": str(bank / "manifest.json"), "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(), "counts": manifest["counts"], "source_validation_sessions": sessions, "training_images": len(training_rows), "validation_unique_hashes": len(by_hash), "validation_duplicate_hashes": len(duplicates), "cases": len(manifest_cases)}
+
+
 def get_validation_state(cur, ai_model_id) -> dict:
     """Estado completo de la validación para la UI."""
     model = _fetch_validation_model(cur, ai_model_id)
@@ -1048,6 +1258,7 @@ def get_validation_state(cur, ai_model_id) -> dict:
         "counts_estado": count_cases_by_estado(cases),
         "counts_defects": count_defect_cases(cases),
         "total_cases": len(cases),
+        "source_session_count": len({int(case["validation_session_id"]) for case in cases}),
         "categories": list(VALIDATION_CATEGORIES),
         "category_labels": dict(VALIDATION_CATEGORY_LABELS),
         "estados": list(VALIDATION_ESTADOS),
