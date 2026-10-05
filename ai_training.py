@@ -859,7 +859,9 @@ def request_training_job(
 
     cur.execute(
         """
-        SELECT id, version, status, notes, garment_model_id
+        SELECT id, version, status, notes, garment_model_id,
+               parent_ai_model_id, source_dataset_id,
+               normal_augmentation_min_new_images
         FROM garment_ai_models
         WHERE garment_model_id = %s AND status = %s
         ORDER BY id DESC
@@ -915,6 +917,26 @@ def request_training_job(
         raise AIDomainError(
             "Ya hay un entrenamiento en curso para este modelo."
         )
+
+    if model.get("parent_ai_model_id") is not None:
+        required_new = int(
+            model.get("normal_augmentation_min_new_images") or 20
+        )
+        cur.execute(
+            """SELECT COUNT(DISTINCT ti.id) AS total
+               FROM ai_training_images ti
+               JOIN ai_capture_sessions cs ON cs.id = ti.capture_session_id
+               WHERE cs.target_ai_model_id = %s
+                 AND cs.status = 'COMPLETADA'
+                 AND ti.status = 'ACEPTADA'""",
+            (int(model["id"]),),
+        )
+        new_good_count = int(cur.fetchone()["total"] or 0)
+        if new_good_count < required_new:
+            raise AIDomainError(
+                f"La preparación v3 requiere al menos {required_new} imágenes BUENAS nuevas "
+                f"(actualmente {new_good_count}); las 52 heredadas no satisfacen este requisito."
+            )
 
     dataset = materialize_training_dataset(
         cur,
@@ -1207,7 +1229,9 @@ def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
     # haberse creado) y la versión ya quedó ENTRENADO en la BD.
     cur.execute(
         """
-        SELECT id, version, status, notes, normal_images_count, trained_at
+        SELECT id, version, status, notes, normal_images_count, trained_at,
+               parent_ai_model_id, source_dataset_id,
+               normal_augmentation_min_new_images
         FROM garment_ai_models
         WHERE garment_model_id = %s
         ORDER BY id ASC
@@ -1360,6 +1384,61 @@ def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
                 "log_path": job["log_path"],
             }
         )
+        return payload
+
+    if (
+        latest_model
+        and latest_model.get("parent_ai_model_id") is not None
+        and latest_model.get("status") == AI_MODEL_STATUS_PREPARACION
+    ):
+        required_new = int(
+            latest_model.get("normal_augmentation_min_new_images") or 20
+        )
+        cur.execute(
+            """SELECT COUNT(DISTINCT ti.id) AS total
+               FROM ai_training_images ti
+               JOIN ai_capture_sessions cs ON cs.id = ti.capture_session_id
+               WHERE cs.target_ai_model_id = %s AND cs.status = 'COMPLETADA'
+                 AND ti.status = 'ACEPTADA'""",
+            (int(latest_model["id"]),),
+        )
+        new_count = int(cur.fetchone()["total"] or 0)
+        cur.execute(
+            """SELECT COUNT(DISTINCT ti.id) AS total
+               FROM ai_training_images ti
+               JOIN ai_capture_sessions cs ON cs.id = ti.capture_session_id
+               WHERE cs.target_ai_model_id = %s AND cs.status = 'COMPLETADA'
+                 AND ti.status = 'ACEPTADA'""",
+            (int(latest_model["id"]),),
+        )
+        completed_new_count = int(cur.fetchone()["total"] or 0)
+        payload.update({
+            "version": latest_model["version"],
+            "model_id": int(latest_model["id"]),
+            "model_status": latest_model["status"],
+            "inherited_normal_count": 52,
+            "new_normal_count": new_count,
+            "completed_new_normal_count": completed_new_count,
+            "total_normal_available": 52 + new_count,
+            "minimum_new_normal_count": required_new,
+            "image_count": 52 + new_count,
+        })
+        if allowed is False:
+            payload["blocked_reason"] = "No tiene permisos para entrenar este modelo."
+            return payload
+        if completed_new_count < required_new:
+            payload["blocked_reason"] = (
+                f"Capture y finalice al menos {required_new} imágenes BUENAS nuevas; "
+                f"hay {completed_new_count} finalizadas. Las 52 heredadas no sustituyen las nuevas."
+            )
+            return payload
+        payload.update({
+            "ui_status": TRAINING_UI_READY,
+            "ui_label": "LISTO PARA ENTRENAR v3 · SOLO BUENAS",
+            "can_train": True,
+            "blocked_reason": None,
+            "accepted_count": 52 + new_count,
+        })
         return payload
 
     if job and job["status"] == JOB_STATUS_COMPLETADO:

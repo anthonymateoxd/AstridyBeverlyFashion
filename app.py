@@ -51,6 +51,8 @@ from ai_domain import (
     next_garment_model_code,
     record_ai_event,
     register_training_image,
+    prepare_normal_augmentation_version,
+    normal_augmentation_summary,
     resolve_capture_ui_state,
     resolve_under_root,
     sha256_bytes,
@@ -75,6 +77,7 @@ from ai_capture import (
     GuidedTracker,
     assert_production_allowed,
     compute_sharpness,
+    compute_dhash_64,
     ensure_ai_capture_can_start,
     evaluate_candidate,
     get_ai_guided_config,
@@ -1317,6 +1320,7 @@ AI_CAPTURE_WORKER_ENABLED = False
 AI_CAPTURE_RUNTIME = {
     "session_id": None,
     "garment_model_id": None,
+    "target_ai_model_id": None,
     "config": None,
     "known_sha256": set(),
     "known_dhashes": [],
@@ -15798,6 +15802,44 @@ def garment_model_detail(model_id):
     )
 
     ai_versions = get_garment_ai_versions(model_id)
+    source_v2 = next(
+        (item for item in ai_versions if str(item.get("version")).lower() == "v2"),
+        None,
+    )
+    existing_normal_v3 = next(
+        (
+            item for item in ai_versions
+            if source_v2
+            and int(item.get("parent_ai_model_id") or 0) == int(source_v2["id"])
+            and str(item.get("version")).lower() == "v3"
+        ),
+        None,
+    )
+    normal_augmentation_can_prepare = bool(
+        source_v2
+        and str(source_v2.get("model_type") or "").lower() == "patchcore"
+        and source_v2.get("status") == "VALIDACION"
+        and int(source_v2.get("active") or 0) == 0
+        and source_v2.get("threshold_final") is not None
+        and source_v2.get("threshold_frozen_at") is not None
+        and existing_normal_v3 is None
+        and not any(
+            item.get("status") in {"PREPARACION", "ENTRENANDO"}
+            and not item.get("technically_invalidated")
+            for item in ai_versions
+        )
+    )
+    normal_augmentation = None
+    if existing_normal_v3:
+        conn = db()
+        cur = conn.cursor(dictionary=True)
+        try:
+            normal_augmentation = normal_augmentation_summary(
+                cur, int(existing_normal_v3["id"])
+            )
+        finally:
+            cur.close()
+            conn.close()
 
     pending_ai_statuses = {
         "PREPARACION",
@@ -15884,6 +15926,8 @@ def garment_model_detail(model_id):
         ai_capture=ai_capture_state,
         ai_capture_visible=ai_capture_visible,
         ai_training=ai_training_state,
+        normal_augmentation=normal_augmentation,
+        normal_augmentation_can_prepare=normal_augmentation_can_prepare,
     )
 
 
@@ -16232,6 +16276,63 @@ def garment_ai_prepare(model_id):
             model_id=model_id,
         )
     )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/ia/preparar-v3-normal",
+    methods=["POST"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_ai_prepare_v3_normal(model_id):
+    garment = get_garment_model(model_id)
+    if not garment or not can_manage_garment_model(garment):
+        flash("No tiene permisos para preparar una versión IA.", "error")
+        return redirect(url_for("garment_models_page"))
+    if garment.get("status") != "APROBADO" or int(garment.get("active") or 0) != 1:
+        flash("La preparación requiere un modelo aprobado y activo.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute(
+            "SELECT id FROM garment_ai_models WHERE garment_model_id = %s "
+            "AND version = 'v2' ORDER BY id DESC LIMIT 1",
+            (int(model_id),),
+        )
+        source = cur.fetchone()
+        if source is None:
+            raise AIDomainError("No existe una versión v2 para ampliar.")
+        result = prepare_normal_augmentation_version(
+            cur,
+            garment_model_id=model_id,
+            parent_ai_model_id=int(source["id"]),
+            actor_id=session.get("user_id"),
+            artifacts_root=get_ai_artifacts_root(),
+            min_new_images=20,
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        flash(str(error), "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo preparar v3 normal (garment_model_id=%s).", model_id)
+        flash("No se pudo preparar la nueva versión normal.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    finally:
+        cur.close()
+        conn.close()
+    flash(
+        f"v3 preparada: {result['inherited_good_images']} imágenes buenas heredadas; "
+        "aún no se ha iniciado el entrenamiento.",
+        "success",
+    )
+    return redirect(url_for("garment_model_detail", model_id=model_id))
 
 
 @app.route(
@@ -16689,6 +16790,28 @@ def _ai_capture_evaluate(frame, coverage, sequence):
     )
 
 
+def _seed_normal_augmentation_capture_hashes(cur, ai_model_id):
+    """Carga SHA y dHash del snapshot base para dedupe local de la estación."""
+    cur.execute(
+        """SELECT ti.sha256, ti.image_path
+           FROM garment_ai_models v
+           JOIN ai_dataset_images di ON di.dataset_id = v.source_dataset_id
+           JOIN ai_training_images ti ON ti.id = di.image_id
+           WHERE v.id = %s AND ti.status = 'ACEPTADA'
+           ORDER BY ti.id""",
+        (int(ai_model_id),),
+    )
+    sha_hashes = set()
+    dhashes = []
+    for row in cur.fetchall():
+        sha_hashes.add(str(row["sha256"]).lower())
+        image_path = resolve_under_root(get_ai_artifacts_root(), row["image_path"])
+        image = cv2.imread(str(image_path))
+        if image is not None:
+            dhashes.append(compute_dhash_64(image, cv2_mod=cv2))
+    return sha_hashes, dhashes
+
+
 def _ai_capture_persist(decision, jpeg_bytes, candidate):
     session_id = AI_CAPTURE_RUNTIME["session_id"]
     garment_model_id = AI_CAPTURE_RUNTIME["garment_model_id"]
@@ -16738,11 +16861,32 @@ def _ai_capture_persist(decision, jpeg_bytes, candidate):
             dup = find_accepted_sha256(cur, garment_model_id, sha)
             if dup is not None:
                 conn.rollback()
+                if keep_file and rel_path:
+                    resolve_under_root(get_ai_artifacts_root(), rel_path).unlink(missing_ok=True)
                 return {
                     "skipped": True,
                     "reason": "DUPLICATE_SHA256",
                     "existing_id": dup["id"],
                 }
+            if AI_CAPTURE_RUNTIME.get("target_ai_model_id"):
+                cur.execute(
+                    """SELECT COUNT(*) AS total
+                       FROM ai_validation_cases c
+                       JOIN garment_ai_models v ON v.id = c.ai_model_id
+                       WHERE v.id = (
+                         SELECT parent_ai_model_id FROM garment_ai_models
+                         WHERE id = %s
+                       ) AND c.image_sha256 = %s""",
+                    (int(AI_CAPTURE_RUNTIME["target_ai_model_id"]), sha),
+                )
+                if int(cur.fetchone()["total"] or 0):
+                    conn.rollback()
+                    if keep_file and rel_path:
+                        resolve_under_root(get_ai_artifacts_root(), rel_path).unlink(missing_ok=True)
+                    return {
+                        "skipped": True,
+                        "reason": "DUPLICATE_VALIDATION_SHA256",
+                    }
 
         status = "ACEPTADA" if accepted else "RECHAZADA"
         record = register_training_image(
@@ -17216,6 +17360,18 @@ def _ai_guided_prepare_runtime(session_id, garment_model_id):
 
     cfg = get_ai_guided_config()
     capture_cfg = get_ai_capture_config()
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        capture_row = get_capture_session(cur, int(session_id))
+    finally:
+        cur.close()
+        conn.close()
+    target_ai_model_id = (
+        capture_row.get("target_ai_model_id") if capture_row else None
+    )
+    if target_ai_model_id:
+        capture_cfg["target_images"] = 30
     runtime_cfg = {**capture_cfg, **cfg}
     AI_CAPTURE_RUNTIME.update(
         {
@@ -17664,10 +17820,15 @@ def _ai_capture_recover_mode_from_db():
         garment_model_id=garment_model_id,
     )
     cfg = get_ai_capture_config()
+    if row.get("target_ai_model_id"):
+        cfg["target_images"] = 30
+    target_ai_model_id = row.get("target_ai_model_id")
     AI_CAPTURE_RUNTIME.update(
         {
             "session_id": session_id,
             "garment_model_id": garment_model_id,
+            "target_ai_model_id": target_ai_model_id,
+            "target_ai_model_id": target_ai_model_id,
             "config": cfg,
             "known_sha256": set(),
             "known_dhashes": [],
@@ -17683,6 +17844,18 @@ def _ai_capture_recover_mode_from_db():
     try:
         hashes = load_session_accepted_hashes(cur, session_id)
         AI_CAPTURE_RUNTIME["known_sha256"] = set(hashes["sha256"])
+        if target_ai_model_id:
+            base_sha, base_dhash = _seed_normal_augmentation_capture_hashes(
+                cur, int(target_ai_model_id)
+            )
+            AI_CAPTURE_RUNTIME["known_sha256"].update(base_sha)
+            AI_CAPTURE_RUNTIME["known_dhashes"].extend(base_dhash)
+        if target_ai_model_id:
+            base_sha, base_dhash = _seed_normal_augmentation_capture_hashes(
+                cur, int(target_ai_model_id)
+            )
+            AI_CAPTURE_RUNTIME["known_sha256"].update(base_sha)
+            AI_CAPTURE_RUNTIME["known_dhashes"].extend(base_dhash)
     finally:
         cur.close()
         conn.close()
@@ -17745,7 +17918,10 @@ def _has_preparation_version(cur, garment_model_id):
     return cur.fetchone() is not None
 
 
-def _ai_capture_idle_payload(cur, cfg, garment_model_id=None, allowed=None):
+def _ai_capture_idle_payload(
+    cur, cfg, garment_model_id=None, allowed=None,
+    augmentation_ai_model_id=None,
+):
     """Payload cuando el modelo todavía no tiene sesión de captura."""
     garment = {"id": garment_model_id, "code": None}
 
@@ -17759,6 +17935,12 @@ def _ai_capture_idle_payload(cur, cfg, garment_model_id=None, allowed=None):
             garment = {"id": row["id"], "code": row["code"]}
 
     has_prep = _has_preparation_version(cur, garment_model_id)
+    augmentation = (
+        normal_augmentation_summary(cur, augmentation_ai_model_id)
+        if augmentation_ai_model_id is not None else None
+    )
+    if augmentation:
+        cfg["target_images"] = 30
 
     station_row = get_open_capture_session(cur)
     station_busy = bool(
@@ -17799,6 +17981,7 @@ def _ai_capture_idle_payload(cur, cfg, garment_model_id=None, allowed=None):
             "keep_rejected": cfg["keep_rejected"],
         },
         "has_preparation_version": has_prep,
+        "normal_augmentation": augmentation,
         "station_busy": station_busy,
         "station_busy_model_code": station_code,
     }
@@ -17907,20 +18090,43 @@ def _ai_capture_status_payload(
     conn = db()
     cur = conn.cursor(dictionary=True)
     try:
+        augmentation_ai_model_id = None
         if session_id is None:
             if garment_model_id is None:
                 row = get_open_capture_session(cur)
             else:
-                row = _latest_capture_session_for_garment(
-                    cur,
-                    garment_model_id,
+                cur.execute(
+                    """SELECT id FROM garment_ai_models
+                       WHERE garment_model_id = %s AND status = 'PREPARACION'
+                         AND parent_ai_model_id IS NOT NULL
+                       ORDER BY id DESC LIMIT 1""",
+                    (int(garment_model_id),),
                 )
+                prep = cur.fetchone()
+                if prep:
+                    augmentation_ai_model_id = int(prep["id"])
+                    cfg["target_images"] = 30
+                    cur.execute(
+                        """SELECT id, garment_model_id, target_ai_model_id,
+                                  status, started_at, created_by, notes
+                           FROM ai_capture_sessions
+                           WHERE target_ai_model_id = %s
+                           ORDER BY (status = 'ABIERTA') DESC, id DESC LIMIT 1""",
+                        (augmentation_ai_model_id,),
+                    )
+                    row = cur.fetchone()
+                else:
+                    row = _latest_capture_session_for_garment(
+                        cur,
+                        garment_model_id,
+                    )
             if row is None:
                 return _ai_capture_idle_payload(
                     cur,
                     cfg,
                     garment_model_id=garment_model_id,
                     allowed=allowed,
+                    augmentation_ai_model_id=augmentation_ai_model_id,
                 )
             session_id = int(row["id"])
 
@@ -17937,6 +18143,12 @@ def _ai_capture_status_payload(
         )
         last = cur.fetchone()
         last_capture = row_to_json(last) if last else None
+        session_record = get_capture_session(cur, int(session_id))
+        target_ai_model_id = (
+            session_record.get("target_ai_model_id") if session_record else None
+        )
+        if target_ai_model_id is not None:
+            cfg["target_images"] = 30
         payload = capture_session_status_payload(
             cur,
             session_id,
@@ -17952,6 +18164,10 @@ def _ai_capture_status_payload(
         payload.setdefault("session_id", int(session_id))
         payload["station_busy"] = False
         payload["station_busy_model_code"] = None
+        payload["normal_augmentation"] = (
+            normal_augmentation_summary(cur, int(target_ai_model_id))
+            if target_ai_model_id is not None else None
+        )
         payload = _ai_capture_enrich(
             payload,
             cur,
@@ -18037,11 +18253,30 @@ def ai_capture_start():
     cur = conn.cursor(dictionary=True)
     try:
         conn.start_transaction()
+        cur.execute(
+            """SELECT id, version, parent_ai_model_id, source_dataset_id
+               FROM garment_ai_models
+               WHERE garment_model_id = %s AND status = 'PREPARACION'
+               ORDER BY id DESC LIMIT 1 FOR UPDATE""",
+            (garment_model_id,),
+        )
+        preparation = cur.fetchone()
+        target_ai_model_id = (
+            int(preparation["id"])
+            if preparation and preparation.get("parent_ai_model_id") is not None
+            else None
+        )
+        if target_ai_model_id is not None:
+            notes = (
+                f"FASE 3C.2 · {preparation['version']} · SOLO IMÁGENES BUENAS · "
+                f"dataset fuente {preparation['source_dataset_id']}"
+            )
         opened = start_ai_capture_session(
             cur,
             garment_model_id,
             actor_id,
             notes=notes,
+            target_ai_model_id=target_ai_model_id,
         )
         session_id = int(opened["id"])
 
@@ -18053,6 +18288,8 @@ def ai_capture_start():
                 capture_session_id=session_id,
                 payload={
                     "garment_model_id": garment_model_id,
+                    "target_ai_model_id": target_ai_model_id,
+                    "normal_only": bool(target_ai_model_id),
                 },
             )
 
@@ -18101,10 +18338,13 @@ def ai_capture_start():
         garment_model_id=garment_model_id,
     )
     cfg = get_ai_capture_config()
+    if target_ai_model_id:
+        cfg["target_images"] = 30
     AI_CAPTURE_RUNTIME.update(
         {
             "session_id": session_id,
             "garment_model_id": garment_model_id,
+            "target_ai_model_id": target_ai_model_id,
             "config": cfg,
             "known_sha256": set(),
             "known_dhashes": [],
@@ -18124,6 +18364,12 @@ def ai_capture_start():
     try:
         hashes = load_session_accepted_hashes(cur, session_id)
         AI_CAPTURE_RUNTIME["known_sha256"] = set(hashes["sha256"])
+        if target_ai_model_id:
+            base_sha, base_dhash = _seed_normal_augmentation_capture_hashes(
+                cur, int(target_ai_model_id)
+            )
+            AI_CAPTURE_RUNTIME["known_sha256"].update(base_sha)
+            AI_CAPTURE_RUNTIME["known_dhashes"].extend(base_dhash)
         # dhash no se persiste en Fase 2A: solo sha256 exacto entre reinicios.
     finally:
         cur.close()
@@ -18286,6 +18532,13 @@ def _ai_capture_finish(action):
             )
 
         cfg = get_ai_capture_config()
+        finished_session = get_capture_session(cur, session_id)
+        target_ai_model_id = (
+            finished_session.get("target_ai_model_id")
+            if finished_session else None
+        )
+        if target_ai_model_id is not None:
+            cfg["target_images"] = 30
         status_payload = capture_session_status_payload(
             cur,
             session_id,
@@ -18297,6 +18550,10 @@ def _ai_capture_finish(action):
         status_payload["mode"] = ai_capture.get_ai_capture_mode_state()
         status_payload["station_busy"] = False
         status_payload["station_busy_model_code"] = None
+        status_payload["normal_augmentation"] = (
+            normal_augmentation_summary(cur, int(target_ai_model_id))
+            if target_ai_model_id is not None else None
+        )
         status_payload = _ai_capture_enrich(
             status_payload,
             cur,

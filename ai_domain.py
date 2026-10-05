@@ -1717,6 +1717,7 @@ def ensure_ai_schema(cur, db_name, ensure_column=None):
         CREATE TABLE IF NOT EXISTS ai_capture_sessions (
             id INT AUTO_INCREMENT PRIMARY KEY,
             garment_model_id INT NOT NULL,
+            target_ai_model_id INT NULL,
             status VARCHAR(30) NOT NULL DEFAULT 'ABIERTA',
             started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             finished_at DATETIME NULL,
@@ -1739,6 +1740,12 @@ def ensure_ai_schema(cur, db_name, ensure_column=None):
           DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
         """
+    )
+
+    add_column(
+        "ai_capture_sessions",
+        "target_ai_model_id",
+        "target_ai_model_id INT NULL AFTER garment_model_id",
     )
 
     # --------------------------------------------------------
@@ -2058,6 +2065,21 @@ def ensure_ai_schema(cur, db_name, ensure_column=None):
         "garment_ai_models",
         "dataset_id",
         "dataset_id INT NULL AFTER dataset_path",
+    )
+    add_column(
+        "garment_ai_models",
+        "parent_ai_model_id",
+        "parent_ai_model_id INT NULL AFTER garment_model_id",
+    )
+    add_column(
+        "garment_ai_models",
+        "source_dataset_id",
+        "source_dataset_id INT NULL AFTER parent_ai_model_id",
+    )
+    add_column(
+        "garment_ai_models",
+        "normal_augmentation_min_new_images",
+        "normal_augmentation_min_new_images INT NULL AFTER source_dataset_id",
     )
     add_column(
         "garment_ai_models",
@@ -2594,6 +2616,328 @@ def create_next_ai_model_version(
     }
 
 
+def prepare_normal_augmentation_version(
+    cur,
+    *,
+    garment_model_id: int,
+    parent_ai_model_id: int,
+    actor_id: int | None,
+    artifacts_root: Path | None = None,
+    min_new_images: int = 20,
+) -> dict:
+    """Prepara un sucesor PatchCore partiendo de un snapshot NORMAL cerrado.
+
+    Esta ruta explícita permite preparar v3 mientras v2 permanece EN
+    VALIDACIÓN. Solo enlaza las imágenes del dataset fuente, no mueve ni
+    copia originales y no crea jobs de entrenamiento.
+    """
+    garment_id = int(garment_model_id)
+    parent_id = int(parent_ai_model_id)
+    minimum = int(min_new_images)
+    if garment_id <= 0 or parent_id <= 0 or minimum < 1:
+        raise AIDomainError("Parámetros de preparación normal inválidos.")
+    _lock_garment_model(cur, garment_id)
+    cur.execute(
+        """SELECT id, garment_model_id, version, model_type, status,
+                  active, dataset_id, threshold_final, threshold_frozen_at,
+                  checkpoint_hash
+           FROM garment_ai_models WHERE id = %s FOR UPDATE""",
+        (parent_id,),
+    )
+    parent = cur.fetchone()
+    if parent is None or int(parent["garment_model_id"]) != garment_id:
+        raise AIDomainError("La versión fuente no pertenece a este modelo de prenda.")
+    if (
+        str(parent.get("version") or "").lower() != "v2"
+        or str(parent.get("model_type") or "").strip().lower() != "patchcore"
+        or str(parent.get("status") or "").upper() != AI_MODEL_STATUS_VALIDACION
+        or int(parent.get("active") or 0) != 0
+        or parent.get("dataset_id") is None
+        or parent.get("threshold_final") is None
+        or parent.get("threshold_frozen_at") is None
+    ):
+        raise AIDomainError(
+            "La fuente debe ser PatchCore v2 congelada, inactiva y en VALIDACIÓN."
+        )
+    source_dataset_id = int(parent["dataset_id"])
+    cur.execute(
+        """SELECT id, garment_model_id, version, status, image_count,
+                  manifest_path, manifest_hash
+           FROM ai_datasets WHERE id = %s FOR UPDATE""",
+        (source_dataset_id,),
+    )
+    source_dataset = cur.fetchone()
+    if (
+        source_dataset is None
+        or int(source_dataset["garment_model_id"]) != garment_id
+        or str(source_dataset["status"]).upper() != DATASET_STATUS_CERRADO
+        or int(source_dataset["image_count"] or 0) != 52
+    ):
+        raise AIDomainError("El dataset fuente v2 debe ser el dataset cerrado de 52 imágenes.")
+    cur.execute(
+        """SELECT ti.id, ti.sha256, ti.image_path, ti.status,
+                  ti.garment_model_id
+           FROM ai_dataset_images di
+           JOIN ai_training_images ti ON ti.id = di.image_id
+           WHERE di.dataset_id = %s ORDER BY ti.id""",
+        (source_dataset_id,),
+    )
+    base_images = [dict(row) for row in cur.fetchall()]
+    if len(base_images) != 52 or any(
+        row["status"] != TRAINING_IMAGE_STATUS_ACEPTADA
+        or int(row["garment_model_id"]) != garment_id
+        for row in base_images
+    ):
+        raise AIDomainError("El snapshot fuente no contiene exclusivamente 52 imágenes aceptadas.")
+    hashes = [normalize_sha256(str(row["sha256"])) for row in base_images]
+    if len(set(hashes)) != 52:
+        raise AIDomainError("El dataset fuente contiene hashes de imagen duplicados.")
+    root = Path(artifacts_root) if artifacts_root is not None else get_ai_artifacts_root()
+    root = root.expanduser().resolve()
+    for row in base_images:
+        path = ensure_safe_relative_path(row["image_path"])
+        if any(part in path.lower().split("/") for part in ("validations", "validation_datasets")):
+            raise AIDomainError("La fuente incluye una ruta de validación; se bloquea la preparación.")
+        image_path = resolve_under_root(root, path)
+        if not image_path.is_file() or sha256_file(image_path) != row["sha256"]:
+            raise AIDomainError(f"La imagen base {row['id']} no pasa verificación SHA-256.")
+    manifest_path = resolve_under_root(root, source_dataset["manifest_path"])
+    try:
+        source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise AIDomainError("El manifest del dataset fuente no se puede leer.") from error
+    source_manifest_hash = compute_manifest_hash(
+        [{"id": row.get("image_id"), "sha256": row.get("sha256")}
+         for row in source_manifest.get("images", [])]
+    )
+    if (
+        source_manifest_hash != str(source_dataset["manifest_hash"]).lower()
+        or source_manifest_hash != compute_manifest_hash(base_images)
+        or int(source_manifest.get("image_count") or 0) != 52
+    ):
+        raise AIDomainError("El manifest fuente no reproduce los 52 hashes verificados.")
+    cur.execute(
+        """SELECT image_sha256 FROM ai_validation_cases
+           WHERE ai_model_id = %s""",
+        (parent_id,),
+    )
+    validation_hashes = {str(row["image_sha256"]).lower() for row in cur.fetchall()}
+    overlap = sorted(set(hashes) & validation_hashes)
+    if overlap:
+        raise AIDomainError(
+            "Contaminación entre training y validación: " + ", ".join(overlap)
+        )
+    cur.execute(
+        """SELECT ti.id, ti.sha256 FROM ai_training_images ti
+           JOIN ai_capture_sessions cs ON cs.id = ti.capture_session_id
+           WHERE ti.garment_model_id = %s AND ti.status = 'ACEPTADA'
+             AND cs.status = 'COMPLETADA' ORDER BY ti.id""",
+        (garment_id,),
+    )
+    completed_good_rows = [dict(row) for row in cur.fetchall()]
+    source_image_ids = {int(row["id"]) for row in base_images}
+    completed_image_ids = {int(row["id"]) for row in completed_good_rows}
+    if completed_image_ids != source_image_ids:
+        raise AIDomainError(
+            "Las 52 imágenes del snapshot fuente no coinciden con todas las capturas buenas finalizadas."
+        )
+    cur.execute(
+        """SELECT id FROM ai_capture_sessions
+           WHERE garment_model_id = %s AND status = 'ABIERTA' LIMIT 1""",
+        (garment_id,),
+    )
+    if cur.fetchone() is not None:
+        raise AIDomainError("Finalice o cancele la sesión de captura abierta antes de preparar v3.")
+    cur.execute(
+        """SELECT j.id FROM ai_jobs j
+           JOIN garment_ai_models m ON m.id = j.ai_model_id
+           WHERE m.garment_model_id = %s AND j.kind = 'TRAINING'
+             AND j.status IN ('PENDIENTE', 'EN_CURSO') LIMIT 1""",
+        (garment_id,),
+    )
+    if cur.fetchone() is not None:
+        raise AIDomainError("Hay un entrenamiento en curso; no se puede preparar v3.")
+    cur.execute(
+        """SELECT id, version, status, notes, parent_ai_model_id,
+                  source_dataset_id
+           FROM garment_ai_models
+           WHERE garment_model_id = %s ORDER BY id FOR UPDATE""",
+        (garment_id,),
+    )
+    versions = [dict(row) for row in cur.fetchall()]
+    existing = next((
+        row for row in versions
+        if str(row["version"]).lower() == "v3"
+        and row.get("parent_ai_model_id") == parent_id
+    ), None)
+    if existing:
+        cur.execute(
+            """SELECT id FROM ai_datasets WHERE garment_model_id = %s
+               ORDER BY id DESC LIMIT 1""",
+            (garment_id,),
+        )
+        existing_dataset = cur.fetchone()
+        dataset_id = int(existing_dataset["id"]) if existing_dataset else None
+        summary = normal_augmentation_summary(cur, int(existing["id"]))
+        base_count = summary["inherited_good_images"] if summary else 0
+        return {
+            "ai_model_id": int(existing["id"]),
+            "garment_model_id": garment_id,
+            "version": "v3",
+            "status": existing["status"],
+            "parent_ai_model_id": parent_id,
+            "source_dataset_id": source_dataset_id,
+            "dataset_id": dataset_id,
+            "inherited_good_images": base_count,
+            "new_good_images": summary["new_good_images"] if summary else 0,
+            "new_good_images_completed": summary["new_good_images_completed"] if summary else 0,
+            "total_available": summary["total_available"] if summary else base_count,
+            "minimum_new_good_images": minimum,
+            "training_started": False,
+            "already_prepared": True,
+        }
+    other_pending = [
+        row for row in versions
+        if str(row["status"]).upper() in (AI_MODEL_STATUS_PREPARACION, AI_MODEL_STATUS_ENTRENANDO)
+        and not is_technically_invalidated(row.get("notes"))
+    ]
+    if other_pending:
+        raise AIDomainError("Ya existe otra versión en preparación o entrenamiento.")
+    if next_version_label(versions) != "v3":
+        raise AIDomainError("La siguiente versión disponible no es v3; se detiene para evitar saltos de versión.")
+    cur.execute(
+        """INSERT INTO garment_ai_models (
+               garment_model_id, version, model_type, dataset_name,
+               dataset_path, checkpoint_path, status, normal_images_count,
+               notes, created_by, active, parent_ai_model_id,
+               source_dataset_id, normal_augmentation_min_new_images
+           ) VALUES (%s, 'v3', %s, %s, %s, NULL, 'PREPARACION', 52,
+                     %s, %s, 0, %s, %s, %s)""",
+        (
+            garment_id,
+            parent.get("model_type") or "PatchCore",
+            f"Dataset normal ampliado desde v2 (dataset {source_dataset_id})",
+            source_dataset["manifest_path"],
+            "Preparación de ampliación NORMAL desde v2; aún no entrenada.",
+            actor_id,
+            parent_id,
+            source_dataset_id,
+            minimum,
+        ),
+    )
+    ai_model_id = int(cur.lastrowid)
+    dataset = create_ai_dataset(cur, garment_id, actor_id)
+    added = add_images_to_dataset(
+        cur, int(dataset["id"]), [int(row["id"]) for row in base_images]
+    )
+    if added != 52:
+        raise AIDomainError("No se pudieron enlazar las 52 imágenes base completas.")
+    record_ai_event(
+        cur,
+        "VERSION_PREPARED",
+        actor_id=actor_id,
+        ai_model_id=ai_model_id,
+        dataset_id=int(dataset["id"]),
+        payload={
+            "version": "v3",
+            "parent_ai_model_id": parent_id,
+            "source_dataset_id": source_dataset_id,
+            "source_manifest_hash": source_dataset["manifest_hash"],
+            "inherited_good_images": 52,
+            "minimum_new_good_images": minimum,
+            "status": AI_MODEL_STATUS_PREPARACION,
+            "training_started": False,
+        },
+    )
+    return {
+        "ai_model_id": ai_model_id,
+        "garment_model_id": garment_id,
+        "version": "v3",
+        "status": AI_MODEL_STATUS_PREPARACION,
+        "parent_ai_model_id": parent_id,
+        "source_dataset_id": source_dataset_id,
+        "dataset_id": int(dataset["id"]),
+        "inherited_good_images": added,
+        "new_good_images": 0,
+        "total_available": added,
+        "minimum_new_good_images": minimum,
+        "training_started": False,
+    }
+
+
+def normal_augmentation_summary(cur, ai_model_id: int) -> dict | None:
+    """Conteos derivados de BD para una versión de ampliación normal."""
+    cur.execute(
+        """SELECT id, garment_model_id, version, status, parent_ai_model_id,
+                  source_dataset_id, dataset_id,
+                  normal_augmentation_min_new_images
+           FROM garment_ai_models WHERE id = %s""",
+        (int(ai_model_id),),
+    )
+    model = cur.fetchone()
+    if not model or model.get("parent_ai_model_id") is None:
+        return None
+    source_dataset_id = int(model["source_dataset_id"])
+    dataset_id = model.get("dataset_id")
+    if dataset_id is None:
+        cur.execute(
+            """SELECT id FROM ai_datasets WHERE garment_model_id = %s
+               ORDER BY id DESC LIMIT 1""",
+            (int(model["garment_model_id"]),),
+        )
+        latest_dataset = cur.fetchone()
+        dataset_id = latest_dataset["id"] if latest_dataset else None
+    cur.execute(
+        """SELECT COUNT(DISTINCT current_link.image_id) AS total
+           FROM ai_dataset_images current_link
+           JOIN ai_dataset_images source_link
+             ON source_link.image_id = current_link.image_id
+            AND source_link.dataset_id = %s
+           WHERE current_link.dataset_id = %s""",
+        (source_dataset_id, int(dataset_id or 0)),
+    )
+    inherited = int(cur.fetchone()["total"] or 0)
+    cur.execute(
+        """SELECT COUNT(DISTINCT ti.id) AS total
+           FROM ai_training_images ti
+           JOIN ai_capture_sessions cs ON cs.id = ti.capture_session_id
+           WHERE cs.target_ai_model_id = %s AND cs.status IN ('ABIERTA', 'COMPLETADA')
+             AND ti.status = 'ACEPTADA'""",
+        (int(ai_model_id),),
+    )
+    new_images = int(cur.fetchone()["total"] or 0)
+    cur.execute(
+        """SELECT COUNT(DISTINCT ti.id) AS total
+           FROM ai_training_images ti
+           JOIN ai_capture_sessions cs ON cs.id = ti.capture_session_id
+           WHERE cs.target_ai_model_id = %s AND cs.status = 'COMPLETADA'
+             AND ti.status = 'ACEPTADA'""",
+        (int(ai_model_id),),
+    )
+    new_completed = int(cur.fetchone()["total"] or 0)
+    cur.execute(
+        "SELECT COUNT(*) AS total FROM ai_dataset_images WHERE dataset_id = %s",
+        (int(dataset_id or 0),),
+    )
+    linked_total = int(cur.fetchone()["total"] or 0)
+    return {
+        "ai_model_id": int(model["id"]),
+        "garment_model_id": int(model["garment_model_id"]),
+        "version": model["version"],
+        "status": model["status"],
+        "parent_ai_model_id": int(model["parent_ai_model_id"]),
+        "source_dataset_id": source_dataset_id,
+        "dataset_id": int(dataset_id) if dataset_id is not None else None,
+        "inherited_good_images": inherited,
+        "new_good_images": new_images,
+        "new_good_images_completed": new_completed,
+        "total_available": inherited + new_images,
+        "dataset_linked_images": linked_total,
+        "minimum_new_good_images": int(model["normal_augmentation_min_new_images"] or 20),
+        "can_train": new_completed >= int(model["normal_augmentation_min_new_images"] or 20),
+    }
+
+
 def transition_ai_model_status(
     cur,
     ai_model_id: int,
@@ -2774,6 +3118,7 @@ def open_ai_capture_session(
     actor_id: int | None,
     *,
     notes: str | None = None,
+    target_ai_model_id: int | None = None,
 ) -> dict:
     """Abre una sesión de captura (una ABIERTA por modelo)."""
     _lock_garment_model(cur, garment_model_id)
@@ -2801,13 +3146,14 @@ def open_ai_capture_session(
         """
         INSERT INTO ai_capture_sessions (
             garment_model_id,
+            target_ai_model_id,
             status,
             created_by,
             notes
         )
-        VALUES (%s, 'ABIERTA', %s, %s)
+        VALUES (%s, %s, 'ABIERTA', %s, %s)
         """,
-        (garment_model_id, actor_id, notes),
+        (garment_model_id, target_ai_model_id, actor_id, notes),
     )
 
     session_id = cur.lastrowid
@@ -2815,6 +3161,7 @@ def open_ai_capture_session(
     return {
         "id": session_id,
         "garment_model_id": garment_model_id,
+        "target_ai_model_id": target_ai_model_id,
         "status": CAPTURE_STATUS_ABIERTA,
     }
 
@@ -2823,7 +3170,8 @@ def get_open_capture_session(cur) -> dict | None:
     """Sesión ABIERTA de la estación (si existe)."""
     cur.execute(
         """
-        SELECT id, garment_model_id, status, started_at, created_by, notes
+        SELECT id, garment_model_id, target_ai_model_id, status,
+               started_at, created_by, notes
         FROM ai_capture_sessions
         WHERE status = 'ABIERTA'
         ORDER BY id DESC
@@ -2839,6 +3187,7 @@ def get_capture_session(cur, capture_session_id: int) -> dict | None:
         SELECT
             id,
             garment_model_id,
+            target_ai_model_id,
             status,
             started_at,
             finished_at,
@@ -2858,6 +3207,7 @@ def start_ai_capture_session(
     actor_id: int | None,
     *,
     notes: str | None = None,
+    target_ai_model_id: int | None = None,
     config: dict | None = None,
 ) -> dict:
     """Inicia sesión de captura en la estación (idempotente si ya ABIERTA igual)."""
@@ -2877,9 +3227,16 @@ def start_ai_capture_session(
 
         if existing is not None:
             if int(existing["garment_model_id"]) == int(garment_model_id):
+                if target_ai_model_id is not None and int(
+                    existing.get("target_ai_model_id") or 0
+                ) != int(target_ai_model_id):
+                    raise AIDomainError(
+                        "La sesión ABIERTA pertenece a otra preparación de versión."
+                    )
                 return {
                     "id": int(existing["id"]),
                     "garment_model_id": int(existing["garment_model_id"]),
+                    "target_ai_model_id": existing.get("target_ai_model_id"),
                     "status": existing["status"],
                     "started_at": existing["started_at"],
                     "already_open": True,
@@ -2895,6 +3252,7 @@ def start_ai_capture_session(
             garment_model_id,
             actor_id,
             notes=notes,
+            target_ai_model_id=target_ai_model_id,
         )
         session["already_open"] = False
         session["target_images"] = int(cfg["target_images"])
@@ -3090,6 +3448,10 @@ def capture_session_status_payload(
 
     return {
         "session_id": int(row["id"]),
+        "target_ai_model_id": (
+            int(row["target_ai_model_id"])
+            if row.get("target_ai_model_id") is not None else None
+        ),
         "garment_model": {
             "id": int(garment["id"]),
             "code": garment.get("code"),

@@ -1281,6 +1281,33 @@
       </div>
     </div>
 
+    {% if normal_augmentation_can_prepare %}
+    <div class="ai-capture-notice">
+      La v2 está congelada e inactiva. Puede preparar v3 de forma separada
+      para ampliar exclusivamente el patrón NORMAL desde sus 52 imágenes sanas.
+      No se incorporan validaciones ni casos POST_FREEZE.
+      <form method="post" action="{{ url_for('garment_ai_prepare_v3_normal', model_id=model.id) }}">
+        <button class="detail-button primary" type="submit">Preparar v3 · solo imágenes BUENAS</button>
+      </form>
+    </div>
+    {% endif %}
+
+    {% if normal_augmentation %}
+    <div class="ai-capture-notice" id="normalAugmentationSummary">
+      <strong>v3 · preparación de nuevo entrenamiento</strong><br>
+      {{ normal_augmentation.inherited_good_images }} imágenes normales heredadas ·
+      {{ normal_augmentation.new_good_images }} imágenes normales nuevas ·
+      {{ normal_augmentation.total_available }} disponibles para v3.<br>
+      Dataset v3 {{ normal_augmentation.dataset_id }} (abierto) ·
+      fuente {{ normal_augmentation.source_dataset_id }} ·
+      mínimo {{ normal_augmentation.minimum_new_good_images }} nuevas antes de habilitar entrenamiento.
+      {% if normal_augmentation.status == 'PREPARACION' %}
+      <p>Captura guiada exclusiva para patrón NORMAL. No seleccione prendas con MANCHA o AGUJERO.</p>
+      <a class="detail-button success" href="{{ url_for('guided_capture_page', model_id=model.id) }}">Capturar buenas nuevas</a>
+      {% endif %}
+    </div>
+    {% endif %}
+
     {% if false and ai_capture_visible %}
     <div
       class="ai-capture-panel"

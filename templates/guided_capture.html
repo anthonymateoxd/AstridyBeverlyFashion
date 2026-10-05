@@ -455,6 +455,18 @@
       Siga los pasos de la izquierda. La imagen se guarda solo
       cuando usted lo pide con el botón.
     </p>
+    {% if ai_capture and ai_capture.normal_augmentation %}
+    <div class="guide-info" style="display:block">
+      <strong>v3 · preparación de nuevo entrenamiento</strong><br>
+      Captura exclusiva de prendas BUENAS para el patrón NORMAL. No se aceptan
+      MANCHAS ni AGUJEROS en training.<br>
+      <span id="augInherited">{{ ai_capture.normal_augmentation.inherited_good_images }}</span> imágenes normales heredadas +
+      <span id="augNew">{{ ai_capture.normal_augmentation.new_good_images }}</span> nuevas =
+      <span id="augTotal">{{ ai_capture.normal_augmentation.total_available }}</span> disponibles para v3.
+      Capture variaciones normales de posición, inclinación ligera, desplazamiento,
+      arrugas naturales y orientaciones admitidas por el puesto.
+    </div>
+    {% endif %}
 
     <span class="guide-state" id="guideState">Preparando</span>
 
@@ -924,6 +936,15 @@
 
   function render() {
     const guide = state.guide || null;
+    const augmentation = state.normal_augmentation;
+    if (augmentation) {
+      const inherited = document.getElementById("augInherited");
+      const added = document.getElementById("augNew");
+      const total = document.getElementById("augTotal");
+      if (inherited) inherited.textContent = Number(augmentation.inherited_good_images || 0);
+      if (added) added.textContent = Number(augmentation.new_good_images || 0);
+      if (total) total.textContent = Number(augmentation.total_available || 0);
+    }
 
     if (guide && guide.active) {
       setStateLabel(guide.state_label, guide.state);
