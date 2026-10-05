@@ -19318,6 +19318,47 @@ def ai_validation_case():
     }), 201
 
 
+@app.route("/api/ai/validation/threshold/freeze", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_threshold_freeze():
+    """Confirma de forma explícita el umbral definitivo de una versión."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+    _, resolved, guard_error = _validation_api_guard(garment_model_id, raw_ai)
+    if guard_error is not None:
+        return guard_error
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        result = ai_validation.freeze_validation_threshold(
+            cur,
+            ai_model_id=resolved,
+            threshold=body.get("threshold_final"),
+            actor_id=session.get("user_id"),
+            provenance=body.get("provenance"),
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo congelar el threshold de ai_model_id=%s.", resolved)
+        return jsonify({"ok": False, "error": "No se pudo congelar el threshold definitivo."}), 500
+    finally:
+        cur.close()
+        conn.close()
+    return jsonify({"ok": True, "threshold": _json_sanitize(result)})
+
+
 @app.route("/api/ai/validation/evaluate", methods=["POST"])
 @login_required
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)

@@ -499,8 +499,10 @@ class ValidationDbTests(_TrainingDbCase):
     QM_USERNAME = "ph3b_qm"
 
     MODEL_CODE = "TEST-PH3B-VALID"
+    FREEZE_CODE = "TEST-PH3B-FREEZE"
+    POST_FREEZE_CODE = "TEST-PH3B-POST-FREEZE"
     INVALIDATED_CODE = "TEST-PH3B-INVAL"
-    MODELS = (MODEL_CODE, INVALIDATED_CODE)
+    MODELS = (MODEL_CODE, INVALIDATED_CODE, FREEZE_CODE, POST_FREEZE_CODE)
 
     USERS = (
         (ADMIN_USERNAME, "ADMIN"),
@@ -1405,7 +1407,7 @@ class ValidationDbTests(_TrainingDbCase):
     # --------------------------------------------------------
 
     def test_complete_requires_evaluation_and_never_activates(self):
-        model_id = self.model_ids[self.MODEL_CODE]
+        model_id = self.model_ids[self.FREEZE_CODE]
         ai_model_id = int(self._ai_row_by_model(model_id)["id"])
 
         without_session = self._complete(model_id, ai_model_id)
@@ -1431,6 +1433,24 @@ class ValidationDbTests(_TrainingDbCase):
         evaluated = self._evaluate(model_id, ai_model_id)
         self.assertEqual(evaluated.status_code, 200, self._json(evaluated))
 
+        not_frozen = self._complete(model_id, ai_model_id)
+        self.assertEqual(not_frozen.status_code, 409, self._json(not_frozen))
+        self.assertIn("congele el threshold", self._json(not_frozen)["error"])
+        frozen = self._freeze_threshold(model_id, ai_model_id, 50.00)
+        self.assertEqual(frozen.status_code, 200, self._json(frozen))
+        self.assertEqual(
+            self._freeze_threshold(model_id, ai_model_id, 50.00).status_code,
+            200,
+        )
+        changed = self._freeze_threshold(model_id, ai_model_id, 51.00)
+        self.assertEqual(changed.status_code, 409, self._json(changed))
+        with self.assertRaises(Exception):
+            self.cur.execute(
+                "UPDATE garment_ai_models SET threshold_final = 51.00 WHERE id = %s",
+                (ai_model_id,),
+            )
+        self.conn.rollback()
+
         completed = self._complete(model_id, ai_model_id)
         self.assertEqual(completed.status_code, 200, self._json(completed))
 
@@ -1454,6 +1474,7 @@ class ValidationDbTests(_TrainingDbCase):
 
         self.assertEqual(self._event_count(ai_model_id, "VALIDATED"), 1)
         self.assertEqual(self._event_count(ai_model_id, "ACTIVATED"), 0)
+        self.assertEqual(self._event_count(ai_model_id, "THRESHOLD_FROZEN"), 1)
 
         again = self._complete(model_id, ai_model_id)
         self.assertEqual(again.status_code, 200, self._json(again))
@@ -1461,6 +1482,38 @@ class ValidationDbTests(_TrainingDbCase):
 
         restart = self._start_session(model_id, ai_model_id)
         self.assertEqual(restart.status_code, 409, self._json(restart))
+
+    def test_post_freeze_cases_are_labeled_and_scored_at_frozen_threshold(self):
+        model_id = self.model_ids[self.POST_FREEZE_CODE]
+        ai_model_id = int(self._ai_row_by_model(model_id)["id"])
+        self.assertEqual(self._start_session(model_id, ai_model_id).status_code, 201)
+        baseline, _ = self._post_case(
+            model_id, "NORMAL", score=30.0, ai_model_id=ai_model_id
+        )
+        self.assertEqual(baseline.status_code, 201, self._json(baseline))
+        evaluated = self._evaluate(model_id, ai_model_id)
+        self.assertEqual(evaluated.status_code, 200, self._json(evaluated))
+        frozen = self._freeze_threshold(model_id, ai_model_id, 50.00)
+        self.assertEqual(frozen.status_code, 200, self._json(frozen))
+        response, _ = self._post_case(
+            model_id, "MANCHA", score=50.0, is_anomaly=False,
+            ai_model_id=ai_model_id,
+        )
+        self.assertEqual(response.status_code, 201, self._json(response))
+        case = self._json(response)["case"]
+        self.assertEqual(case["threshold_used"], 50.0)
+        self.assertEqual(case["prediction"], "ANOMALIA")
+        self.assertEqual(case["result"], "CORRECTO")
+        self.assertEqual(case["validation_cohort"], "POST_FREEZE_FINAL_TEST")
+        self.conn.commit()
+        self.cur.execute(
+            "SELECT threshold_final, status, active FROM garment_ai_models WHERE id = %s",
+            (ai_model_id,),
+        )
+        frozen_model = self.cur.fetchone()
+        self.assertEqual(float(frozen_model["threshold_final"]), 50.0)
+        self.assertEqual(frozen_model["status"], "VALIDACION")
+        self.assertEqual(int(frozen_model["active"] or 0), 0)
 
     # --------------------------------------------------------
     # versión invalidada
@@ -1607,7 +1660,9 @@ class ValidationCaseEditDbTests(_TrainingDbCase):
     QM_USERNAME = "ph3e_qm"
 
     MODEL_CODE = "TEST-PH3E-EDIT"
-    MODELS = (MODEL_CODE,)
+    FREEZE_PAGE_CODE = "TEST-PH3E-FREEZE-PAGE"
+    FREEZE_EDIT_CODE = "TEST-PH3E-FREEZE-EDIT"
+    MODELS = (MODEL_CODE, FREEZE_PAGE_CODE, FREEZE_EDIT_CODE)
 
     USERS = (
         (ADMIN_USERNAME, "ADMIN"),
@@ -2162,7 +2217,7 @@ class ValidationCaseEditDbTests(_TrainingDbCase):
         self.assertEqual(self._counts(model_id), counts_before)
 
     def test_validation_page_shows_the_case_actions(self):
-        model_id = self.model_ids[self.MODEL_CODE]
+        model_id = self.model_ids[self.FREEZE_PAGE_CODE]
         ai_model_id = int(self._ai_row_by_model(model_id)["id"])
 
         response, _ = self._post_case(model_id, "NORMAL", score=12.0)
@@ -2188,6 +2243,9 @@ class ValidationCaseEditDbTests(_TrainingDbCase):
         self.assertEqual(
             self._evaluate(model_id, ai_model_id).status_code, 200
         )
+        self.assertEqual(
+            self._freeze_threshold(model_id, ai_model_id).status_code, 200
+        )
         self.assertEqual(self._complete(model_id, ai_model_id).status_code, 200)
 
         page = self.client.get(
@@ -2198,7 +2256,7 @@ class ValidationCaseEditDbTests(_TrainingDbCase):
         self.assertIn('"can_edit_cases": false', html)
 
     def test_edit_is_blocked_after_the_validation_closes(self):
-        model_id = self.model_ids[self.MODEL_CODE]
+        model_id = self.model_ids[self.FREEZE_EDIT_CODE]
         ai_model_id = int(self._ai_row_by_model(model_id)["id"])
 
         response, _ = self._post_case(model_id, "NORMAL", score=24.0)
@@ -2207,6 +2265,9 @@ class ValidationCaseEditDbTests(_TrainingDbCase):
 
         self.assertEqual(
             self._evaluate(model_id, ai_model_id).status_code, 200
+        )
+        self.assertEqual(
+            self._freeze_threshold(model_id, ai_model_id).status_code, 200
         )
         self.assertEqual(self._complete(model_id, ai_model_id).status_code, 200)
 

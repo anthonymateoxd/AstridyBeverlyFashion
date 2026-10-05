@@ -461,6 +461,26 @@
       Manchas: <strong id="valManchasCount">{{ validation.counts_defects['MANCHA'] }}</strong>
       · Agujeros: <strong id="valAgujerosCount">{{ validation.counts_defects['AGUJERO'] }}</strong>
     </p>
+    <div class="val-defect-detail" id="thresholdFinalPanel">
+      <span id="thresholdCandidateLabel">
+        Threshold candidato: {% if validation.threshold_candidate is not none %}{{ '%.2f'|format(validation.threshold_candidate) }}{% else %}sin candidato{% endif %}
+      </span>
+      {% if validation.threshold_final is not none %}
+        <strong id="thresholdFinalLabel">Threshold definitivo: {{ '%.2f'|format(validation.threshold_final) }} · CONGELADO</strong>
+        <span id="thresholdProvenance">{{ validation.threshold_provenance }}</span>
+      {% else %}
+        <strong id="thresholdFinalLabel">Threshold definitivo: SIN CONGELAR</strong>
+      {% endif %}
+      {% if can_manage and validation.model_status == 'VALIDACION' and validation.threshold_final is none %}
+      <div class="val-actions">
+        <label for="thresholdFinalInput">Confirmar threshold definitivo</label>
+        <input id="thresholdFinalInput" type="number" min="0" max="100" step="0.01" value="50.00">
+        <input id="thresholdProvenanceInput" type="text" maxlength="500" value="Decisión técnica FASE 3C.1; confirmación administrativa de 50.00 antes de la prueba final.">
+        <button type="button" class="detail-button" id="thresholdFreeze">Confirmar y congelar</button>
+        <span id="thresholdFreezeMessage" role="status"></span>
+      </div>
+      {% endif %}
+    </div>
   </section>
 
   <section class="val-card" id="validationBank">
@@ -563,7 +583,7 @@
         type="button"
         id="valComplete"
         class="detail-button success"
-        {% if not validation.can_complete %}disabled{% endif %}
+        {% if not validation.can_complete or validation.threshold_final is none %}disabled{% endif %}
       >
         Marcar como VALIDADA
       </button>
@@ -612,6 +632,7 @@
           <th>Score de anomalía</th>
           <th>Modelo</th>
           <th>Resultado</th>
+          <th>Cohorte</th>
           <th>Fecha</th>
           <th>Artefactos</th>
           {% if can_manage %}<th>Acciones</th>{% endif %}
@@ -630,6 +651,7 @@
           </td>
           <td>{{ validation.version }}</td>
           <td>{{ case.result_label or 'Pendiente de calibración' }}</td>
+          <td>{{ case.validation_cohort or 'Validación' }}</td>
           <td>{{ case.created_at }}</td>
           <td>
             <a href="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='original') }}">original</a>
@@ -738,6 +760,7 @@
       'caseUpdate': url_for('ai_validation_case_update'),
       'caseDelete': url_for('ai_validation_case_delete'),
       'evaluate': url_for('ai_validation_evaluate'),
+      'freezeThreshold': url_for('ai_validation_threshold_freeze'),
       'complete': url_for('ai_validation_complete'),
       'bankExport': url_for('ai_validation_bank_export'),
       'asset': url_for('garment_validation_case_asset', model_id=model.id, case_id=0, kind='original'),
@@ -767,6 +790,10 @@
   const startBtn = document.getElementById("valStart");
   const evaluateBtn = document.getElementById("valEvaluate");
   const completeBtn = document.getElementById("valComplete");
+  const thresholdFreezeBtn = document.getElementById("thresholdFreeze");
+  const thresholdInput = document.getElementById("thresholdFinalInput");
+  const thresholdProvenanceInput = document.getElementById("thresholdProvenanceInput");
+  const thresholdFreezeMessage = document.getElementById("thresholdFreezeMessage");
   const bankExportBtn = document.getElementById("bankExport");
   const bankMessageEl = document.getElementById("bankMessage");
   const messageEl = document.getElementById("valCaptureMessage");
@@ -863,7 +890,7 @@
   function renderActions() {
     if (captureBtn) captureBtn.disabled = busy || !state.can_capture;
     if (evaluateBtn) evaluateBtn.disabled = busy || !state.can_evaluate;
-    if (completeBtn) completeBtn.disabled = busy || !state.can_complete;
+    if (completeBtn) completeBtn.disabled = busy || !state.can_complete || state.threshold_final === null || state.threshold_final === undefined;
   }
 
   function renderCounts() {
@@ -896,6 +923,18 @@
 
     if (sessionEl) {
       sessionEl.textContent = state.session_status || "SIN SESIÓN";
+    }
+    const thresholdLabel = document.getElementById("thresholdFinalLabel");
+    const candidateLabel = document.getElementById("thresholdCandidateLabel");
+    if (candidateLabel) {
+      candidateLabel.textContent = `Threshold candidato: ${state.threshold_candidate === null || state.threshold_candidate === undefined ? "sin candidato" : Number(state.threshold_candidate).toFixed(2)}`;
+    }
+    if (thresholdLabel && state.threshold_final !== null && state.threshold_final !== undefined) {
+      thresholdLabel.textContent = `Threshold definitivo: ${Number(state.threshold_final).toFixed(2)} · CONGELADO`;
+    }
+    const thresholdProvenance = document.getElementById("thresholdProvenance");
+    if (thresholdProvenance && state.threshold_provenance) {
+      thresholdProvenance.textContent = state.threshold_provenance;
     }
   }
 
@@ -1077,6 +1116,7 @@
             <td>${esc(scoreLabel(item.anomaly_score))}</td>
             <td>${esc(state.version)}</td>
             <td>${esc(item.result_label || "Pendiente de calibración")}</td>
+            <td>${esc(item.validation_cohort || "Validación")}</td>
             <td>${esc(item.created_at)}</td>
             <td>
               <a href="${esc(assetUrl(item.id, "original"))}">original</a>${
@@ -1262,6 +1302,36 @@
         if (bankMessageEl) bankMessageEl.textContent = error.message;
       } finally {
         bankExportBtn.disabled = false;
+      }
+    });
+  }
+
+  if (thresholdFreezeBtn) {
+    thresholdFreezeBtn.addEventListener("click", async () => {
+      thresholdFreezeBtn.disabled = true;
+      if (thresholdFreezeMessage) thresholdFreezeMessage.textContent = "Guardando congelación…";
+      try {
+        const result = await post(config.urls.freezeThreshold, {
+          garment_model_id: config.modelId,
+          ai_model_id: state.ai_model_id,
+          threshold_final: thresholdInput ? thresholdInput.value : null,
+          provenance: thresholdProvenanceInput ? thresholdProvenanceInput.value : ""
+        });
+        state.threshold_final = result.threshold.threshold_final;
+        state.threshold_frozen_at = result.threshold.frozen_at || null;
+        state.threshold_frozen_by = result.threshold.frozen_by || null;
+        state.threshold_provenance = result.threshold.provenance;
+        renderStatus();
+        renderActions();
+        const label = document.getElementById("thresholdFinalLabel");
+        if (label) label.textContent = `Threshold definitivo: ${Number(state.threshold_final).toFixed(2)} · CONGELADO`;
+        if (thresholdFreezeMessage) thresholdFreezeMessage.textContent = "Threshold definitivo congelado. No podrá recalibrarse.";
+        thresholdFreezeBtn.remove();
+        if (thresholdInput) thresholdInput.disabled = true;
+        if (thresholdProvenanceInput) thresholdProvenanceInput.disabled = true;
+      } catch (error) {
+        if (thresholdFreezeMessage) thresholdFreezeMessage.textContent = error.message;
+        thresholdFreezeBtn.disabled = false;
       }
     });
   }

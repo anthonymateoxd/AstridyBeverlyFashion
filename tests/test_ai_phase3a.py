@@ -502,6 +502,9 @@ class _TrainingDbCase(unittest.TestCase):
             database=cls.database,
         )
         cls.cur = cls.conn.cursor(dictionary=True)
+        from ai_domain import ensure_ai_schema
+        ensure_ai_schema(cls.cur, cls.database)
+        cls.conn.commit()
         cls.client = cls.A.app.test_client()
         cls.min_images = int(get_ai_capture_config()["min_images"])
 
@@ -777,6 +780,19 @@ class _TrainingDbCase(unittest.TestCase):
         with self.client.session_transaction() as sess:
             sess.clear()
             sess["user_id"] = self.user_ids[username]
+
+    def _freeze_threshold(self, model_id, ai_model_id, value=50.0,
+                          username=None):
+        self._login(username or self.ADMIN_USERNAME)
+        return self.client.post(
+            "/api/ai/validation/threshold/freeze",
+            json={
+                "garment_model_id": model_id,
+                "ai_model_id": ai_model_id,
+                "threshold_final": value,
+                "provenance": "Confirmación técnica de prueba unitaria.",
+            },
+        )
 
     def _json(self, response):
         return json.loads(response.get_data(as_text=True))

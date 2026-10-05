@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import os
 import tempfile
 import threading
@@ -163,7 +164,8 @@ def load_model_bundle(cur, ai_model_id) -> dict:
         """
         SELECT id, garment_model_id, version, status, notes,
                checkpoint_path, checkpoint_hash, input_size,
-               dataset_id, active
+               dataset_id, active, threshold_final, threshold_frozen_at,
+               threshold_frozen_by, threshold_provenance
         FROM garment_ai_models
         WHERE id = %s
         """,
@@ -243,6 +245,13 @@ def load_model_bundle(cur, ai_model_id) -> dict:
         "input_size": input_size,
         "config": config,
         "active": int(row.get("active") or 0),
+        "threshold_final": (
+            float(row["threshold_final"])
+            if row.get("threshold_final") is not None else None
+        ),
+        "threshold_frozen_at": row.get("threshold_frozen_at"),
+        "threshold_frozen_by": row.get("threshold_frozen_by"),
+        "threshold_provenance": row.get("threshold_provenance"),
     }
 
 
@@ -516,7 +525,9 @@ def _original_extension(image_bytes: bytes) -> str:
 def _fetch_validation_model(cur, ai_model_id) -> dict:
     cur.execute(
         """
-        SELECT id, garment_model_id, version, status, notes, active
+        SELECT id, garment_model_id, version, status, notes, active,
+               threshold_final, threshold_frozen_at, threshold_frozen_by,
+               threshold_provenance
         FROM garment_ai_models
         WHERE id = %s
         """,
@@ -751,11 +762,15 @@ def register_validation_case(
         except OSError:
             pass
 
+    threshold_final = bundle.get("threshold_final")
+    if threshold_final is not None and score_percent is not None:
+        is_anomaly = float(score_percent) >= float(threshold_final)
     prediction_label = "ANOMALIA" if is_anomaly else "NORMAL"
+    cohort = "POST_FREEZE_FINAL_TEST" if threshold_final is not None else None
     result = validate_validation_case_result(
         category_key,
         score_percent,
-        None,
+        threshold_final,
     ) or VALIDATION_RESULT_PENDING
 
     cur.execute(
@@ -771,10 +786,11 @@ def register_validation_case(
             threshold_used,
             prediction,
             result,
+            validation_cohort,
             observation,
             created_by
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             int(session["id"]),
@@ -784,9 +800,10 @@ def register_validation_case(
             "PENDIENTE",
             sha256,
             score_percent,
-            None,
+            threshold_final,
             prediction_label,
             result,
+            cohort,
             str(observation).strip() if observation else None,
             actor_id,
         ),
@@ -905,6 +922,8 @@ def register_validation_case(
             "anomaly_score": score_percent,
             "prediction": prediction_label,
             "result": result,
+            "threshold_used": threshold_final,
+            "validation_cohort": cohort,
             "image_sha256": sha256,
             "source": inference_source,
             "heatmap": bool(heatmap_relative),
@@ -923,10 +942,14 @@ def register_validation_case(
         "image_path": original_relative,
         "image_sha256": sha256,
         "anomaly_score": score_percent,
-        "threshold_used": None,
+        "threshold_used": threshold_final,
+        "validation_cohort": cohort,
         "prediction": prediction_label,
         "result": result,
-        "result_label": "Pendiente de calibración",
+        "result_label": (
+            "Pendiente de calibración"
+            if result == VALIDATION_RESULT_PENDING else result
+        ),
         "observation": str(observation).strip() if observation else None,
         "heatmap_path": heatmap_relative,
         "comparison_path": comparison_relative,
@@ -942,7 +965,7 @@ def list_validation_cases(cur, ai_model_id) -> list[dict]:
         SELECT c.id, c.validation_session_id, c.ai_model_id,
                c.garment_model_id, c.category, c.image_path,
                c.image_sha256, c.anomaly_score, c.threshold_used,
-               c.prediction, c.result, c.observation,
+               c.prediction, c.result, c.validation_cohort, c.observation,
                c.heatmap_path, c.comparison_path, c.created_at,
                c.created_by
         FROM ai_validation_cases c
@@ -1254,6 +1277,13 @@ def get_validation_state(cur, ai_model_id) -> dict:
             if session and session.get("threshold_candidate") is not None
             else None
         ),
+        "threshold_final": (
+            float(model["threshold_final"])
+            if model.get("threshold_final") is not None else None
+        ),
+        "threshold_frozen_at": model.get("threshold_frozen_at"),
+        "threshold_frozen_by": model.get("threshold_frozen_by"),
+        "threshold_provenance": model.get("threshold_provenance"),
         "counts": counts,
         "counts_estado": count_cases_by_estado(cases),
         "counts_defects": count_defect_cases(cases),
@@ -1657,6 +1687,14 @@ def evaluate_validation(
             "Todavía no hay casos de validación registrados."
         )
 
+    post_freeze_cases = [
+        case for case in cases
+        if case.get("validation_cohort") == "POST_FREEZE_FINAL_TEST"
+    ]
+    calibration_cases = [
+        case for case in cases
+        if case.get("validation_cohort") != "POST_FREEZE_FINAL_TEST"
+    ]
     candidates = None
 
     if thresholds:
@@ -1670,16 +1708,30 @@ def evaluate_validation(
             candidates.append(round(value, 4))
 
     if not candidates:
-        candidates = default_threshold_candidates(cases)
+        candidates = default_threshold_candidates(calibration_cases)
 
     metrics = compute_validation_metrics(
-        cases,
+        calibration_cases,
         candidates=candidates,
     )
+    metrics["calibration_case_count"] = len(calibration_cases)
+    metrics["post_freeze_final_test"] = {
+        "case_count": len(post_freeze_cases),
+        "case_ids": [int(case["id"]) for case in post_freeze_cases],
+        "threshold_final": (
+            float(model["threshold_final"])
+            if model.get("threshold_final") is not None else None
+        ),
+        "metrics_at_threshold_final": (
+            binary_metrics(post_freeze_cases, model["threshold_final"])
+            if post_freeze_cases and model.get("threshold_final") is not None
+            else None
+        ),
+    }
     metrics["by_category_labels"] = dict(VALIDATION_CATEGORY_LABELS)
-    metrics["counts"] = count_cases_by_category(cases)
-    metrics["counts_estado"] = count_cases_by_estado(cases)
-    metrics["counts_defects"] = count_defect_cases(cases)
+    metrics["counts"] = count_cases_by_category(calibration_cases)
+    metrics["counts_estado"] = count_cases_by_estado(calibration_cases)
+    metrics["counts_defects"] = count_defect_cases(calibration_cases)
     metrics["binary_notice"] = VALIDATION_BINARY_NOTICE
 
     best = metrics.get("best_threshold")
@@ -1708,10 +1760,11 @@ def evaluate_validation(
         ai_model_id=int(ai_model_id),
         payload={
             "validation_session_id": int(session["id"]),
-            "cases": len(cases),
+            "cases": len(calibration_cases),
+            "post_freeze_final_test_cases": len(post_freeze_cases),
             "best_threshold": best,
-            "counts_estado": count_cases_by_estado(cases),
-            "counts_defects": count_defect_cases(cases),
+            "counts_estado": count_cases_by_estado(calibration_cases),
+            "counts_defects": count_defect_cases(calibration_cases),
             "model_status": model.get("status"),
         },
     )
@@ -1724,6 +1777,99 @@ def evaluate_validation(
         "validation_session_id": int(session["id"]),
         "metrics": metrics,
         "notice": VALIDATION_IMAGE_NOTICE,
+    }
+
+
+def freeze_validation_threshold(
+    cur, *, ai_model_id, threshold, actor_id, provenance
+) -> dict:
+    """Fija una sola vez el threshold final; nunca activa la versión."""
+    try:
+        value = float(threshold)
+    except (TypeError, ValueError) as error:
+        raise AIDomainError("El threshold definitivo debe ser numérico.") from error
+    if not math.isfinite(value) or not 0.0 <= value <= 100.0:
+        raise AIDomainError("El threshold definitivo debe estar entre 0 y 100.")
+    value = round(value, 2)
+    note = str(provenance or "").strip()
+    if not note or len(note) > 500:
+        raise AIDomainError("Indique una procedencia de hasta 500 caracteres.")
+    cur.execute(
+        """SELECT id, garment_model_id, version, status, active,
+                  threshold_final, threshold_frozen_at, threshold_frozen_by,
+                  threshold_provenance
+           FROM garment_ai_models WHERE id = %s FOR UPDATE""",
+        (int(ai_model_id),),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise AIDomainError("La versión de IA solicitada no existe.")
+    model = dict(row)
+    if is_technically_invalidated(model.get("notes")):
+        raise AIDomainError("La versión invalidada técnicamente no puede congelarse.")
+    if str(model.get("status") or "").upper() != AI_MODEL_STATUS_VALIDACION:
+        raise AIDomainError("Solo se puede congelar el threshold durante VALIDACION.")
+    if int(model.get("active") or 0):
+        raise AIDomainError("No se puede congelar un threshold de una versión ACTIVA.")
+    if model.get("threshold_final") is not None:
+        if round(float(model["threshold_final"]), 2) != value:
+            raise AIDomainError("El threshold final ya está congelado y no puede cambiarse.")
+        return {
+            "ai_model_id": int(ai_model_id),
+            "threshold_final": round(float(model["threshold_final"]), 2),
+            "frozen_at": model.get("threshold_frozen_at"),
+            "frozen_by": model.get("threshold_frozen_by"),
+            "provenance": model.get("threshold_provenance"),
+            "already_frozen": True,
+        }
+    cur.execute(
+        """SELECT id, status, threshold_candidate FROM ai_validation_sessions
+           WHERE ai_model_id = %s ORDER BY id DESC LIMIT 1""",
+        (int(ai_model_id),),
+    )
+    session = cur.fetchone()
+    if (
+        session is None
+        or str(session.get("status") or "").upper()
+        != VALIDATION_SESSION_STATUS_EVALUADA
+    ):
+        raise AIDomainError(
+            "Evalúe la sesión vigente antes de congelar el threshold definitivo."
+        )
+    candidate = session.get("threshold_candidate") if session else None
+    cur.execute(
+        """UPDATE garment_ai_models
+           SET threshold_final = %s, threshold_frozen_at = NOW(),
+               threshold_frozen_by = %s, threshold_provenance = %s
+           WHERE id = %s AND threshold_final IS NULL""",
+        (value, actor_id, note, int(ai_model_id)),
+    )
+    record_ai_event(
+        cur,
+        "THRESHOLD_FROZEN",
+        actor_id=actor_id,
+        ai_model_id=int(ai_model_id),
+        payload={
+            "threshold_final": value,
+            "threshold_candidate_at_freeze": (
+                float(candidate) if candidate is not None else None
+            ),
+            "source": "ADMIN_CONFIRMED",
+            "provenance": note,
+        },
+    )
+    return {
+        "ai_model_id": int(ai_model_id),
+        "garment_model_id": int(model["garment_model_id"]),
+        "version": model.get("version"),
+        "threshold_final": value,
+        "threshold_candidate_at_freeze": (
+            float(candidate) if candidate is not None else None
+        ),
+        "frozen_by": actor_id,
+        "provenance": note,
+        "already_frozen": False,
+        "active": 0,
     }
 
 
@@ -1783,6 +1929,11 @@ def complete_validation(cur, *, ai_model_id, actor_id=None) -> dict:
             "Evalúe la validación antes de marcarla como completada."
         )
 
+    if model.get("threshold_final") is None:
+        raise AIDomainError(
+            "Confirme y congele el threshold definitivo antes de marcar la versión como VALIDADA."
+        )
+
     if status == AI_MODEL_STATUS_ENTRENADO:
         raise AIDomainError(
             "Primero debe iniciar la validación de la versión."
@@ -1813,6 +1964,7 @@ def complete_validation(cur, *, ai_model_id, actor_id=None) -> dict:
                 if session.get("threshold_candidate") is not None
                 else None
             ),
+            "threshold_final": float(model["threshold_final"]),
         },
     )
 
@@ -1838,7 +1990,7 @@ _VALIDATION_CASE_COLUMNS = """
     c.id, c.validation_session_id, c.ai_model_id,
     c.garment_model_id, c.category, c.image_path,
     c.image_sha256, c.anomaly_score, c.threshold_used,
-    c.prediction, c.result, c.observation,
+    c.prediction, c.result, c.validation_cohort, c.observation,
     c.heatmap_path, c.comparison_path, c.created_at,
     c.created_by
 """

@@ -1457,6 +1457,7 @@ AI_EVENT_TYPES = {
     "VALIDATION_CASE_CATEGORY_CHANGED",
     "VALIDATION_CASE_DELETED",
     "VALIDATION_EVALUATED",
+    "THRESHOLD_FROZEN",
     "VALIDATED",
     "REJECTED",
     "ACTIVATED",
@@ -2035,6 +2036,26 @@ def ensure_ai_schema(cur, db_name, ensure_column=None):
     )
     add_column(
         "garment_ai_models",
+        "threshold_final",
+        "threshold_final DECIMAL(8,3) NULL AFTER image_threshold",
+    )
+    add_column(
+        "garment_ai_models",
+        "threshold_frozen_at",
+        "threshold_frozen_at DATETIME NULL AFTER threshold_final",
+    )
+    add_column(
+        "garment_ai_models",
+        "threshold_frozen_by",
+        "threshold_frozen_by INT NULL AFTER threshold_frozen_at",
+    )
+    add_column(
+        "garment_ai_models",
+        "threshold_provenance",
+        "threshold_provenance VARCHAR(500) NULL AFTER threshold_frozen_by",
+    )
+    add_column(
+        "garment_ai_models",
         "dataset_id",
         "dataset_id INT NULL AFTER dataset_path",
     )
@@ -2245,6 +2266,28 @@ def ensure_ai_schema(cur, db_name, ensure_column=None):
         """,
     )
 
+    _ensure_trigger(
+        cur,
+        db_name,
+        "trg_garment_ai_threshold_frozen_before_update",
+        """
+        CREATE TRIGGER trg_garment_ai_threshold_frozen_before_update
+        BEFORE UPDATE ON garment_ai_models
+        FOR EACH ROW
+        BEGIN
+            IF OLD.threshold_final IS NOT NULL AND NOT (
+                OLD.threshold_final <=> NEW.threshold_final
+                AND OLD.threshold_frozen_at <=> NEW.threshold_frozen_at
+                AND OLD.threshold_frozen_by <=> NEW.threshold_frozen_by
+                AND OLD.threshold_provenance <=> NEW.threshold_provenance
+            ) THEN
+                SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Threshold final congelado es inmutable';
+            END IF;
+        END
+        """,
+    )
+
     # Imágenes que ya pertenecen a un dataset CLOSED no cambian ni se
     # eliminan (la representación reproducible del manifest queda fija).
     _ensure_trigger(
@@ -2393,6 +2436,12 @@ def ensure_ai_schema(cur, db_name, ensure_column=None):
           DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
         """
+    )
+
+    add_column(
+        "ai_validation_cases",
+        "validation_cohort",
+        "validation_cohort VARCHAR(40) NULL AFTER result",
     )
 
     # «PENDIENTE_CALIBRACION» mide 21 caracteres: una primera versión de
@@ -2738,6 +2787,7 @@ def open_ai_capture_session(
         LIMIT 1
         """
     )
+
     station_open = cur.fetchone()
 
     if station_open:
