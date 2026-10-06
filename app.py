@@ -132,19 +132,17 @@ PATCHCORE_MAX_BOX_RATIO = float(
     os.getenv("PATCHCORE_MAX_BOX_RATIO", "0.15")
 )
 
+# Compatibilidad histórica: se conservan las variables globales para
+# utilidades y pruebas antiguas, pero la estación productiva ya NO carga
+# este checkpoint al iniciar. Cada lote resuelve su versión ACTIVA desde
+# garment_ai_models mediante resolve_active_production_ai_runtime().
 patchcore_inspector = None
 
 if PATCHCORE_CKPT:
-    try:
-        patchcore_inspector = PatchCoreInspector(
-            PATCHCORE_CKPT,
-            image_size=PATCHCORE_IMAGE_SIZE,
-        )
-        print("[PATCHCORE] Modelo preparado para inspección.")
-    except Exception as error:
-        print(f"[PATCHCORE] No se pudo preparar el modelo: {error}")
-else:
-    print("[PATCHCORE] PATCHCORE_CKPT no está configurado.")
+    print(
+        "[PATCHCORE] PATCHCORE_CKPT global configurado, pero no se carga "
+        "en producción; se utilizará la versión IA enlazada al lote activo."
+    )
 
 try:
     import cv2
@@ -2958,6 +2956,22 @@ def register_inspection_from_frame(
             "No se recibió imagen de cámara para registrar la inspección."
         )
 
+    # La inferencia productiva debe usar exactamente la versión de IA
+    # asociada al lote activo. No se permite decidir con un checkpoint
+    # global de .env y después registrar otra versión en trazabilidad.
+    selected_batch = get_active_batch()
+    if selected_batch is None:
+        raise RuntimeError(
+            "No hay un lote activo. Crea o inicia un lote antes de inspeccionar."
+        )
+
+    selected_batch_id = int(selected_batch["id"])
+    selected_ai_model_id = int(selected_batch["ai_model_id"] or 0)
+    if selected_ai_model_id <= 0:
+        raise AIDomainError(
+            "El lote activo no tiene una versión de IA asociada."
+        )
+
     if garment_token is None:
         garment_token = next_garment_token()
 
@@ -3040,6 +3054,15 @@ def register_inspection_from_frame(
             raise RuntimeError(
                 "No hay un lote activo. "
                 "Crea o inicia un lote antes de inspeccionar."
+            )
+
+        if (
+            int(batch["id"]) != selected_batch_id
+            or int(batch["ai_model_id"] or 0) != selected_ai_model_id
+        ):
+            raise RuntimeError(
+                "El lote activo o su versión de IA cambió durante la inspección. "
+                "La captura se descartó para evitar trazabilidad incorrecta."
             )
 
         cur.execute(
@@ -4984,6 +5007,142 @@ def localize_patchcore_anomaly(
 PATCHCORE_INFERENCE_LOCK = __import__("threading").Lock()
 
 
+def resolve_active_production_ai_runtime():
+    """Resuelve el modelo IA real del lote activo para inferencia productiva.
+
+    La estación no debe depender de PATCHCORE_CKPT/PATCHCORE_SCORE_THRESHOLD
+    globales: el lote ya está enlazado a una versión concreta de IA.
+    """
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        cur.execute(
+            """
+            SELECT
+                b.id AS batch_id,
+                b.garment_model_id,
+                b.ai_model_id,
+                ai.garment_model_id AS ai_garment_model_id,
+                ai.version AS ai_version,
+                ai.status AS ai_status,
+                ai.active AS ai_active,
+                ai.checkpoint_path,
+                ai.checkpoint_hash,
+                ai.input_size,
+                ai.threshold_final,
+                ai.threshold_frozen_at,
+                ai.dataset_id
+            FROM batches b
+            JOIN garment_ai_models ai ON ai.id = b.ai_model_id
+            WHERE b.status = 'EN_INSPECCION'
+            ORDER BY b.id DESC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+
+        if row is None:
+            raise RuntimeError(
+                "No hay un lote activo con una versión de IA asociada."
+            )
+
+        if (
+            int(row.get("ai_model_id") or 0) <= 0
+            or int(row.get("garment_model_id") or 0) <= 0
+            or int(row.get("ai_garment_model_id") or 0)
+            != int(row.get("garment_model_id") or 0)
+            or str(row.get("ai_status") or "").upper() != "ACTIVO"
+            or int(row.get("ai_active") or 0) != 1
+        ):
+            raise RuntimeError(
+                "El lote activo no tiene una versión de IA ACTIVA válida."
+            )
+
+        if row.get("threshold_final") is None or row.get("threshold_frozen_at") is None:
+            raise RuntimeError(
+                "La versión de IA activa no tiene threshold definitivo congelado."
+            )
+
+        checkpoint_relative = str(row.get("checkpoint_path") or "").strip()
+        if not checkpoint_relative:
+            raise RuntimeError(
+                "La versión de IA activa no tiene checkpoint asociado."
+            )
+
+        artifacts_root = get_ai_artifacts_root()
+        checkpoint_abs = resolve_under_root(artifacts_root, checkpoint_relative)
+        if not checkpoint_abs.exists():
+            raise RuntimeError(
+                "No se encontró el checkpoint de la versión de IA activa."
+            )
+
+        try:
+            input_size = int(row.get("input_size") or 256)
+        except (TypeError, ValueError):
+            input_size = 256
+        if input_size <= 0:
+            input_size = 256
+
+        config_path = (
+            artifacts_root
+            / f"garment_{int(row['garment_model_id'])}"
+            / "models"
+            / f"ai_model_{int(row['ai_model_id'])}"
+            / "training"
+            / "config.json"
+        )
+        config = {}
+        if config_path.exists():
+            try:
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                config = {}
+
+        training_config = (
+            config.get("config") if isinstance(config, dict) else None
+        )
+        preprocessing_profile = (
+            training_config.get("validation_preprocessing_profile")
+            if isinstance(training_config, dict)
+            else None
+        )
+        preprocessing_profile = str(
+            preprocessing_profile or "PER_IMAGE"
+        ).upper()
+
+        bundle = {
+            "ai_model_id": int(row["ai_model_id"]),
+            "garment_model_id": int(row["garment_model_id"]),
+            "version": row.get("ai_version"),
+            "status": str(row.get("ai_status") or "").upper(),
+            "dataset_id": row.get("dataset_id"),
+            "checkpoint_path": checkpoint_relative,
+            "checkpoint_abs": str(checkpoint_abs),
+            "checkpoint_hash": row.get("checkpoint_hash"),
+            "input_size": input_size,
+            "preprocessing_profile": preprocessing_profile,
+            "threshold_final": float(row["threshold_final"]),
+        }
+
+        inspector = ai_validation.get_model_inspector(bundle)
+
+        return {
+            "batch_id": int(row["batch_id"]),
+            "ai_model_id": int(row["ai_model_id"]),
+            "garment_model_id": int(row["garment_model_id"]),
+            "version": row.get("ai_version"),
+            "threshold": float(row["threshold_final"]),
+            "input_size": input_size,
+            "preprocessing_profile": preprocessing_profile,
+            "checkpoint_path": checkpoint_relative,
+            "inspector": inspector,
+        }
+    finally:
+        cur.close()
+        conn.close()
+
+
 def detect_defect(
     image_path,
     metrics=None,
@@ -5002,9 +5161,21 @@ def detect_defect(
     m = metrics if metrics is not None else {}
 
     # ========================================================
-    # 1. PATCHCORE: detector principal
+    # 1. PATCHCORE: detector principal enlazado al lote activo
     # ========================================================
-    if patchcore_inspector is not None and cv2 is not None:
+    production_runtime = resolve_active_production_ai_runtime()
+    production_inspector = production_runtime["inspector"]
+    production_threshold = float(production_runtime["threshold"])
+    preprocessing_profile = str(
+        production_runtime.get("preprocessing_profile") or "PER_IMAGE"
+    ).upper()
+
+    m["ai_model_id"] = int(production_runtime["ai_model_id"])
+    m["ai_version"] = production_runtime.get("version")
+    m["threshold_used"] = production_threshold
+    m["preprocessing_profile"] = preprocessing_profile
+
+    if production_inspector is not None and cv2 is not None:
         try:
             timeline_mark(garment_token, "preprocess_start")
             t_preprocess_0 = time.perf_counter()
@@ -5015,9 +5186,33 @@ def detect_defect(
                     f"No se pudo abrir la imagen: {image_path}"
                 )
 
-            garment_mask_full = create_garment_mask(
-                image
-            )
+            if preprocessing_profile == "FULL_ROI":
+                garment_mask_full = np.zeros(
+                    image.shape[:2],
+                    dtype=np.uint8,
+                )
+                print(
+                    "[PATCHCORE] preprocessing_profile=FULL_ROI; "
+                    "ROI rectangular."
+                )
+            else:
+                try:
+                    garment_mask_full = create_garment_mask(
+                        image
+                    )
+                except Exception as segmentation_error:
+                    # Mismo contrato que validación/FINAL_TEST: si la
+                    # segmentación geométrica no es utilizable, PatchCore
+                    # recibe el ROI completo. No se cambia de checkpoint,
+                    # threshold ni perfil de preprocesamiento.
+                    garment_mask_full = np.zeros(
+                        image.shape[:2],
+                        dtype=np.uint8,
+                    )
+                    print(
+                        "[SEGMENTACION] Fallback productivo a ROI completo: "
+                        f"{segmentation_error}"
+                    )
 
             if cv2.countNonZero(
                 garment_mask_full
@@ -5081,7 +5276,7 @@ def detect_defect(
                         "[PATCHCORE] Inferencia iniciada."
                     )
 
-                    prediction = patchcore_inspector.inspect(
+                    prediction = production_inspector.inspect(
                         str(roi_path)
                     )
 
@@ -5124,7 +5319,7 @@ def detect_defect(
             # La decisión de producción utiliza el threshold calibrado.
             # El pred_label interno se conserva únicamente para diagnóstico.
             is_anomaly = (
-                confidence >= PATCHCORE_SCORE_THRESHOLD
+                confidence >= production_threshold
             )
 
             t_postprocess_0 = time.perf_counter()
@@ -5211,7 +5406,11 @@ def detect_defect(
                 f"[PATCHCORE] Estado={status}, "
                 f"decision={int(is_anomaly)}, "
                 f"model_label={int(model_label)}, "
-                f"threshold={PATCHCORE_SCORE_THRESHOLD:.2f}, "
+                f"ai_model_id={production_runtime['ai_model_id']}, "
+                f"version={production_runtime.get('version')}, "
+                f"input_size={production_runtime['input_size']}, "
+                f"profile={preprocessing_profile}, "
+                f"threshold={production_threshold:.2f}, "
                 f"raw_score={raw_score:.6f}, "
                 f"confianza_mostrada={confidence}%, "
                 f"zona={zone}"
@@ -5255,16 +5454,22 @@ def detect_defect(
                     "en el área de inspección."
                 ) from error
 
-            # Solamente un fallo técnico real de PatchCore
-            # puede utilizar el método de respaldo.
+            # Una versión IA activa define la trazabilidad del lote. Si
+            # PatchCore falla técnicamente, no se puede decidir con otro
+            # algoritmo y guardar el registro como si lo hubiera decidido
+            # esa versión. Se falla de forma segura y no se persiste la
+            # inspección.
             print(
-                "[PATCHCORE] Error técnico durante "
-                f"la inferencia: {error}. "
-                "Se usará el método alternativo."
+                "[PATCHCORE] Error técnico durante la inferencia: "
+                f"{error}. Inspección cancelada sin método alternativo."
             )
+            raise RuntimeError(
+                "La versión de IA activa no pudo completar la inferencia. "
+                "No se registró la inspección."
+            ) from error
 
     # ========================================================
-    # 2. YOLO O DETECTOR PROVISIONAL COMO RESPALDO
+    # 2. RESPALDO LEGACY (solo alcanzable sin motor PatchCore utilizable)
     # ========================================================
     model = load_yolo_model()
 
