@@ -1,259 +1,2736 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
+{% block body_class %}model-detail-page{% endblock %}
 {% block content %}
 
+{% set role_label = (
+  'Administrador'
+  if role == 'ADMIN'
+  else 'Gestor de calidad'
+  if role == 'QUALITY_MANAGER'
+  else 'Encargado de modelos'
+  if role == 'MODEL_MANAGER'
+  else 'Usuario'
+) %}
+
+{% set status_class = 'detail-badge-neutral' %}
+{% if model.status == 'APROBADO' %}
+  {% set status_class = 'detail-badge-success' %}
+{% elif model.status == 'PENDIENTE' %}
+  {% set status_class = 'detail-badge-warning' %}
+{% elif model.status == 'RECHAZADO' %}
+  {% set status_class = 'detail-badge-danger' %}
+{% endif %}
+
 <style>
-.gmd-top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}
-.gmd-card{background:#fff;border:1px solid #e6ded2;border-radius:10px;padding:24px;margin-bottom:20px}
-.gmd-info{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
-.gmd-label{display:block;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:#776c61;margin-bottom:4px}
-.gmd-images{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
-.gmd-images img{width:100%;height:230px;object-fit:cover;border-radius:7px;border:1px solid #e6ded2}
-.gmd-button{display:inline-block;background:#111;color:#fff;border:0;padding:12px 17px;font-weight:700;cursor:pointer;text-decoration:none}
-.gmd-button.ok{background:#286d3d}
-.gmd-button.bad{background:#8d3030}
-.gmd-badge{display:inline-block;padding:7px 11px;border-radius:20px;font-size:12px;font-weight:700}
-.gmd-ready{background:#e5f4e9;color:#23683a}
-.gmd-wait{background:#fff2d8;color:#8b6115}
-.gmd-neutral{background:#efefef;color:#444}
-.gmd-reason{background:#f7e6e6;border-left:4px solid #9b3939;padding:15px;margin-top:16px}
-.gmd-reject textarea{width:100%;box-sizing:border-box;min-height:90px;padding:10px;margin:10px 0}
-.gmd-ai-list{display:grid;gap:14px;margin-top:18px}
-.gmd-ai-item{border:1px solid #e6ded2;border-radius:8px;padding:18px}
-.gmd-ai-head{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:15px}
-.gmd-ai-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}
-.gmd-path{word-break:break-all;font-family:monospace;font-size:12px}
-.gmd-muted{color:#776c61}
-@media(max-width:900px){
-  .gmd-info,.gmd-ai-grid{grid-template-columns:1fr 1fr}
-  .gmd-images{grid-template-columns:1fr}
+.model-detail-page .main {
+  background: #f6f8fb;
+}
+
+.detail-shell {
+  display: grid;
+  gap: 22px;
+  max-width: 1500px;
+  margin: 0 auto;
+}
+
+.detail-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.detail-welcome h1 {
+  margin: 0;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 34px;
+  line-height: 1.1;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.detail-welcome p {
+  margin: 6px 0 0;
+  color: #7382a2;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 15px;
+}
+
+.detail-topbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.detail-date-block,
+.detail-user-chip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.detail-date-block {
+  padding-right: 18px;
+  border-right: 1px solid #dfe5ef;
+}
+
+.detail-date-block svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: #0d2a66;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.detail-date-block div,
+.detail-user-chip div {
+  display: grid;
+  gap: 2px;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.detail-date-block strong,
+.detail-user-chip strong {
+  color: #173264;
+  font-size: 13px;
+}
+
+.detail-date-block span,
+.detail-user-chip span {
+  color: #8390aa;
+  font-size: 12px;
+}
+
+.detail-user-avatar {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: #eaf0f8;
+  display: grid;
+  place-items: center;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-weight: 800;
+  font-size: 15px;
+}
+
+.detail-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 30px;
+  background: #fff;
+  border: 1px solid #e4e9f1;
+  border-radius: 22px;
+  box-shadow: 0 14px 34px rgba(22, 45, 82, .055);
+}
+
+.detail-hero-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  min-width: 0;
+}
+
+.detail-hero-icon {
+  width: 66px;
+  height: 66px;
+  border-radius: 20px;
+  background: #fde8f1;
+  border: 1px solid #f8d4e5;
+  display: grid;
+  place-items: center;
+  color: #f43788;
+  flex: 0 0 auto;
+}
+
+.detail-hero-icon svg {
+  width: 32px;
+  height: 32px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.detail-eyebrow {
+  margin: 2px 0 8px;
+  color: #8290aa;
+  text-transform: uppercase;
+  letter-spacing: .18em;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.detail-title {
+  margin: 0;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 38px;
+  line-height: 1.08;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.detail-subtitle {
+  max-width: 780px;
+  margin: 10px 0 0;
+  color: #71809f;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.detail-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.detail-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 13px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #dfe5ef;
+  color: #506586;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detail-status-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.detail-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 13px;
+  border-radius: 999px;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.detail-badge-success { background: #e5f7ed; color: #178553; }
+.detail-badge-warning { background: #fff3cf; color: #9d7006; }
+.detail-badge-danger { background: #fde8e8; color: #b33d3d; }
+.detail-badge-neutral { background: #edf1f6; color: #67758d; }
+
+.detail-content-grid {
+  display: grid;
+  grid-template-columns: 1.05fr .95fr;
+  gap: 22px;
+}
+
+.detail-card {
+  background: #fff;
+  border: 1px solid #e4e9f1;
+  border-radius: 22px;
+  padding: 26px;
+  box-shadow: 0 14px 34px rgba(22, 45, 82, .045);
+}
+
+.detail-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.detail-card-head h2 {
+  margin: 0;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 25px;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
+.detail-card-head p {
+  margin: 7px 0 0;
+  color: #71809f;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.detail-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.detail-info-item {
+  padding: 17px 18px;
+  background: #f9fbfd;
+  border: 1px solid #e5eaf2;
+  border-radius: 16px;
+}
+
+.detail-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #8996ad;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+
+.detail-value {
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.detail-description {
+  margin: 18px 0 0;
+  padding-top: 18px;
+  border-top: 1px solid #e8edf4;
+  color: #5f6f8d;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.detail-side-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.detail-state-card {
+  padding: 22px;
+  background: #fff;
+  border: 1px solid #e4e9f1;
+  border-radius: 20px;
+  box-shadow: 0 12px 30px rgba(22, 45, 82, .04);
+}
+
+.detail-state-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.detail-state-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.detail-state-icon svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.detail-state-icon.green { background: #e5f7ed; color: #11a765; }
+.detail-state-icon.yellow { background: #fff3cf; color: #d59a00; }
+.detail-state-icon.red { background: #fde8e8; color: #d94b4b; }
+.detail-state-icon.blue { background: #e7f4fc; color: #1597dc; }
+
+.detail-state-card h3 {
+  margin: 0;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.detail-state-card p {
+  margin: 0;
+  color: #70809e;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.detail-images-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.detail-image-card {
+  overflow: hidden;
+  background: #f9fbfd;
+  border: 1px solid #e5eaf2;
+  border-radius: 18px;
+}
+
+.detail-image-card img {
+  width: 100%;
+  height: 240px;
+  object-fit: cover;
+  display: block;
+  background: #f3f5f8;
+}
+
+.detail-image-card figcaption {
+  padding: 12px 14px;
+  color: #71809f;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 12px;
+}
+
+.detail-empty {
+  padding: 34px 20px;
+  border: 1px dashed #dbe2ec;
+  border-radius: 18px;
+  background: #fafbfd;
+  color: #7b89a3;
+  text-align: center;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+}
+
+.detail-ai-list {
+  display: grid;
+  gap: 16px;
+}
+
+.detail-ai-item {
+  padding: 20px;
+  border: 1px solid #e4e9f1;
+  border-radius: 18px;
+  background: #fbfcfe;
+}
+
+.detail-ai-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.detail-ai-item h3 {
+  margin: 0;
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.detail-ai-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.detail-ai-meta > div {
+  padding: 14px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #e7ecf3;
+}
+
+.detail-checkpoint {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 14px;
+  background: #f4f8fd;
+  border: 1px solid #e0e8f2;
+}
+
+.detail-path {
+  word-break: break-word;
+  color: #64738f;
+  font-family: "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.detail-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 11px 16px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  text-decoration: none;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.detail-button.primary { background: #0d2a66; color: #fff; }
+.detail-button.primary:hover { background: #163979; }
+.detail-button.success { background: #e5f7ed; color: #187f50; border-color: #ccebd9; }
+.detail-button.danger { background: #fdeaea; color: #a33c3c; border-color: #efcece; }
+
+.detail-muted {
+  margin: 0;
+  color: #7a88a2;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.detail-form-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.detail-textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: 14px 16px;
+  border: 1px solid #dfe5ef;
+  border-radius: 14px;
+  background: #fff;
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  resize: vertical;
+}
+
+.detail-footer-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: #8692a8;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 12px;
+}
+
+.detail-footer-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.detail-footer-brand i {
+  width: 24px;
+  height: 3px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.detail-footer-brand i:nth-child(1) { background: #ffc928; }
+.detail-footer-brand i:nth-child(2) { background: #f43788; }
+.detail-footer-brand i:nth-child(3) { background: #1597dc; }
+
+/* =========================================================
+   FASE 2B — PANEL DE PREPARACIÓN / CAPTURA IA
+   ========================================================= */
+
+.detail-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ai-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 13px;
+  border-radius: 999px;
+  background: #fff5cf;
+  border: 1px solid #f3e2a6;
+  color: #8a6608;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.ai-mode-badge::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffc928;
+  display: inline-block;
+  animation: aiPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes aiPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .25; }
+}
+
+.ai-capture-panel {
+  display: grid;
+  gap: 18px;
+  margin-bottom: 22px;
+  padding: 22px;
+  background: #fbfcfe;
+  border: 1px solid #e4e9f1;
+  border-radius: 18px;
+}
+
+.ai-capture-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ai-state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border-radius: 999px;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.ai-state-SIN_PREPARAR { background: #edf1f6; color: #67758d; }
+.ai-state-PREPARANDO { background: #fff3cf; color: #9d7006; }
+.ai-state-CAPTURANDO { background: #e7f4fc; color: #10628f; }
+.ai-state-CAPTURA_COMPLETADA { background: #edf1f6; color: #4a5a77; }
+.ai-state-LISTO_PARA_ENTRENAR { background: #e5f7ed; color: #178553; }
+
+.ai-capture-hint {
+  margin: 0;
+  color: #70809e;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.ai-capture-notice {
+  padding: 15px 16px;
+  border-radius: 14px;
+  background: #f4f8fd;
+  border: 1px solid #e0e8f2;
+  color: #3b5480;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.ai-capture-notice.warn {
+  background: #fff9e8;
+  border-color: #f6e6b0;
+  color: #7a5c05;
+}
+
+.ai-progress-block {
+  display: grid;
+  gap: 9px;
+}
+
+.ai-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.ai-progress-track {
+  height: 16px;
+  border-radius: 999px;
+  background: #eef2f8;
+  border: 1px solid #e4e9f1;
+  overflow: hidden;
+}
+
+.ai-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #1597dc, #0d2a66);
+  transition: width .45s ease;
+}
+
+.ai-count-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.ai-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ai-stat {
+  padding: 14px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #e7ecf3;
+}
+
+.ai-stat strong {
+  display: block;
+  margin-top: 6px;
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.ai-target-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #e5f7ed;
+  border: 1px solid #ccebd9;
+  color: #178553;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ai-last {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 15px 16px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #e7ecf3;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.ai-last .ai-last-mark {
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.ai-last.ok { background: #f3fbf7; border-color: #d5efdf; color: #178553; }
+.ai-last.warn { background: #fffaf0; border-color: #f6e6b0; color: #8a6608; }
+
+.ai-last strong {
+  display: block;
+  color: inherit;
+  font-weight: 800;
+}
+
+.ai-last span.ai-last-reason {
+  color: #70809e;
+}
+
+.ai-summary {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #e7ecf3;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  color: #5f6f8d;
+}
+
+.ai-summary strong {
+  color: #173264;
+  font-size: 16px;
+}
+
+.ai-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.ai-error {
+  padding: 13px 15px;
+  border-radius: 12px;
+  background: #fbe8e8;
+  color: #963737;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+.ai-muted-note {
+  color: #8692a8;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.detail-button.neutral {
+  background: #eef2f8;
+  color: #3b4d6d;
+  border-color: #dfe5ef;
+}
+
+.detail-button.neutral:hover { background: #e3eaf4; }
+
+.detail-button[disabled] {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.detail-button.is-loading {
+  opacity: .75;
+  cursor: progress;
+  pointer-events: none;
+}
+
+.ai-train-slot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.ai-train-note {
+  color: #8692a8;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* Panel de entrenamiento (FASE 3A) */
+.ai-train-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  margin-top: 16px;
+  border: 1px solid #e0e8f2;
+  border-radius: 14px;
+  background: #f9fbfe;
+}
+
+.ai-train-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+}
+
+.ai-train-meta > div {
+  display: grid;
+  gap: 4px;
+}
+
+.ai-train-meta .detail-value {
+  color: #173264;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.ai-state-NO_DISPONIBLE { background: #edf1f6; color: #67758d; }
+.ai-state-DISPONIBLE { background: #e5f7ed; color: #178553; }
+.ai-state-ENTRENANDO { background: #e7f4fc; color: #10628f; }
+.ai-state-ENTRENADO { background: #e9edfb; color: #2d47a0; }
+.ai-state-FALLIDO { background: #fbe8e8; color: #963737; }
+.ai-state-HISTORICA {
+  background: #f2ecfa;
+  color: #6b3fa0;
+  border: 1px solid #d9c9f0;
+}
+
+.detail-badge-history { background: #f2ecfa; color: #6b3fa0; }
+
+/* Modal propio: nunca alert() del navegador */
+.ai-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(13, 42, 102, .45);
+}
+
+.ai-modal-backdrop[hidden] { display: none; }
+
+.ai-modal {
+  width: 100%;
+  max-width: 460px;
+  padding: 24px;
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(13, 42, 102, .28);
+}
+
+.ai-modal h4 {
+  margin: 0 0 10px;
+  color: #0d2a66;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 19px;
+  font-weight: 800;
+}
+
+.ai-modal p {
+  margin: 0;
+  color: #5f6f8d;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.ai-modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+
+@media (max-width: 1180px) {
+  .detail-content-grid { grid-template-columns: 1fr; }
+  .detail-images-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 900px) {
+  .detail-topbar,
+  .detail-hero,
+  .detail-ai-item-head,
+  .detail-card-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .detail-topbar-meta {
+    justify-content: space-between;
+  }
+
+  .detail-status-stack {
+    align-items: flex-start;
+  }
+
+  .detail-info-grid,
+  .detail-ai-meta,
+  .detail-images-grid,
+  .ai-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-capture-top {
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .detail-topbar-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .detail-date-block {
+    padding-right: 0;
+    border-right: 0;
+  }
+
+  .detail-hero-main {
+    flex-direction: column;
+  }
+
+  .detail-title {
+    font-size: 30px;
+  }
+
+  .detail-welcome h1 {
+    font-size: 28px;
+  }
+
+  .detail-head-actions {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .detail-head-actions form,
+  .detail-head-actions .detail-button {
+    width: 100%;
+  }
+
+  .ai-capture-panel {
+    padding: 18px;
+    gap: 15px;
+  }
+
+  .ai-actions {
+    flex-direction: column;
+  }
+
+  .ai-actions .detail-button,
+  .ai-train-slot .detail-button {
+    width: 100%;
+  }
+
+  .ai-modal-actions .detail-button {
+    flex: 1 1 160px;
+  }
+}
+
+@media (max-width: 400px) {
+  .ai-capture-panel {
+    padding: 15px;
+    border-radius: 16px;
+  }
+
+  .ai-progress-head,
+  .ai-count-row {
+    font-size: 13px;
+  }
+
+  .ai-stat strong {
+    font-size: 18px;
+  }
+
+  .detail-card {
+    padding: 18px;
+    border-radius: 18px;
+  }
 }
 </style>
 
-<div class="gmd-top">
-  <div>
-    <p>{{ model.code }}</p>
-    <h1>{{ model.name }}</h1>
-  </div>
-  <strong>{{ model.status }}</strong>
-</div>
-
-<section class="gmd-card">
-  <div class="gmd-info">
-    <div>
-      <span class="gmd-label">Tipo</span>
-      Blusa
+<div class="detail-shell">
+  <header class="detail-topbar">
+    <div class="detail-welcome">
+      <h1>¡Hola, {{ session.get('username', role_label) }}!</h1>
+      <p>Bienvenido al sistema de control de calidad</p>
     </div>
 
-    <div>
-      <span class="gmd-label">Color</span>
-      {{ model.color }}
-    </div>
-
-    <div>
-      <span class="gmd-label">Talla</span>
-      {{ model.size }}
-    </div>
-
-    <div>
-      <span class="gmd-label">Vista</span>
-      {{ model.inspection_side }}
-    </div>
-  </div>
-
-  {% if model.description %}
-  <p>{{ model.description }}</p>
-  {% endif %}
-
-  <p>
-    Creado por <strong>{{ model.creator_name }}</strong>
-  </p>
-
-  {% if model.ai_ready %}
-  <span class="gmd-badge gmd-ready">
-    {{ model.ai_model_type }} {{ model.ai_version }}
-    &middot; Lista para inspecci&oacute;n
-  </span>
-  {% else %}
-  <span class="gmd-badge gmd-wait">
-    Preparaci&oacute;n de IA pendiente
-  </span>
-  {% endif %}
-
-  {% if model.rejection_reason %}
-  <div class="gmd-reason">
-    <strong>Motivo del rechazo</strong>
-    <div>{{ model.rejection_reason }}</div>
-  </div>
-  {% endif %}
-</section>
-
-<section class="gmd-card">
-  <h2>Im&aacute;genes de referencia</h2>
-
-  {% if images %}
-  <div class="gmd-images">
-    {% for image in images %}
-    <img
-      src="{{ url_for('static', filename=image.image_path) }}"
-      alt="Referencia del modelo"
-    >
-    {% endfor %}
-  </div>
-  {% else %}
-  <p class="gmd-muted">
-    No hay im&aacute;genes de referencia registradas.
-  </p>
-  {% endif %}
-</section>
-
-{% if model.status == 'APROBADO' %}
-<section class="gmd-card">
-  <h2>Preparaci&oacute;n de IA</h2>
-
-  {% if not ai_versions %}
-  <p>
-    Este modelo todav&iacute;a no tiene versiones de IA.
-  </p>
-  {% endif %}
-
-  {% if can_prepare_ai and not ai_in_progress %}
-  <p>
-    Cree una nueva versi&oacute;n para preparar su dataset
-    y posteriormente entrenar PatchCore.
-  </p>
-
-  <form
-    method="post"
-    action="{{ url_for('garment_ai_prepare', model_id=model.id) }}"
-  >
-    <button class="gmd-button" type="submit">
-      Preparar nueva versi&oacute;n
-    </button>
-  </form>
-  {% elif ai_in_progress %}
-  <p class="gmd-muted">
-    Ya existe una versi&oacute;n de IA en proceso.
-  </p>
-  {% endif %}
-
-  {% if ai_versions %}
-  <div class="gmd-ai-list">
-    {% for ai in ai_versions %}
-    <article class="gmd-ai-item">
-
-      <div class="gmd-ai-head">
+    <div class="detail-topbar-meta">
+      <div class="detail-date-block">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 2v3M17 2v3M3.5 9h17M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 19 20.5H5A1.5 1.5 0 0 1 3.5 19V6A1.5 1.5 0 0 1 5 4.5Z" />
+        </svg>
         <div>
-          <strong>{{ ai.version }} &middot; {{ ai.model_type }}</strong>
+          <strong id="detailDate">—</strong>
+          <span id="detailClock">—</span>
         </div>
-
-        {% if ai.active and ai.status == 'ACTIVO' %}
-        <span class="gmd-badge gmd-ready">
-          ACTIVA
-        </span>
-        {% elif ai.status == 'PREPARACION' %}
-        <span class="gmd-badge gmd-wait">
-          PREPARACI&Oacute;N
-        </span>
-        {% else %}
-        <span class="gmd-badge gmd-neutral">
-          {{ ai.status }}
-        </span>
-        {% endif %}
       </div>
 
-      <div class="gmd-ai-grid">
-
+      <div class="detail-user-chip">
+        <span class="detail-user-avatar">{{ (session.get('username', 'U') or 'U')[:1]|upper }}</span>
         <div>
-          <span class="gmd-label">Dataset</span>
-          {% if ai.dataset_name %}
-            {{ ai.dataset_name }}
+          <strong>{{ role_label }}</strong>
+          <span>{{ session.get('username', '') }}</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section class="detail-hero">
+    <div class="detail-hero-main">
+      <div class="detail-hero-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M8 4 5 5.5 2.5 9l3 2 1.5-1v10h10V10l1.5 1 3-2L19 5.5 16 4c-.8 1.3-2.1 2-4 2S8.8 5.3 8 4Z" />
+        </svg>
+      </div>
+
+      <div>
+        <p class="detail-eyebrow">Ficha técnica del modelo</p>
+        <h1 class="detail-title">{{ model.name }}</h1>
+        <p class="detail-subtitle">
+          Consulte la información general del modelo, sus imágenes de referencia y el estado
+          de preparación para el flujo de inspección con inteligencia artificial.
+        </p>
+
+        <div class="detail-chip-row">
+          <span class="detail-chip">Código: {{ model.code }}</span>
+          <span class="detail-chip">Color: {{ model.color }}</span>
+          <span class="detail-chip">Talla: {{ model.size }}</span>
+          <span class="detail-chip">Vista: {{ model.inspection_side }}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="detail-status-stack">
+      <span class="detail-badge {{ status_class }}">{{ model.status }}</span>
+
+      {% if model.ai_ready %}
+        <span class="detail-badge detail-badge-success">
+          {{ model.ai_model_type }} {{ model.ai_version }} · Lista
+        </span>
+      {% elif ai_training and ai_training.ui_status == 'HISTORICA' %}
+        <span class="detail-badge detail-badge-history">
+          Versión {{ ai_training.historical_version }} histórica · no apta para validación
+        </span>
+      {% elif ai_versions and ai_versions[0].status == 'VALIDADO' %}
+        <span class="detail-badge detail-badge-success">
+          VALIDADO · PENDIENTE DE PRUEBA FINAL
+        </span>
+      {% elif ai_training and ai_training.ui_status == 'ENTRENADO' %}
+        <span class="detail-badge detail-badge-warning">
+          PENDIENTE DE VALIDACIÓN
+        </span>
+      {% else %}
+        <span class="detail-badge detail-badge-warning">
+          Preparación de IA pendiente
+        </span>
+      {% endif %}
+    </div>
+  </section>
+
+  <div class="detail-content-grid">
+    <section class="detail-card">
+      <div class="detail-card-head">
+        <div>
+          <h2>Información general</h2>
+          <p>Datos principales del modelo registrados para su operación y seguimiento.</p>
+        </div>
+      </div>
+
+      <div class="detail-info-grid">
+        <div class="detail-info-item">
+          <span class="detail-label">Tipo</span>
+          <div class="detail-value">Blusa</div>
+        </div>
+
+        <div class="detail-info-item">
+          <span class="detail-label">Creado por</span>
+          <div class="detail-value">{{ model.creator_name }}</div>
+        </div>
+
+        <div class="detail-info-item">
+          <span class="detail-label">Color</span>
+          <div class="detail-value">{{ model.color }}</div>
+        </div>
+
+        <div class="detail-info-item">
+          <span class="detail-label">Vista de inspección</span>
+          <div class="detail-value">{{ model.inspection_side }}</div>
+        </div>
+      </div>
+
+      <div class="detail-description">
+        {% if model.description %}
+          {{ model.description }}
+        {% else %}
+          No se registró una descripción adicional para este modelo.
+        {% endif %}
+      </div>
+    </section>
+
+    <div class="detail-side-stack">
+      <section class="detail-state-card">
+        <div class="detail-state-head">
+          <span class="detail-state-icon {% if model.status == 'APROBADO' %}green{% elif model.status == 'RECHAZADO' %}red{% else %}yellow{% endif %}">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              {% if model.status == 'APROBADO' %}
+                <path d="m7 12 3 3 7-7"/><circle cx="12" cy="12" r="9"/>
+              {% elif model.status == 'RECHAZADO' %}
+                <path d="m8 8 8 8M16 8l-8 8"/><circle cx="12" cy="12" r="9"/>
+              {% else %}
+                <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+              {% endif %}
+            </svg>
+          </span>
+          <h3>Estado del modelo</h3>
+        </div>
+
+        <p>
+          {% if model.status == 'APROBADO' %}
+            El modelo ya fue aprobado y puede continuar con su operación dentro del sistema.
+          {% elif model.status == 'PENDIENTE' %}
+            El modelo está pendiente de revisión administrativa antes de habilitarse por completo.
+          {% elif model.status == 'RECHAZADO' %}
+            El modelo fue rechazado y necesita correcciones antes de reenviarse.
           {% else %}
-            Hist&oacute;rico sin dataset registrado
+            El modelo se encuentra en estado {{ model.status }}.
+          {% endif %}
+        </p>
+      </section>
+
+      <section class="detail-state-card">
+        <div class="detail-state-head">
+          <span class="detail-state-icon {% if model.ai_ready %}green{% else %}yellow{% endif %}">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="7" y="7" width="10" height="10" rx="2"/>
+              <path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>
+            </svg>
+          </span>
+          <h3>Preparación de IA</h3>
+        </div>
+
+        <p>
+          {% if model.ai_ready %}
+            Existe una versión disponible para inspección: <strong>{{ model.ai_model_type }} {{ model.ai_version }}</strong>.
+          {% else %}
+            Todavía no hay una versión activa de IA lista para utilizarse en la estación de inspección.
+          {% endif %}
+        </p>
+      </section>
+
+      {% if model.rejection_reason %}
+      <section class="detail-state-card">
+        <div class="detail-state-head">
+          <span class="detail-state-icon red">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 20h18L12 3Z"/><path d="M12 9v4M12 17h.01"/></svg>
+          </span>
+          <h3>Motivo del rechazo</h3>
+        </div>
+        <p>{{ model.rejection_reason }}</p>
+      </section>
+      {% endif %}
+    </div>
+  </div>
+
+  <section class="detail-card">
+    <div class="detail-card-head">
+      <div>
+        <h2>Imágenes de referencia</h2>
+        <p>Material visual utilizado para identificar correctamente el modelo durante su preparación.</p>
+      </div>
+      <span class="detail-chip">{{ images|length }} imagen{{ '' if images|length == 1 else 'es' }}</span>
+    </div>
+
+    {% if images %}
+      <div class="detail-images-grid">
+        {% for image in images %}
+        <figure class="detail-image-card">
+          <img
+            src="{{ url_for('static', filename=image.image_path) }}"
+            alt="Referencia del modelo {{ model.name }}"
+          >
+          <figcaption>Referencia {{ loop.index }} · {{ model.code }}</figcaption>
+        </figure>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="detail-empty">No hay imágenes de referencia registradas para este modelo.</div>
+    {% endif %}
+  </section>
+
+  {% if model.status == 'APROBADO' %}
+  <section class="detail-card" id="aiPreparacionCard">
+    <div class="detail-card-head">
+      <div>
+        <h2>Preparación de IA</h2>
+        <p>Consulte y gestione las versiones de IA asociadas al modelo.</p>
+      </div>
+
+      <div class="detail-head-actions">
+        <span class="ai-mode-badge" id="aiModeBadge" hidden>
+          MODO PREPARACIÓN DE IA
+        </span>
+
+        {% if can_prepare_ai %}
+        <a
+          class="detail-button success"
+          id="startGuidedPreparation"
+          href="{{ url_for('guided_capture_page', model_id=model.id) }}"
+        >
+          Iniciar preparación · Abrir estación guiada
+        </a>
+        {% endif %}
+
+        {% if can_prepare_ai and not ai_in_progress %}
+        <form
+          id="prepareAiForm"
+          method="post"
+          action="{{ url_for('garment_ai_prepare', model_id=model.id) }}"
+        >
+          <button class="detail-button primary" type="submit">
+            Preparar nueva versión
+          </button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if normal_augmentation_can_prepare %}
+    <div class="ai-capture-notice">
+      La v2 está congelada e inactiva. Puede preparar v3 de forma separada
+      para ampliar exclusivamente el patrón NORMAL desde sus 52 imágenes sanas.
+      No se incorporan validaciones ni casos POST_FREEZE.
+      <form method="post" action="{{ url_for('garment_ai_prepare_v3_normal', model_id=model.id) }}">
+        <button class="detail-button primary" type="submit">Preparar v3 · solo imágenes BUENAS</button>
+      </form>
+    </div>
+    {% endif %}
+
+    {% if normal_v2_can_prepare %}
+    <div class="ai-capture-notice" id="normalV2Prepare">
+      <strong>BLUSA-762 v2 · ampliación del patrón NORMAL</strong><br>
+      Heredará exclusivamente las <strong>27 imágenes BUENAS</strong> del training original v1.
+      VALIDATION y FINAL_TEST quedan excluidos por hash.<br>
+      Imágenes normales heredadas: 27 · nuevas: 0 · disponibles: 27.<br>
+      Capture mínimo: <strong>30 imágenes BUENAS nuevas</strong> · objetivo recomendado: <strong>40</strong>.
+      La preparación crea v2 INACTIVA y no inicia entrenamiento.
+      <form method="post" action="{{ url_for('garment_ai_prepare_v2_normal', model_id=model.id) }}">
+        <button class="detail-button primary" type="submit">Preparar v2 · ampliación normal</button>
+      </form>
+    </div>
+    {% endif %}
+
+    {% if normal_v2 %}
+    <div class="ai-capture-notice" id="normalV2Summary">
+      <strong>v2 · ampliación del patrón NORMAL · PREPARACION · INACTIVA</strong><br>
+      Imágenes normales heredadas: {{ normal_v2.inherited_good_images }} ·
+      nuevas: {{ normal_v2.new_good_images }} · disponibles: {{ normal_v2.total_available }}.<br>
+      Mínimo NUEVO antes de entrenar: {{ normal_v2.minimum_new_good_images }} ·
+      objetivo recomendado: {{ normal_v2.recommended_new_good_images }}.<br>
+      Fuente training: v1 · dataset {{ normal_v2.source_dataset_id }} ·
+      dataset v2 {{ normal_v2.dataset_id }}. VALIDATION/FINAL_TEST no cuentan.
+      {% if normal_v2.status == 'PREPARACION' %}
+      <p>Capture únicamente prendas BUENAS. No se permite incorporar MANCHAS ni AGUJEROS.</p>
+      <a class="detail-button success" href="{{ url_for('guided_capture_page', model_id=model.id) }}">Capturar BUENAS nuevas para v2</a>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if normal_augmentation %}
+    <div class="ai-capture-notice" id="normalAugmentationSummary">
+      <strong>v3 · preparación de nuevo entrenamiento</strong><br>
+      {{ normal_augmentation.inherited_good_images }} imágenes normales heredadas ·
+      {{ normal_augmentation.new_good_images }} imágenes normales nuevas ·
+      {{ normal_augmentation.total_available }} disponibles para v3.<br>
+      Dataset v3 {{ normal_augmentation.dataset_id }} (abierto) ·
+      fuente {{ normal_augmentation.source_dataset_id }} ·
+      mínimo {{ normal_augmentation.minimum_new_good_images }} nuevas antes de habilitar entrenamiento.
+      {% if normal_augmentation.status == 'PREPARACION' %}
+      <p>Captura guiada exclusiva para patrón NORMAL. No seleccione prendas con MANCHA o AGUJERO.</p>
+      <a class="detail-button success" href="{{ url_for('guided_capture_page', model_id=model.id) }}">Capturar buenas nuevas</a>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if false and ai_capture_visible %}
+    <div
+      class="ai-capture-panel"
+      id="aiCapturePanel"
+      aria-live="polite"
+    ></div>
+    {% endif %}
+
+    {% if can_prepare_ai and ai_training %}
+    <section
+      class="ai-train-panel"
+      id="aiTrainingPanel"
+      aria-live="polite"
+    >
+      <div class="ai-capture-top">
+        <span class="ai-state-badge ai-state-{{ ai_training.ui_status }}">
+          {{ ai_training.ui_label }}
+        </span>
+      </div>
+      <p class="ai-muted-note">Cargando estado del entrenamiento…</p>
+    </section>
+    {% endif %}
+
+    {% if ai_historical_only %}
+    <div class="ai-capture-notice warn">
+      La última versión quedó marcada como
+      <strong>NO VALIDADA / NO APTA PARA ACTIVACIÓN</strong>: se conserva
+      como histórico y no puede validarse ni activarse.
+      {% if ai_training and ai_training.next_version %}
+        Entrene la <strong>{{ ai_training.next_version }}</strong> para
+        reemplazarla.
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if not ai_versions and not ai_in_progress %}
+      <p class="detail-muted">Este modelo todavía no tiene versiones de IA registradas.</p>
+    {% elif ai_in_progress %}
+      <p class="detail-muted">Ya existe una versión de IA en proceso.</p>
+    {% endif %}
+
+    {% if ai_versions %}
+    <div class="detail-ai-list">
+      {% for ai in ai_versions %}
+      <article class="detail-ai-item">
+        <div class="detail-ai-item-head">
+          <h3>{{ ai.version }} · {{ ai.model_type }}</h3>
+
+          {% if ai.technically_invalidated %}
+            <span class="detail-badge detail-badge-history">
+              Histórica · no apta para validación
+            </span>
+          {% elif ai.active and ai.status == 'ACTIVO' %}
+            <span class="detail-badge detail-badge-success">Activa</span>
+          {% elif ai.status == 'PREPARACION' %}
+            <span class="detail-badge detail-badge-warning">En preparación</span>
+          {% elif ai.status == 'ENTRENANDO' %}
+            <span class="detail-badge detail-badge-warning">En entrenamiento</span>
+          {% elif ai.status == 'VALIDADO' %}
+            <span class="detail-badge detail-badge-success">Validado · pendiente de prueba final</span>
+          {% elif ai.status in ['ENTRENADO', 'VALIDACION'] %}
+            <span class="detail-badge detail-badge-warning">Pendiente de validación</span>
+          {% else %}
+            <span class="detail-badge detail-badge-neutral">{{ ai.status }}</span>
           {% endif %}
         </div>
 
-        <div>
-          <span class="gmd-label">Im&aacute;genes normales</span>
-          {{ ai.normal_images_count if ai.normal_images_count is not none else 'Sin registro' }}
+        <div class="detail-ai-meta">
+          <div>
+            <span class="detail-label">Estado</span>
+            <span class="detail-value">
+              {% if ai.technically_invalidated %}
+                {{ ai.status }} · versión histórica
+              {% elif loop.first and ai_training and ai_training.ui_status == 'ENTRENADO' %}
+                {{ ai.status }} · {{ ai_training.ui_label }}
+              {% elif ai.status == 'PREPARACION' %}
+                Pendiente de entrenamiento
+              {% elif ai.status == 'ACTIVO' %}
+                Lista para inspección
+              {% elif ai.status == 'ENTRENANDO' %}
+                En proceso
+              {% elif ai.status == 'VALIDACION' %}
+                En proceso
+              {% elif ai.status == 'VALIDADO' %}
+                Validado · listo para prueba final
+              {% else %}
+                {{ ai.status }}
+              {% endif %}
+            </span>
+          </div>
+
+          <div>
+            <span class="detail-label">Imágenes normales</span>
+            <span class="detail-value">{{ ai.normal_images_count if ai.normal_images_count is not none else 'Sin registro' }}</span>
+          </div>
+
+          {% if loop.first and ai_training %}
+          <div>
+            <span class="detail-label">Dataset</span>
+            <span class="detail-value">{{ ai_training.image_count }} imágenes</span>
+          </div>
+
+          <div>
+            <span class="detail-label">Entrenamiento</span>
+            <span class="detail-value">
+              {% if ai_training.ui_status == 'HISTORICA' %}
+                Completado · versión histórica
+              {% elif ai_training.ui_status == 'ENTRENADO' %}
+                Completado
+              {% elif ai_training.ui_status == 'ENTRENANDO' %}
+                En proceso
+              {% elif ai_training.ui_status == 'FALLIDO' %}
+                Fallido
+              {% elif ai_training.ui_status == 'DISPONIBLE' %}
+                Pendiente de entrenamiento
+              {% else %}
+                No disponible
+              {% endif %}
+            </span>
+          </div>
+          {% endif %}
+
+          <div>
+            <span class="detail-label">Responsable</span>
+            <span class="detail-value">{{ ai.creator_name or 'Histórico' }}</span>
+          </div>
         </div>
-
-        <div>
-          <span class="gmd-label">Responsable</span>
-          {{ ai.creator_name or 'Hist&oacute;rico' }}
-        </div>
-
-      </div>
-
-      <div style="margin-top:15px">
-        <span class="gmd-label">Checkpoint</span>
-
-        {% if ai.checkpoint_path %}
-        <div class="gmd-path">
-          {{ ai.checkpoint_path }}
-        </div>
-        {% else %}
-        <strong>Pendiente de entrenamiento</strong>
-        {% endif %}
-      </div>
-
-    </article>
-    {% endfor %}
-  </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
   {% endif %}
-</section>
+
+  {% if can_manage and model.status in ['BORRADOR', 'RECHAZADO'] %}
+  <section class="detail-card">
+    <div class="detail-card-head">
+      <div>
+        <h2>Enviar a aprobación</h2>
+        <p>Cuando la información esté completa, envíe el modelo para revisión administrativa.</p>
+      </div>
+    </div>
+
+    <div class="detail-actions">
+      <form method="post" action="{{ url_for('garment_model_submit', model_id=model.id) }}">
+        <button class="detail-button primary" type="submit">Enviar a aprobación</button>
+      </form>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if role == 'ADMIN' and model.status == 'PENDIENTE' %}
+  <section class="detail-card">
+    <div class="detail-card-head">
+      <div>
+        <h2>Revisión administrativa</h2>
+        <p>Apruebe el modelo o indique las observaciones necesarias para su corrección.</p>
+      </div>
+    </div>
+
+    <div class="detail-actions" style="margin-bottom: 16px;">
+      <form method="post" action="{{ url_for('garment_model_approve', model_id=model.id) }}">
+        <button class="detail-button success" type="submit">Aprobar modelo</button>
+      </form>
+    </div>
+
+    <form
+      class="detail-form-stack"
+      method="post"
+      action="{{ url_for('garment_model_reject', model_id=model.id) }}"
+    >
+      <textarea
+        class="detail-textarea"
+        name="rejection_reason"
+        required
+        minlength="5"
+        placeholder="Indique el motivo del rechazo..."
+      ></textarea>
+
+      <div class="detail-actions">
+        <button class="detail-button danger" type="submit">Rechazar modelo</button>
+      </div>
+    </form>
+  </section>
+  {% endif %}
+
+  <footer class="detail-footer-note">
+    <span>Astrid &amp; Beverly Fashion · Sistema de control de calidad</span>
+    <span class="detail-footer-brand"><i></i><i></i><i></i> El detalle de lucir bien</span>
+  </footer>
+</div>
+
+<div class="ai-modal-backdrop" id="aiCaptureModal" hidden>
+  <div
+    class="ai-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="aiModalTitle"
+  >
+    <h4 id="aiModalTitle">Confirmar</h4>
+    <p id="aiModalBody"></p>
+    <div class="ai-modal-actions">
+      <button type="button" class="detail-button neutral" id="aiModalCancel">
+        Volver
+      </button>
+      <button type="button" class="detail-button primary" id="aiModalConfirm">
+        Confirmar
+      </button>
+    </div>
+  </div>
+</div>
+
+{# Se retira el panel inline de Fase 2B: queda un solo flujo guiado. #}
+{% if false and ai_capture_visible %}
+<script>
+  window.ASTRID_AI_CAPTURE = {{ {
+    'modelId': model.id,
+    'urls': {
+      'start': url_for('ai_capture_start'),
+      'status': url_for('ai_capture_status'),
+      'stop': url_for('ai_capture_stop'),
+      'cancel': url_for('ai_capture_cancel')
+    },
+    'state': ai_capture
+  }|tojson }};
+</script>
+
+<script>
+(() => {
+  const config = window.ASTRID_AI_CAPTURE;
+  const panel = document.getElementById("aiCapturePanel");
+  if (!config || !panel) return;
+
+  const TARGET_DEFAULT = 40;
+  const MIN_DEFAULT = 20;
+  const START_NOTICE =
+    "Utilice únicamente prendas verificadas como correctas. " +
+    "Estas imágenes enseñarán al sistema la apariencia normal de este modelo.";
+  const BAND_NOTICE =
+    "Coloque únicamente prendas correctas en la banda.";
+
+  let state = Object.assign({
+    allowed: false,
+    ui_state: "SIN_PREPARAR",
+    ui_state_label: "SIN PREPARAR",
+    accepted_count: 0,
+    rejected_count: 0,
+    target_count: TARGET_DEFAULT,
+    min_count: MIN_DEFAULT,
+    can_finalize: false,
+    can_train: false,
+    missing_to_train: MIN_DEFAULT,
+    target_reached: false,
+    last_capture_human: null,
+    active: false,
+    session_id: null,
+    status: null,
+    has_preparation_version: false,
+    station_busy: false,
+    station_busy_model_code: null
+  }, config.state || {});
+
+  let busy = false;
+  let errorMessage = "";
+  let pollError = "";
+  let pollTimer = null;
+  let modalConfirmFn = null;
+
+  const modal = document.getElementById("aiCaptureModal");
+  const modalTitle = document.getElementById("aiModalTitle");
+  const modalBody = document.getElementById("aiModalBody");
+  const modalConfirm = document.getElementById("aiModalConfirm");
+  const modalCancel = document.getElementById("aiModalCancel");
+
+  const esc = (value) => String(
+    value === null || value === undefined ? "" : value
+  ).replace(
+    /[&<>"']/g,
+    (ch) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    })[ch]
+  );
+
+  const isPreState = () =>
+    state.ui_state === "SIN_PREPARAR" || state.ui_state === "PREPARANDO";
+  const isCapturing = () => state.ui_state === "CAPTURANDO";
+  const isDone = () =>
+    state.ui_state === "CAPTURA_COMPLETADA" ||
+    state.ui_state === "LISTO_PARA_ENTRENAR";
+
+  const counts = () => {
+    if (isPreState()) {
+      return { accepted: 0, rejected: 0 };
+    }
+    return {
+      accepted: Number(state.accepted_count || 0),
+      rejected: Number(state.rejected_count || 0)
+    };
+  };
+
+  const target = () =>
+    Math.max(1, Number(state.target_count || TARGET_DEFAULT));
+
+  const canStart = () =>
+    state.allowed !== false &&
+    Boolean(state.has_preparation_version) &&
+    !state.station_busy &&
+    !busy;
+
+  function applyPayload(payload) {
+    if (!payload) return;
+    Object.keys(payload).forEach((key) => {
+      state[key] = payload[key];
+    });
+  }
+
+  function countRowHtml(accepted, goal) {
+    return `
+      <div class="ai-count-row">
+        <span>Capturas normales</span>
+        <span>${accepted} / ${goal}</span>
+      </div>
+    `;
+  }
+
+  function progressHtml(accepted, goal) {
+    const percent = Math.min(100, Math.round((accepted / goal) * 100));
+    return `
+      <div class="ai-progress-block">
+        <div class="ai-progress-head">
+          <span>Capturas válidas</span>
+          <span>${accepted} / ${goal}</span>
+        </div>
+        <div
+          class="ai-progress-track"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="${goal}"
+          aria-valuenow="${accepted}"
+        >
+          <div class="ai-progress-fill" style="width:${percent}%"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  function statsHtml(accepted, rejected, goal) {
+    const minimum = Math.max(
+      1,
+      Number(state.min_count || MIN_DEFAULT)
+    );
+    return `
+      <div class="ai-stats">
+        <div class="ai-stat">
+          <span class="detail-label">Aceptadas</span>
+          <strong>${accepted}</strong>
+        </div>
+        <div class="ai-stat">
+          <span class="detail-label">Descartadas</span>
+          <strong>${rejected}</strong>
+        </div>
+        <div class="ai-stat">
+          <span class="detail-label">Mínimo para entrenar</span>
+          <strong>${minimum}</strong>
+        </div>
+        <div class="ai-stat">
+          <span class="detail-label">Objetivo recomendado</span>
+          <strong>${goal}</strong>
+        </div>
+      </div>
+    `;
+  }
+
+  function lastCaptureHtml() {
+    const last = state.last_capture_human;
+    if (!last) {
+      return `
+        <div class="ai-last">
+          <span class="ai-last-mark">•</span>
+          <div>
+            <strong>Última captura</strong>
+            <span class="ai-last-reason">Todavía no se ha capturado ninguna prenda.</span>
+          </div>
+        </div>
+      `;
+    }
+
+    if (last.accepted) {
+      return `
+        <div class="ai-last ok">
+          <span class="ai-last-mark">✓</span>
+          <div>
+            <strong>Última captura: Aceptada</strong>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="ai-last warn">
+        <span class="ai-last-mark">⚠</span>
+        <div>
+          <strong>Última captura: Descartada</strong>
+          <span class="ai-last-reason">Motivo: ${esc(
+            last.reason || "no cumplió la calidad requerida"
+          )}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function targetNoteHtml() {
+    if (!state.target_reached) return "";
+    return `
+      <span class="ai-target-note">
+        Objetivo recomendado alcanzado.
+      </span>
+      <p class="ai-muted-note">
+        Puede continuar capturando más prendas o finalizar la sesión.
+      </p>
+    `;
+  }
+
+  function startButtonHtml(label) {
+    const disabled = canStart() ? "" : "disabled";
+    const loading = busy ? " is-loading" : "";
+    const text = busy ? "Procesando..." : label;
+    return `
+      <button
+        type="button"
+        class="detail-button primary${loading}"
+        data-action="start"
+        ${disabled}
+      >${text}</button>
+    `;
+  }
+
+  function stopButtonHtml() {
+    return `
+      <button
+        type="button"
+        class="detail-button primary${busy ? " is-loading" : ""}"
+        data-action="stop"
+        ${busy ? "disabled" : ""}
+      >${busy ? "Procesando..." : "FINALIZAR CAPTURA"}</button>
+    `;
+  }
+
+  function cancelButtonHtml() {
+    return `
+      <button
+        type="button"
+        class="detail-button danger"
+        data-action="cancel"
+        ${busy ? "disabled" : ""}
+      >CANCELAR SESIÓN</button>
+    `;
+  }
+
+  function trainSlotHtml() {
+    const minimum = Math.max(
+      1,
+      Number(state.min_count || MIN_DEFAULT)
+    );
+    const accepted = counts().accepted;
+    const missing = Number.isFinite(Number(state.missing_to_train))
+      ? Number(state.missing_to_train)
+      : Math.max(0, minimum - accepted);
+
+    let note = "Disponible en la siguiente etapa";
+    if (accepted === 0) {
+      note = "Sesión incompleta. Inicie una nueva captura correcta.";
+    } else if (accepted >= Number(state.target_count || TARGET_DEFAULT)) {
+      note = "Objetivo recomendado alcanzado.";
+    } else if (accepted >= minimum) {
+      note = "Se alcanzó el mínimo. Se recomiendan " +
+        Number(state.target_count || TARGET_DEFAULT) + " imágenes.";
+    } else {
+      note =
+        "Faltan " +
+        missing +
+        " imágenes para alcanzar el mínimo de " + minimum + ".";
+    }
+
+    return `
+      <div class="ai-train-slot">
+        <button
+          type="button"
+          class="detail-button primary"
+          disabled
+          aria-disabled="true"
+        >
+          ENTRENAR IA
+        </button>
+        <span class="ai-train-note">${esc(note)}</span>
+      </div>
+    `;
+  }
+
+  function stationBusyHtml() {
+    const code = state.station_busy_model_code
+      ? ` (${esc(state.station_busy_model_code)})`
+      : "";
+    return `
+      <div class="ai-capture-notice warn">
+        Hay una sesión de captura activa para otro modelo${code}.
+        Finalícele o cancélela antes de iniciar aquí.
+      </div>
+    `;
+  }
+
+  function permissionHtml() {
+    return `
+      <p class="ai-muted-note">
+        No tiene permisos para preparar la captura de este modelo.
+      </p>
+    `;
+  }
+
+  function renderPre() {
+    const goal = target();
+    const html = [];
+
+    html.push(`
+      <p class="ai-capture-hint">
+        Para preparar este modelo utilice únicamente prendas correctas
+        y sin desperfectos.
+      </p>
+    `);
+    html.push(`<div class="ai-capture-notice">${esc(START_NOTICE)}</div>`);
+    html.push(countRowHtml(0, goal));
+
+    if (state.allowed === false) {
+      html.push(permissionHtml());
+      return html.join("");
+    }
+
+    if (!state.has_preparation_version) {
+      html.push(`
+        <p class="ai-muted-note">
+          Primero registre una versión de IA con el botón
+          “Preparar nueva versión”.
+        </p>
+      `);
+      return html.join("");
+    }
+
+    if (state.station_busy) {
+      html.push(stationBusyHtml());
+    }
+
+    html.push(`
+      <div class="ai-actions">
+        ${startButtonHtml("INICIAR CAPTURA")}
+      </div>
+    `);
+
+    return html.join("");
+  }
+
+  function renderCapturing() {
+    const goal = target();
+    const { accepted, rejected } = counts();
+    const html = [];
+
+    html.push(`
+      <div class="ai-capture-notice warn">${esc(BAND_NOTICE)}</div>
+    `);
+    html.push(progressHtml(accepted, goal));
+    html.push(statsHtml(accepted, rejected, goal));
+    html.push(targetNoteHtml());
+    html.push(lastCaptureHtml());
+    html.push(`
+      <div class="ai-actions">
+        ${stopButtonHtml()}
+        ${cancelButtonHtml()}
+      </div>
+    `);
+
+    return html.join("");
+  }
+
+  function renderDone() {
+    const goal = target();
+    const { accepted, rejected } = counts();
+    const html = [];
+
+    html.push(`
+      <div class="ai-summary">
+        <strong>Captura completada</strong>
+        <span>${accepted} imagen${accepted === 1 ? "" : "es"} válida${accepted === 1 ? "" : "s"}</span>
+        <span>${rejected} descartada${rejected === 1 ? "" : "s"}</span>
+        <span>Estado: ${esc(state.ui_state_label || state.ui_state)}</span>
+      </div>
+    `);
+
+    if (accepted === 0) {
+      html.push(`
+        <p class="ai-muted-note">
+          No se guardaron imágenes válidas. Esta sesión no está lista para entrenamiento; inicie una nueva captura.
+        </p>
+        <div class="ai-error" role="alert">
+          Debe capturar al menos 1 imagen válida antes de finalizar
+        </div>
+      `);
+    }
+
+    html.push(progressHtml(accepted, goal));
+    html.push(targetNoteHtml());
+
+    if (state.last_capture_human) {
+      html.push(lastCaptureHtml());
+    }
+
+    html.push(trainSlotHtml());
+
+    if (state.allowed === false) {
+      html.push(permissionHtml());
+      return html.join("");
+    }
+
+    if (state.station_busy) {
+      html.push(stationBusyHtml());
+      return html.join("");
+    }
+
+    html.push(`
+      <div class="ai-actions">
+        ${startButtonHtml("CAPTURAR MÁS IMÁGENES")}
+      </div>
+    `);
+
+    return html.join("");
+  }
+
+  function syncChrome() {
+    const badge = document.getElementById("aiModeBadge");
+    if (badge) {
+      badge.hidden = state.ui_state !== "CAPTURANDO";
+    }
+
+    const form = document.getElementById("prepareAiForm");
+    if (form) {
+      const button = form.querySelector("button");
+      if (button) {
+        button.disabled = state.ui_state === "CAPTURANDO";
+      }
+    }
+  }
+
+  function render() {
+    let body = "";
+
+    if (isCapturing()) {
+      body = renderCapturing();
+    } else if (isDone()) {
+      body = renderDone();
+    } else {
+      body = renderPre();
+    }
+
+    panel.innerHTML = `
+      <div class="ai-capture-top">
+        <span class="ai-state-badge ai-state-${esc(state.ui_state)}">
+          ${esc(state.ui_state_label || state.ui_state)}
+        </span>
+      </div>
+      ${errorMessage || pollError
+        ? `<div class="ai-error" role="alert">${esc(errorMessage || pollError)}</div>`
+        : ""}
+      ${body}
+    `;
+
+    syncChrome();
+  }
+
+  function pollDelay() {
+    if (document.hidden) return 15000;
+    return state.ui_state === "CAPTURANDO" ? 2500 : 10000;
+  }
+
+  function schedulePoll() {
+    window.clearTimeout(pollTimer);
+    pollTimer = window.setTimeout(refresh, pollDelay());
+  }
+
+  async function refresh() {
+    try {
+      const url =
+        config.urls.status +
+        "?garment_model_id=" +
+        encodeURIComponent(config.modelId);
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        credentials: "same-origin"
+      });
+      const data = await response.json();
+
+      if (data && data.ok) {
+        applyPayload(data);
+        pollError = "";
+      } else if (data && data.error) {
+        pollError = data.error;
+      }
+    } catch (error) {
+      // Conexión intermitente: se reintenta en el siguiente ciclo.
+    }
+
+    render();
+    schedulePoll();
+  }
+
+  async function post(url, payload) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      body: JSON.stringify(payload || {})
+    });
+
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (error) {
+      data = null;
+    }
+
+    if (!response.ok || !data || data.ok !== true) {
+      throw new Error(
+        (data && (data.error || data.message)) ||
+          "No se pudo completar la operación."
+      );
+    }
+
+    return data;
+  }
+
+  async function runAction(request) {
+    if (busy) return;
+    busy = true;
+    errorMessage = "";
+    render();
+
+    try {
+      const data = await request();
+      applyPayload(data.session);
+    } catch (error) {
+      errorMessage = error.message || "No se pudo completar la operación.";
+    } finally {
+      busy = false;
+      render();
+      await refresh();
+    }
+  }
+
+  const doStart = () =>
+    runAction(() =>
+      post(config.urls.start, { garment_model_id: config.modelId })
+    );
+
+  const doStop = () =>
+    runAction(() =>
+      post(
+        config.urls.stop,
+        state.session_id ? { session_id: state.session_id } : {}
+      )
+    );
+
+  const doCancel = () =>
+    runAction(() =>
+      post(
+        config.urls.cancel,
+        state.session_id ? { session_id: state.session_id } : {}
+      )
+    );
+
+  function openModal(options) {
+    if (!modal) {
+      if (typeof options.onConfirm === "function") options.onConfirm();
+      return;
+    }
+    modalTitle.textContent = options.title;
+    modalBody.textContent = options.body;
+    modalConfirm.textContent = options.confirmLabel;
+    modalConfirm.className =
+      "detail-button " + (options.danger ? "danger" : "primary");
+    modalConfirmFn = options.onConfirm;
+    modal.hidden = false;
+    modalConfirm.focus();
+  }
+
+  function closeModal() {
+    if (!modal) return;
+    modal.hidden = true;
+    modalConfirmFn = null;
+  }
+
+  if (modalConfirm) {
+    modalConfirm.addEventListener("click", () => {
+      const fn = modalConfirmFn;
+      closeModal();
+      if (typeof fn === "function") fn();
+    });
+  }
+
+  if (modalCancel) {
+    modalCancel.addEventListener("click", closeModal);
+  }
+
+  if (modal) {
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) closeModal();
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && modal && !modal.hidden) {
+      closeModal();
+    }
+  });
+
+  panel.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-action]");
+    if (!trigger) return;
+
+    const action = trigger.getAttribute("data-action");
+
+    if (action === "start") {
+      openModal({
+        title: "Iniciar captura",
+        body:
+          START_NOTICE +
+          " Las imágenes se guardarán automáticamente mientras " +
+          "la prenda esté sobre la banda.",
+        confirmLabel: "Iniciar captura",
+        onConfirm: doStart
+      });
+    } else if (action === "stop") {
+      doStop();
+    } else if (action === "cancel") {
+      openModal({
+        title: "Cancelar sesión",
+        body:
+          "La sesión actual se cerrará y no se tomarán más imágenes. " +
+          "¿Desea continuar?",
+        confirmLabel: "Sí, cancelar sesión",
+        danger: true,
+        onConfirm: doCancel
+      });
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      window.clearTimeout(pollTimer);
+      refresh();
+    }
+  });
+
+  render();
+  schedulePoll();
+})();
+</script>
 {% endif %}
 
-{% if can_manage and model.status in ['BORRADOR', 'RECHAZADO'] %}
-<section class="gmd-card">
-  <h2>Enviar a aprobaci&oacute;n</h2>
+{% if can_prepare_ai and ai_training %}
+<script>
+  window.ASTRID_AI_TRAINING = {{ {
+    'modelId': model.id,
+    'urls': {
+      'start': url_for('ai_training_start'),
+      'retrain': url_for('ai_training_retrain'),
+      'cancel': url_for('ai_training_cancel'),
+      'status': url_for('ai_training_status')
+    },
+    'state': ai_training
+  }|tojson }};
+</script>
 
-  <p>
-    Cuando la informaci&oacute;n sea correcta, env&iacute;e el modelo
-    para que un administrador lo revise.
-  </p>
+<script>
+(() => {
+  const config = window.ASTRID_AI_TRAINING;
+  const panel = document.getElementById("aiTrainingPanel");
+  if (!config || !panel) return;
 
-  <form
-    method="post"
-    action="{{ url_for('garment_model_submit', model_id=model.id) }}"
-  >
-    <button class="gmd-button" type="submit">
-      Enviar a aprobaci&oacute;n
-    </button>
-  </form>
-</section>
+  const modal = document.getElementById("aiCaptureModal");
+  const modalTitle = document.getElementById("aiModalTitle");
+  const modalBody = document.getElementById("aiModalBody");
+  const modalConfirm = document.getElementById("aiModalConfirm");
+  const modalCancel = document.getElementById("aiModalCancel");
+
+  let state = Object.assign({}, config.state || {});
+  let busy = false;
+  let errorMessage = "";
+  let modalConfirmFn = null;
+  let pollTimer = null;
+
+  const esc = (value) =>
+    String(value === null || value === undefined ? "" : value).replace(
+      /[&<>"']/g,
+      (character) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;"
+        })[character]
+    );
+
+  function elapsedLabel(seconds) {
+    const total = Math.max(0, Number(seconds) || 0);
+    const minutes = Math.floor(total / 60);
+    const rest = Math.floor(total % 60);
+    return minutes > 0
+      ? `${minutes} min ${rest} s`
+      : `${rest} s`;
+  }
+
+  function metaHtml() {
+    const items = [
+      ["Imágenes del dataset", `${Number(state.image_count || 0)}`],
+      ["Mínimo requerido", `${Number(state.min_count || 0)}`],
+      ["Imágenes aceptadas", `${Number(state.accepted_count || 0)}`]
+    ];
+
+    if (state.version) {
+      items.push(["Versión", String(state.version)]);
+    }
+
+    if (state.ui_status === "HISTORICA" && state.next_version) {
+      items.push(["Próxima versión", String(state.next_version)]);
+    }
+
+    if (state.ui_status === "HISTORICA" && state.retrain_image_count) {
+      items.push(["Imágenes disponibles", `${Number(state.retrain_image_count)}`]);
+    }
+
+    if (state.elapsed_seconds !== null && state.elapsed_seconds !== undefined) {
+      items.push(["Tiempo transcurrido", elapsedLabel(state.elapsed_seconds)]);
+    }
+
+    return `
+      <div class="ai-train-meta">
+        ${items
+          .map(
+            ([label, value]) => `
+          <div>
+            <span class="detail-label">${esc(label)}</span>
+            <span class="detail-value">${esc(value)}</span>
+          </div>
+        `
+          )
+          .join("")}
+      </div>
+    `;
+  }
+
+  function progressHtml() {
+    const percent = Math.max(0, Math.min(100, Number(state.progress) || 0));
+    const label = state.stage_label || state.stage || "Entrenando";
+
+    return `
+      <div class="ai-progress-block">
+        <div class="ai-progress-head">
+          <span>${esc(label)}</span>
+          <span>${percent.toFixed(0)}%</span>
+        </div>
+        <div
+          class="ai-progress-track"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="${percent.toFixed(0)}"
+        >
+          <div class="ai-progress-fill" style="width:${percent}%"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  function actionsHtml() {
+    if (busy) {
+      return `<div class="ai-actions"><button type="button" class="detail-button primary is-loading" disabled>Procesando…</button></div>`;
+    }
+
+    const actions = [];
+
+    if (state.can_train) {
+      actions.push(`
+        <button type="button" class="detail-button primary" data-action="train">
+          ENTRENAR IA
+        </button>
+      `);
+    }
+
+    if (state.ui_status === "HISTORICA") {
+      if (state.retrain_available) {
+        actions.push(`
+          <button type="button" class="detail-button primary" data-action="retrain">
+            ${esc(state.retrain_label || "Entrenar nueva versión")}
+          </button>
+        `);
+      } else {
+        actions.push(`
+          <button type="button" class="detail-button" disabled>
+            ${esc(state.retrain_label || "Entrenar nueva versión")}
+          </button>
+        `);
+      }
+    }
+
+    if (state.ui_status === "ENTRENADO") {
+      if (state.validation_available && state.validation_url) {
+        const validationLabel = state.model_status === "VALIDADO" ? "Ir a prueba final" : "Continuar a validación";
+        const validationHref = state.model_status === "VALIDADO" ? `${state.validation_url}#finalTestPanel` : state.validation_url;
+        actions.push(`
+          <a class="detail-button primary" href="${esc(validationHref)}">
+            ${esc(validationLabel)}
+          </a>
+        `);
+      } else {
+        actions.push(`
+          <button type="button" class="detail-button" disabled>
+            Continuar a validación
+          </button>
+        `);
+      }
+    }
+
+    if (state.ui_status === "FALLIDO") {
+      actions.push(`
+        <button type="button" class="detail-button primary" data-action="train">
+          REINTENTAR ENTRENAMIENTO
+        </button>
+      `);
+    }
+
+    if (state.can_cancel && state.job_id) {
+      actions.push(`
+        <button type="button" class="detail-button danger" data-action="cancel">
+          CANCELAR ENTRENAMIENTO
+        </button>
+      `);
+    }
+
+    if (!actions.length) {
+      return "";
+    }
+
+    return `<div class="ai-actions">${actions.join("")}</div>`;
+  }
+
+  function bodyHtml() {
+    const html = [];
+
+    if (errorMessage) {
+      html.push(`<div class="ai-error" role="alert">${esc(errorMessage)}</div>`);
+    }
+
+    if (state.ui_status === "NO_DISPONIBLE" && state.blocked_reason) {
+      html.push(`<div class="ai-capture-notice warn">${esc(state.blocked_reason)}</div>`);
+      html.push(metaHtml());
+      return html.join("");
+    }
+
+    if (state.ui_status === "ENTRENANDO") {
+      html.push(
+        `<div class="ai-capture-notice">El entrenamiento se ejecuta en segundo plano. Puede salir de esta pantalla; el estado quedará guardado.</div>`
+      );
+      html.push(progressHtml());
+    } else if (state.ui_status === "HISTORICA") {
+      html.push(
+        `<div class="ai-capture-notice warn">
+          <strong>Versión ${esc(state.historical_version || state.version || "")} histórica.</strong>
+          Quedó marcada como NO VALIDADA / NO APTA PARA ACTIVACIÓN: no puede
+          validarse ni activarse. El siguiente paso es entrenar una versión
+          nueva que la reemplace; la versión histórica se conserva sin cambios.
+        </div>`
+      );
+
+      if (!state.retrain_available && state.retrain_blocked_reason) {
+        html.push(
+          `<div class="ai-capture-notice">${esc(state.retrain_blocked_reason)}</div>`
+        );
+      }
+    } else if (state.ui_status === "ENTRENADO") {
+      html.push(
+        `<div class="ai-summary">
+          <strong>${state.model_status === "VALIDADO" ? "Validación completada" : "Entrenamiento completado"}</strong>
+          <span>${state.model_status === "VALIDADO" ? "La versión está validada y lista para ejecutar la prueba final independiente." : "La versión quedó registrada y está pendiente de validación antes de usarse en inspección."}</span>
+        </div>`
+      );
+    } else if (state.ui_status === "FALLIDO") {
+      html.push(
+        `<div class="ai-error" role="alert">${esc(
+          state.error_human ||
+            "El entrenamiento no pudo completarse."
+        )}</div>`
+      );
+      html.push(
+        `<p class="ai-muted-note">Las imágenes capturadas se conservan: puede reintentar cuando lo desee.</p>`
+      );
+    } else if (state.ui_status === "DISPONIBLE") {
+      html.push(
+        `<div class="ai-capture-notice">Dataset listo. Al iniciar, el sistema prepara las imágenes y entrena el modelo en segundo plano.</div>`
+      );
+    }
+
+    html.push(metaHtml());
+    html.push(actionsHtml());
+
+    return html.join("");
+  }
+
+  function render() {
+    panel.innerHTML = `
+      <div class="ai-capture-top">
+        <span class="ai-state-badge ai-state-${esc(state.ui_status)}">
+          ${esc(state.ui_label || state.ui_status)}
+        </span>
+        ${
+          state.job_status
+            ? `<span class="ai-train-note">Estado del trabajo: ${esc(state.job_status)}</span>`
+            : ""
+        }
+      </div>
+      ${bodyHtml()}
+    `;
+  }
+
+  function pollDelay() {
+    if (document.hidden) return 20000;
+    return state.ui_status === "ENTRENANDO" ? 3000 : 15000;
+  }
+
+  function schedulePoll() {
+    window.clearTimeout(pollTimer);
+    pollTimer = window.setTimeout(refresh, pollDelay());
+  }
+
+  async function refresh() {
+    try {
+      const url =
+        config.urls.status +
+        "?garment_model_id=" +
+        encodeURIComponent(config.modelId);
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        credentials: "same-origin"
+      });
+      const data = await response.json();
+
+      if (data && data.ok && data.training) {
+        const previousStatus = state.ui_status;
+        state = Object.assign({}, data.training);
+        errorMessage = "";
+
+        // El HTML del encabezado y de la lista de versiones se pinta en el
+        // servidor: al terminar el entrenamiento se recarga una vez para
+        // que toda la ficha muestre el mismo estado.
+        const finished =
+          previousStatus === "ENTRENANDO" &&
+          (state.ui_status === "ENTRENADO" ||
+            state.ui_status === "FALLIDO");
+
+        if (finished) {
+          const reloadKey =
+            "astrid_ai_reloaded_" +
+            config.modelId +
+            "_" +
+            (state.model_id || "");
+          if (!window.sessionStorage.getItem(reloadKey)) {
+            window.sessionStorage.setItem(reloadKey, "1");
+            window.location.reload();
+            return;
+          }
+        }
+      } else if (data && data.error) {
+        errorMessage = data.error;
+      }
+    } catch (error) {
+      // Conexión intermitente: se reintenta en el siguiente ciclo.
+    }
+
+    render();
+    schedulePoll();
+  }
+
+  async function post(url, payload) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      body: JSON.stringify(payload || {})
+    });
+
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (error) {
+      data = null;
+    }
+
+    if (!response.ok || !data || data.ok !== true) {
+      throw new Error(
+        (data && (data.error || data.message)) ||
+          "No se pudo completar la operación."
+      );
+    }
+
+    return data;
+  }
+
+  async function runAction(request) {
+    if (busy) return;
+    busy = true;
+    errorMessage = "";
+    render();
+
+    try {
+      const data = await request();
+      if (data.training) {
+        state = Object.assign({}, data.training);
+      }
+    } catch (error) {
+      errorMessage = error.message || "No se pudo completar la operación.";
+    } finally {
+      busy = false;
+      render();
+      await refresh();
+    }
+  }
+
+  const doStart = () =>
+    runAction(() =>
+      post(config.urls.start, { garment_model_id: config.modelId })
+    );
+
+  const doRetrain = () =>
+    runAction(() =>
+      post(config.urls.retrain, { garment_model_id: config.modelId })
+    );
+
+  const doCancel = () =>
+    runAction(() =>
+      post(config.urls.cancel, { job_id: state.job_id })
+    );
+
+  function openModal(options) {
+    if (!modal) {
+      if (typeof options.onConfirm === "function") options.onConfirm();
+      return;
+    }
+    modalTitle.textContent = options.title;
+    modalBody.textContent = options.body;
+    modalConfirm.textContent = options.confirmLabel;
+    modalConfirm.className =
+      "detail-button " + (options.danger ? "danger" : "primary");
+    modalConfirmFn = options.onConfirm;
+    modal.hidden = false;
+    modalConfirm.focus();
+  }
+
+  function closeModal() {
+    if (!modal) return;
+    modal.hidden = true;
+    modalConfirmFn = null;
+  }
+
+  if (modalConfirm) {
+    modalConfirm.addEventListener("click", () => {
+      const fn = modalConfirmFn;
+      closeModal();
+      if (typeof fn === "function") fn();
+    });
+  }
+
+  if (modalCancel) {
+    modalCancel.addEventListener("click", closeModal);
+  }
+
+  if (modal) {
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) closeModal();
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && modal && !modal.hidden) {
+      closeModal();
+    }
+  });
+
+  panel.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-action]");
+    if (!trigger) return;
+
+    const action = trigger.getAttribute("data-action");
+
+    if (action === "train") {
+      openModal({
+        title: "Entrenar modelo de IA",
+        body:
+          "Se prepararán las imágenes aceptadas y el modelo se " +
+          "entrenará en segundo plano. No podrá iniciar otro " +
+          "entrenamiento mientras este termine. ¿Desea continuar?",
+        confirmLabel: "Iniciar entrenamiento",
+        onConfirm: doStart
+      });
+    } else if (action === "retrain") {
+      openModal({
+        title: "Entrenar una nueva versión",
+        body:
+          "Se creará una versión nueva que reemplaza a la actual. " +
+          "La versión histórica y sus artefactos se conservan sin " +
+          "cambios. Se prepararán las imágenes aceptadas y el " +
+          "entrenamiento correrá en segundo plano. ¿Desea continuar?",
+        confirmLabel: "Entrenar nueva versión",
+        onConfirm: doRetrain
+      });
+    } else if (action === "cancel") {
+      openModal({
+        title: "Cancelar entrenamiento",
+        body:
+          "El entrenamiento aún no comenzó y se cancelará. Las " +
+          "imágenes capturadas se conservan. ¿Desea continuar?",
+        confirmLabel: "Sí, cancelar",
+        danger: true,
+        onConfirm: doCancel
+      });
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      window.clearTimeout(pollTimer);
+      refresh();
+    }
+  });
+
+  render();
+  schedulePoll();
+})();
+</script>
 {% endif %}
 
-{% if role == 'ADMIN' and model.status == 'PENDIENTE' %}
-<section class="gmd-card">
-  <h2>Revisi&oacute;n administrativa</h2>
+<script>
+(() => {
+  const dateTarget = document.getElementById("detailDate");
+  const clockTarget = document.getElementById("detailClock");
+  if (!dateTarget || !clockTarget) return;
 
-  <form
-    method="post"
-    action="{{ url_for('garment_model_approve', model_id=model.id) }}"
-  >
-    <button class="gmd-button ok" type="submit">
-      Aprobar modelo
-    </button>
-  </form>
+  const dateFormatter = new Intl.DateTimeFormat("es-GT", {
+    timeZone: "America/Guatemala",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric"
+  });
 
-  <form
-    class="gmd-reject"
-    method="post"
-    action="{{ url_for('garment_model_reject', model_id=model.id) }}"
-  >
-    <textarea
-      name="rejection_reason"
-      required
-      minlength="5"
-      placeholder="Indique el motivo del rechazo..."
-    ></textarea>
+  const timeFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Guatemala",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true
+  });
 
-    <button class="gmd-button bad" type="submit">
-      Rechazar modelo
-    </button>
-  </form>
-</section>
-{% endif %}
+  function updateDetailClock() {
+    const now = new Date();
+    const dateText = dateFormatter.format(now);
+    dateTarget.textContent = dateText.charAt(0).toUpperCase() + dateText.slice(1);
+    clockTarget.textContent = timeFormatter.format(now);
+  }
+
+  updateDetailClock();
+  window.setInterval(updateDetailClock, 1000);
+})();
+</script>
 
 {% endblock %}
-

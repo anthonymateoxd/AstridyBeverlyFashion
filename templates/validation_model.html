@@ -1,0 +1,1736 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+  .val-wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 24px 18px 56px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+
+  .val-back {
+    color: #0d2a66;
+    font-size: 13px;
+    font-weight: 800;
+    text-decoration: none;
+  }
+
+  .val-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .val-kicker {
+    margin: 0 0 4px;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #67758d;
+  }
+
+  .val-head h1 {
+    margin: 0;
+    font-size: 24px;
+    color: #10233f;
+  }
+
+  .detail-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 7px 11px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+    background: #edf1f6;
+    color: #67758d;
+  }
+
+  .detail-badge.warning { background: #fff3cf; color: #9d7006; }
+  .detail-badge.success { background: #e5f7ed; color: #178553; }
+  .detail-badge.history { background: #f2ecfa; color: #6b3fa0; }
+
+  .ai-capture-notice {
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: #eef4ff;
+    color: #173a7d;
+    font-size: 13px;
+    line-height: 1.5;
+    border: 1px solid #d7e3ff;
+  }
+
+  .ai-capture-notice.warn {
+    background: #fff3cf;
+    border-color: #f3e2ad;
+    color: #8a5f05;
+  }
+
+  .val-card {
+    background: #fff;
+    border: 1px solid #e4e9f2;
+    border-radius: 16px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .val-card h2 {
+    margin: 0;
+    font-size: 16px;
+    color: #10233f;
+  }
+
+  .val-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 14px;
+  }
+
+  .detail-label {
+    display: block;
+    font-size: 12px;
+    color: #67758d;
+    font-weight: 700;
+  }
+
+  .detail-value {
+    display: block;
+    font-size: 15px;
+    color: #10233f;
+    font-weight: 800;
+    word-break: break-word;
+  }
+
+  .val-counts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+  }
+
+  .val-count {
+    border: 1px solid #e4e9f2;
+    border-radius: 12px;
+    padding: 12px 14px;
+    background: #f8fafd;
+  }
+
+  .val-count strong {
+    display: block;
+    font-size: 26px;
+    color: #0d2a66;
+  }
+
+  .val-camera {
+    width: 100%;
+    max-height: 340px;
+    object-fit: contain;
+    background: #0d1522;
+    border-radius: 12px;
+    min-height: 180px;
+  }
+
+  .val-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .val-field label {
+    font-size: 13px;
+    font-weight: 800;
+    color: #10233f;
+  }
+
+  .val-field select,
+  .val-field textarea {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+    padding: 11px 12px;
+    border-radius: 12px;
+    border: 1px solid #cdd7e7;
+    background: #fff;
+    color: #10233f;
+  }
+
+  .val-field textarea { min-height: 74px; resize: vertical; }
+
+  .detail-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 11px 16px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    text-decoration: none;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    font-weight: 800;
+    cursor: pointer;
+    background: #f2f5fa;
+    color: #10233f;
+    border-color: #e0e7f2;
+  }
+
+  .detail-button.primary { background: #0d2a66; color: #fff; }
+  .detail-button.success { background: #e5f7ed; color: #187f50; border-color: #ccebd9; }
+  .detail-button[disabled] { opacity: 0.55; cursor: not-allowed; }
+
+  .val-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .val-error {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #fdeaea;
+    color: #a33c3c;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .val-ok {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #e5f7ed;
+    color: #178553;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .val-result {
+    border: 1px solid #e4e9f2;
+    border-radius: 12px;
+    padding: 14px;
+    background: #f8fafd;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+  }
+
+  .val-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .val-table th,
+  .val-table td {
+    text-align: left;
+    padding: 9px 8px;
+    border-bottom: 1px solid #eef1f7;
+    color: #26364f;
+  }
+
+  .val-table th {
+    font-size: 12px;
+    color: #67758d;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+  }
+
+  .val-table a {
+    color: #0d2a66;
+    font-weight: 800;
+    text-decoration: none;
+  }
+
+  .val-case-actions {
+    min-width: 240px;
+  }
+
+  .val-case-actions select {
+    display: block;
+    width: 100%;
+    margin-bottom: 6px;
+    padding: 6px 8px;
+    border: 1px solid #d6ddeb;
+    border-radius: 8px;
+    background: #fff;
+    font-size: 12px;
+    color: #26364f;
+  }
+
+  .val-case-actions .detail-button {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    font-size: 11px;
+    padding: 6px 8px;
+  }
+
+  .val-empty {
+    font-size: 14px;
+    color: #67758d;
+  }
+
+  .val-thumbs {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .val-thumb {
+    border: 1px solid #e4e9f2;
+    border-radius: 10px;
+    padding: 6px;
+    background: #f8fafd;
+    text-align: center;
+    font-size: 11px;
+    color: #67758d;
+  }
+
+  .val-thumb img {
+    display: block;
+    max-width: 190px;
+    max-height: 130px;
+    border-radius: 6px;
+    margin-bottom: 4px;
+  }
+
+  .val-metric-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .val-metric {
+    min-width: 130px;
+    background: #f8fafd;
+    border: 1px solid #e4e9f2;
+    border-radius: 12px;
+    padding: 10px 12px;
+  }
+
+  .val-metric span { display: block; font-size: 12px; color: #67758d; }
+  .val-metric strong { font-size: 18px; color: #10233f; }
+
+  .val-estado-toggle {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .val-estado-btn {
+    min-width: 120px;
+    background: #f2f5fa;
+    color: #10233f;
+    border-color: #e0e7f2;
+  }
+
+  .val-estado-btn.is-active {
+    background: #0d2a66;
+    border-color: #0d2a66;
+    color: #fff;
+  }
+
+  .val-binary-note {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #eef4ff;
+    border: 1px solid #d7e3ff;
+    color: #173a7d;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .val-defect-detail {
+    font-size: 13px;
+    color: #67758d;
+    margin: 0;
+  }
+
+  .val-defect-detail strong { color: #10233f; }
+
+  .val-case-actions select[data-case-tipo][hidden] { display: none; }
+
+  @media (max-width: 720px) {
+    .val-card { padding: 16px; }
+    .val-actions .detail-button { width: 100%; }
+    .val-table { display: block; overflow-x: auto; }
+  }
+</style>
+
+<div class="val-wrap">
+  <a class="val-back" href="{{ url_for('garment_model_detail', model_id=model.id) }}">
+    ← Volver a la ficha del modelo
+  </a>
+
+  <header class="val-head">
+    <div>
+      <p class="val-kicker">Validación de modelo IA · FASE 3B</p>
+      <h1>{{ model.code }} · {{ model.name }}</h1>
+    </div>
+
+    {% if validation.model_status == 'VALIDADO' %}
+      <span class="detail-badge success">
+        {{ validation.version }} · VALIDADO
+      </span>
+    {% elif validation.model_status == 'VALIDACION' %}
+      <span class="detail-badge warning">
+        {{ validation.version }} · EN VALIDACIÓN
+      </span>
+    {% elif validation.model_status == 'ENTRENADO' %}
+      <span class="detail-badge warning">
+        {{ validation.version }} · ENTRENADO · PENDIENTE DE VALIDACIÓN
+      </span>
+    {% else %}
+      <span class="detail-badge">
+        {{ validation.version }} · {{ validation.model_status }}
+      </span>
+    {% endif %}
+  </header>
+
+  <div class="ai-capture-notice">
+    <strong>{{ validation.notice }}</strong><br>
+    Las imágenes capturadas aquí se guardan en el banco de validación y
+    nunca se incorporan al dataset de entrenamiento.
+  </div>
+
+  {% if validation.technically_invalidated %}
+  <div class="ai-capture-notice warn">
+    Esta versión está marcada
+    <strong>NO VALIDADA / NO APTO PARA ACTIVACIÓN</strong>: no puede
+    validarse ni activarse.
+  </div>
+  {% endif %}
+
+  <section class="val-card">
+    {% if validation.final_test %}
+    <div class="ai-capture-notice warn" role="note">
+      <strong>PRUEBA FINAL INDEPENDIENTE · {{ model.code }} · IA {{ validation.version }}</strong>
+      <p>Threshold fijo: {{ '%.2f'|format(validation.final_test.threshold_fixed) if validation.final_test.threshold_fixed is not none else 'sin definir' }} · preprocessing: {{ validation.final_test.preprocessing_profile or 'sin definir' }}.</p>
+      <p>Los casos de VALIDACIÓN permanecen históricos y no cuentan en FINAL_TEST. La prueba final no recalibra el threshold, no modifica training/checkpoint y no activa el modelo.</p>
+      <a href="#finalTestPanel">Ir al bloque PRUEBA FINAL</a>
+    </div>
+    {% endif %}
+    <h2>Modelo y versión</h2>
+
+    <div class="val-grid">
+      <div>
+        <span class="detail-label">Prenda</span>
+        <span class="detail-value">{{ model.code }}</span>
+      </div>
+      <div>
+        <span class="detail-label">Versión a validar</span>
+        <span class="detail-value">{{ validation.version }}</span>
+      </div>
+      <div>
+        <span class="detail-label">Estado</span>
+        <span class="detail-value" id="valStatus">
+          {% if validation.model_status == 'ENTRENADO' %}
+            ENTRENADO · PENDIENTE DE VALIDACIÓN
+          {% elif validation.model_status == 'VALIDACION' %}
+            EN VALIDACIÓN
+          {% elif validation.model_status == 'VALIDADO' %}
+            VALIDADO
+          {% else %}
+            {{ validation.model_status }}
+          {% endif %}
+        </span>
+      </div>
+      <div>
+        <span class="detail-label">Sesión de validación</span>
+        <span class="detail-value" id="valSessionStatus">
+          {% if validation.session_status %}
+            {{ validation.session_status }}
+          {% else %}
+            SIN SESIÓN
+          {% endif %}
+        </span>
+      </div>
+    </div>
+
+    <div class="val-counts" id="valCounts">
+      {% for estado in estados %}
+      <div class="val-count" data-estado="{{ estado }}">
+        <span class="detail-label">
+          {{ estado_labels[estado] }}
+        </span>
+        <strong>{{ validation.counts_estado[estado] }}</strong>
+        <span class="detail-label">prendas</span>
+      </div>
+      {% endfor %}
+    </div>
+
+    <p class="val-defect-detail" id="valDefectDetail">
+      Defectuosas —
+      Manchas: <strong id="valManchasCount">{{ validation.counts_defects['MANCHA'] }}</strong>
+      · Agujeros: <strong id="valAgujerosCount">{{ validation.counts_defects['AGUJERO'] }}</strong>
+    </p>
+    <div class="val-defect-detail" id="thresholdFinalPanel">
+      <span id="thresholdCandidateLabel">
+        Threshold candidato: {% if validation.threshold_candidate is not none %}{{ '%.2f'|format(validation.threshold_candidate) }}{% else %}sin candidato{% endif %}
+      </span>
+      {% if validation.threshold_final is not none %}
+        <strong id="thresholdFinalLabel">Threshold definitivo: {{ '%.2f'|format(validation.threshold_final) }} · CONGELADO</strong>
+        <span id="thresholdProvenance">{{ validation.threshold_provenance }}</span>
+      {% elif validation.final_test and validation.final_test.threshold_fixed is not none %}
+        <strong id="thresholdFinalLabel">Threshold fijo de FINAL_TEST: {{ '%.2f'|format(validation.final_test.threshold_fixed) }}</strong>
+      {% else %}
+        <strong id="thresholdFinalLabel">Threshold definitivo: SIN CONGELAR</strong>
+      {% endif %}
+    </div>
+    {% if can_manage and validation.ai_model_id != 1649 and validation.can_freeze_threshold %}
+    <section class="ai-capture-notice" id="thresholdCalibration">
+      <h3>CALIBRACIÓN DEL MODELO</h3>
+      <p>Threshold candidato: <strong id="thresholdFreezeCandidate">{{ '%.2f'|format(validation.threshold_candidate) }}</strong></p>
+      <p>Banco de validación: <strong>VÁLIDO · {{ validation.validation_bank.case_count }} casos</strong></p>
+      <button type="button" class="detail-button primary" id="thresholdFreeze">CONGELAR THRESHOLD {{ '%.2f'|format(validation.threshold_candidate) }}</button>
+      <p>Al congelar el threshold, este valor quedará fijo para la prueba final y no podrá recalibrarse usando los resultados del FINAL_TEST.</p>
+      <span id="thresholdFreezeMessage" role="status"></span>
+    </section>
+    {% elif can_manage and validation.ai_model_id != 1649 and validation.model_status == 'VALIDACION' and validation.threshold_final is none and validation.threshold_candidate is not none %}
+    <div class="ai-capture-notice warn" id="thresholdCalibrationBlocked">
+      <h3>CALIBRACIÓN DEL MODELO</h3>
+      <p>Threshold candidato: <strong>{{ '%.2f'|format(validation.threshold_candidate) }}</strong></p>
+      <p>No se puede congelar hasta que la sesión esté evaluada y el banco de validación sea válido.</p>
+      {% if validation.validation_bank.error %}<p>{{ validation.validation_bank.error }}</p>{% endif %}
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="val-card" id="validationBank">
+    <h2>Banco de validación</h2>
+    <p class="val-empty">
+      Buenas: <strong id="bankBuenas">{{ validation.counts_estado['BUENA'] }}</strong>
+      · Manchas: <strong id="bankManchas">{{ validation.counts_defects['MANCHA'] }}</strong>
+      · Agujeros: <strong id="bankAgujeros">{{ validation.counts_defects['AGUJERO'] }}</strong>
+      · Total: <strong id="bankTotal">{{ validation.total_cases }}</strong>
+      · Sesiones fuente: <strong id="bankSessions">{{ validation.source_session_count }}</strong>
+    </p>
+    <p class="val-empty" id="bankStatus">Sin exportar</p>
+    {% if can_manage %}
+    <button type="button" class="detail-button" id="bankExport">Actualizar banco de validación</button>
+    <span id="bankMessage" role="status"></span>
+    {% endif %}
+  </section>
+
+  {% if validation.final_test %}
+  <section class="val-card" id="finalTestPanel">
+    <h2>PRUEBA FINAL INDEPENDIENTE</h2>
+    <p><strong>Modelo:</strong> {{ model.code }} · <strong>IA:</strong> {{ validation.version }} · <strong>Threshold fijo:</strong> {{ '%.2f'|format(validation.final_test.threshold_fixed) if validation.final_test.threshold_fixed is not none else 'sin definir' }} · <strong>Estado:</strong> <span id="finalTestStatus">{{ validation.final_test.status_label or 'INACTIVA' }}</span></p>
+    <div class="ai-capture-notice warn">
+      Cohorte independiente <strong>FINAL_TEST</strong>. Captura únicamente desde cámara. Threshold fijo <strong>{{ '%.2f'|format(validation.final_test.threshold_fixed) if validation.final_test.threshold_fixed is not none else 'sin definir' }}</strong>, preprocessing <strong>{{ validation.final_test.preprocessing_profile or 'sin definir' }}</strong>. No recalibra, no modifica training/checkpoint y no activa el modelo.
+    </div>
+    <img id="finalTestFrame" class="val-camera" src="{{ url_for('garment_validation_frame', model_id=model.id) }}" alt="Vista en vivo de cámara para la prueba final">
+    <p id="finalTestState" class="val-empty">
+      {% if validation.final_test.started %}
+        Cohorte iniciada · {{ validation.final_test.created_at }} · responsable usuario {{ validation.final_test.created_by }} · threshold {{ '%.2f'|format(validation.final_test.threshold_fixed) }} · {{ validation.final_test.preprocessing_profile }}
+      {% else %}
+        Cohorte FINAL_TEST vacía (0 casos). Los registros históricos no se copian.
+      {% endif %}
+    </p>
+    {% if validation.final_test.start_block_reason %}
+    <p class="val-error">No se puede iniciar: {{ validation.final_test.start_block_reason }}</p>
+    {% endif %}
+    <div class="val-counts">
+      <div class="val-count"><span class="detail-label">Buenas</span><strong id="finalGoodCount">{{ validation.final_test.counts.BUENA }} / 10</strong></div>
+      <div class="val-count"><span class="detail-label">Manchas</span><strong id="finalStainCount">{{ validation.final_test.counts.MANCHA }} / 10</strong></div>
+      <div class="val-count"><span class="detail-label">Total</span><strong id="finalTotalCount">{{ validation.final_test.counts.total }} / 20</strong></div>
+    </div>
+    {% if can_manage %}
+    <div class="val-actions">
+      {% if validation.final_test.can_start %}
+      <button type="button" id="finalTestStart" class="detail-button primary">INICIAR PRUEBA FINAL</button>
+      {% endif %}
+      <select id="finalTestCategory" aria-label="Clasificación humana para prueba final">
+        <option value="NORMAL">BUENA</option>
+        <option value="MANCHA">DEFECTUOSA → MANCHA</option>
+      </select>
+      <button type="button" id="finalTestCapture" class="detail-button" {% if not validation.final_test.started or validation.final_test.status != 'ABIERTA' %}disabled{% endif %}>CAPTURAR CASO FINAL</button>
+      <button type="button" id="finalTestEvaluate" class="detail-button success" {% if not validation.final_test.ready_to_evaluate or validation.final_test.metrics %}disabled{% endif %}>EVALUAR PRUEBA FINAL</button>
+    </div>
+    {% endif %}
+    <p id="finalTestMessage" role="status"></p>
+    <div id="finalTestMetrics">
+      {% if validation.final_test.metrics %}
+      <p>TP {{ validation.final_test.metrics.tp }} · TN {{ validation.final_test.metrics.tn }} · FP {{ validation.final_test.metrics.fp }} · FN {{ validation.final_test.metrics.fn }}</p>
+      <p>Precisión {{ validation.final_test.metrics.precision }} · Recall {{ validation.final_test.metrics.recall }} · Especificidad {{ validation.final_test.metrics.specificity }} · F1 {{ validation.final_test.metrics.f1 }} · Accuracy {{ validation.final_test.metrics.accuracy }}</p>
+      <p>Matriz de confusión: {{ validation.final_test.metrics.confusion_matrix }}</p>
+      {% endif %}
+    </div>
+    <table class="val-table">
+      <thead><tr><th>Clasificación real</th><th>Score</th><th>Predicción</th><th>Resultado</th><th>Fecha</th><th>Original / heatmap</th></tr></thead>
+      <tbody id="finalTestCases">
+        {% for case in validation.final_test.cases %}
+        <tr>
+          <td>{{ 'BUENA' if case.category == 'NORMAL' else 'DEFECTUOSA → MANCHA' }}</td>
+          <td>{{ '%.2f'|format(case.anomaly_score|float) }}</td>
+          <td>{{ 'DEFECTUOSA' if case.prediction == 'MANCHA' else 'BUENA' }}</td>
+          <td>{{ 'CORRECTO' if case.correct else 'INCORRECTO' }}</td>
+          <td>{{ case.created_at }}</td>
+          <td><a href="{{ url_for('garment_final_test_asset', model_id=model.id, case_id=case.id, kind='original') }}">original</a>{% if case.heatmap_path %} · <a href="{{ url_for('garment_final_test_asset', model_id=model.id, case_id=case.id, kind='heatmap') }}">heatmap</a>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {% if can_manage %}
+  <section class="val-card">
+    <h2>Captura de validación</h2>
+
+    <img
+      id="valFrame"
+      class="val-camera"
+      src="{{ url_for('garment_validation_frame', model_id=model.id) }}"
+      alt="Vista de cámara para validación"
+    >
+
+    <div class="val-field">
+      <label id="valEstadoLabel">Estado real de la prenda</label>
+      <div
+        class="val-estado-toggle"
+        id="valEstadoToggle"
+        role="group"
+        aria-labelledby="valEstadoLabel"
+      >
+        {% for estado in estados %}
+        <button
+          type="button"
+          class="detail-button val-estado-btn{% if loop.first %} is-active{% endif %}"
+          data-estado="{{ estado }}"
+          aria-pressed="{% if loop.first %}true{% else %}false{% endif %}"
+        >
+          {{ estado_labels[estado] }}
+        </button>
+        {% endfor %}
+      </div>
+      <input type="hidden" id="valEstado" value="BUENA">
+    </div>
+
+    <div class="val-field" id="valDefectTypeField" hidden>
+      <label for="valTipoDefecto">
+        Tipo de defecto (obligatorio cuando es DEFECTUOSA)
+      </label>
+      <select id="valTipoDefecto">
+        <option value="">— Seleccione el tipo —</option>
+        {% for tipo in defect_types %}
+        <option value="{{ tipo }}">{{ defect_type_labels[tipo] }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="val-binary-note">{{ validation.binary_notice }}</div>
+
+    <div class="val-field">
+      <label for="valObservation">Observación (opcional)</label>
+      <textarea
+        id="valObservation"
+        placeholder="Ej.: mancha visible en el centro"
+      ></textarea>
+    </div>
+
+    <div class="val-actions">
+      <button
+        type="button"
+        id="valCapture"
+        class="detail-button primary"
+        {% if not validation.can_capture %}disabled{% endif %}
+      >
+        CAPTURAR IMAGEN DE VALIDACIÓN
+      </button>
+
+      {% if not validation.session_id and validation.model_status == 'ENTRENADO' %}
+      <button type="button" id="valStart" class="detail-button">
+        Iniciar validación
+      </button>
+      {% endif %}
+
+      <button
+        type="button"
+        id="valEvaluate"
+        class="detail-button"
+        {% if not validation.can_evaluate %}disabled{% endif %}
+      >
+        Evaluar validación
+      </button>
+
+      <button
+        type="button"
+        id="valComplete"
+        class="detail-button success"
+        {% if not validation.can_complete or validation.threshold_final is none %}disabled{% endif %}
+      >
+        Marcar como VALIDADA
+      </button>
+    </div>
+
+    <p class="val-empty">
+      Las imágenes se toman de la cámara del puesto y cada una es NUEVA
+      y exclusiva de validación. La persona indica si la prenda está
+      BUENA o DEFECTUOSA (y, si lo está, si es Mancha o Agujero):
+      PatchCore sólo decide patrón normal frente a anomalía.
+    </p>
+
+    <div id="valCaptureMessage"></div>
+
+    <div id="valResult" hidden></div>
+  </section>
+
+  <section class="val-card">
+    <h2>Métricas de validación</h2>
+    <div id="valMetrics">
+      {% if validation.metrics %}
+        <p class="val-empty">
+          Métricas disponibles: use «Evaluar validación» para recalcular
+          con los candidatos de umbral.
+        </p>
+      {% else %}
+        <p class="val-empty" id="valMetricsEmpty">
+          Todavía no hay métricas: se calculan cuando existen casos
+          registrados («Evaluar validación»).
+        </p>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="val-card">
+    <h2>Casos de validación</h2>
+
+    {% set can_edit_cases = can_manage and validation.can_edit_cases %}
+
+    <div id="valCasesWrap" {% if not validation.cases %}hidden{% endif %}>
+    <table class="val-table">
+      <thead>
+        <tr>
+          <th>Clasificación real</th>
+          <th>Score de anomalía</th>
+          <th>Modelo</th>
+          <th>Resultado</th>
+          <th>Cohorte</th>
+          <th>Fecha</th>
+          <th>Artefactos</th>
+          {% if can_manage %}<th>Acciones</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody id="valCasesBody">
+        {% for case in validation.cases %}
+        <tr>
+          <td>{{ case.classification or case.category_label }}</td>
+          <td>
+            {% if case.anomaly_score is not none %}
+              {{ '%.2f'|format(case.anomaly_score) }}
+            {% else %}
+              sin score
+            {% endif %}
+          </td>
+          <td>{{ validation.version }}</td>
+          <td>{{ case.result_label or 'Pendiente de calibración' }}</td>
+          <td>{{ case.validation_cohort or 'Validación' }}</td>
+          <td>{{ case.created_at }}</td>
+          <td>
+            <a href="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='original') }}">original</a>
+            {% if case.heatmap_path %}
+              ·
+              <a href="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='heatmap') }}">heatmap</a>
+              ·
+              <a href="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='comparison') }}">comparación</a>
+            {% endif %}
+          </td>
+          {% if can_manage %}
+          <td class="val-case-actions">
+            {% if can_edit_cases %}
+            <select
+              data-case-estado="{{ case.id }}"
+              aria-label="Estado real del caso {{ case.id }}"
+            >
+              {% for estado in estados %}
+              <option
+                value="{{ estado }}"
+                {% if case.estado_real == estado %}selected{% endif %}
+              >
+                {{ estado_labels[estado] }}
+              </option>
+              {% endfor %}
+            </select>
+            <select
+              data-case-tipo="{{ case.id }}"
+              aria-label="Tipo de defecto del caso {{ case.id }}"
+              {% if case.estado_real != 'DEFECTUOSA' %}hidden{% endif %}
+            >
+              <option value="">— Tipo —</option>
+              {% for tipo in defect_types %}
+              <option
+                value="{{ tipo }}"
+                {% if case.tipo_defecto == tipo %}selected{% endif %}
+              >
+                {{ defect_type_labels[tipo] }}
+              </option>
+              {% endfor %}
+            </select>
+            <button
+              type="button"
+              class="detail-button"
+              data-action="update"
+              data-case-id="{{ case.id }}"
+            >
+              Editar clasificación real
+            </button>
+            <button
+              type="button"
+              class="detail-button"
+              data-action="delete"
+              data-case-id="{{ case.id }}"
+            >
+              Eliminar caso de validación
+            </button>
+            {% endif %}
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="val-thumbs" id="valThumbs">
+      {% for case in validation.cases[-4:] %}
+      <div class="val-thumb">
+        <img
+          src="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='original') }}"
+          alt="Caso de validación"
+        >
+        {{ case.classification or case.category_label }}
+        {% if case.heatmap_path %}
+          ·
+          <a href="{{ url_for('garment_validation_case_asset', model_id=model.id, case_id=case.id, kind='comparison') }}">
+            comparación
+          </a>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    </div>
+
+    <p class="val-empty" id="valCasesEmpty" {% if validation.cases %}hidden{% endif %}>
+      Todavía no hay casos de validación registrados para esta versión.
+    </p>
+  </section>
+</div>
+
+<script>
+  window.ASTRID_AI_VALIDATION = {{ {
+    'modelId': model.id,
+    'garmentCode': model.code,
+    'categories': categories,
+    'estados': estados,
+    'estadoLabels': estado_labels,
+    'defectTypes': defect_types,
+    'defectTypeLabels': defect_type_labels,
+    'classificationLabels': validation.classification_labels,
+    'canManage': can_manage,
+    'urls': {
+      'frame': url_for('garment_validation_frame', model_id=model.id),
+      'start': url_for('ai_validation_session_start'),
+      'case': url_for('ai_validation_case'),
+      'caseUpdate': url_for('ai_validation_case_update'),
+      'caseDelete': url_for('ai_validation_case_delete'),
+      'evaluate': url_for('ai_validation_evaluate'),
+      'finalTestStart': url_for('ai_validation_final_test_start'),
+      'finalTestCase': url_for('ai_validation_final_test_case'),
+      'finalTestEvaluate': url_for('ai_validation_final_test_evaluate'),
+      'finalTestAsset': url_for('garment_final_test_asset', model_id=model.id),
+      'freezeThreshold': url_for('ai_validation_threshold_freeze'),
+      'complete': url_for('ai_validation_complete'),
+      'bankExport': url_for('ai_validation_bank_export'),
+      'asset': url_for('garment_validation_case_asset', model_id=model.id, case_id=0, kind='original'),
+      'detail': url_for('garment_model_detail', model_id=model.id)
+    },
+    'state': validation
+  }|tojson }};
+</script>
+
+<script>
+(() => {
+  const config = window.ASTRID_AI_VALIDATION;
+  if (!config) return;
+
+  let state = Object.assign({}, config.state || {});
+  let busy = false;
+
+  const frameEl = document.getElementById("valFrame");
+  const estadoEl = document.getElementById("valEstado");
+  const defectFieldEl = document.getElementById("valDefectTypeField");
+  const tipoEl = document.getElementById("valTipoDefecto");
+  const estadoButtons = Array.from(
+    document.querySelectorAll(".val-estado-btn")
+  );
+  const observationEl = document.getElementById("valObservation");
+  const captureBtn = document.getElementById("valCapture");
+  const startBtn = document.getElementById("valStart");
+  const evaluateBtn = document.getElementById("valEvaluate");
+  const completeBtn = document.getElementById("valComplete");
+  const thresholdFreezeBtn = document.getElementById("thresholdFreeze");
+  const thresholdFreezeMessage = document.getElementById("thresholdFreezeMessage");
+  const bankExportBtn = document.getElementById("bankExport");
+  const bankMessageEl = document.getElementById("bankMessage");
+  const messageEl = document.getElementById("valCaptureMessage");
+  const resultEl = document.getElementById("valResult");
+  const countsEl = document.getElementById("valCounts");
+  const manchasEl = document.getElementById("valManchasCount");
+  const agujerosEl = document.getElementById("valAgujerosCount");
+  const casesWrapEl = document.getElementById("valCasesWrap");
+  const thumbsEl = document.getElementById("valThumbs");
+  const statusEl = document.getElementById("valStatus");
+  const sessionEl = document.getElementById("valSessionStatus");
+  const metricsEl = document.getElementById("valMetrics");
+  const casesBodyEl = document.getElementById("valCasesBody");
+  const casesEmptyEl = document.getElementById("valCasesEmpty");
+
+  const esc = (value) =>
+    String(value === null || value === undefined ? "" : value).replace(
+      /[&<>"']/g,
+      (character) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;"
+        })[character]
+    );
+
+  const scoreLabel = (score) =>
+    score === null || score === undefined
+      ? "sin score"
+      : Number(score).toFixed(2);
+
+  // Fuente única de verdad: la clasificación persistida del caso.
+  const classificationOf = (item) =>
+    (item && (item.classification || item.category_label)) || "";
+
+  const estadoOf = (item) =>
+    (item && item.estado_real) ||
+    ((item && item.category) === "NORMAL" ? "BUENA" : "DEFECTUOSA");
+
+  function setEstado(estado) {
+    const value = estado === "DEFECTUOSA" ? "DEFECTUOSA" : "BUENA";
+
+    if (estadoEl) estadoEl.value = value;
+
+    estadoButtons.forEach((button) => {
+      const active = button.getAttribute("data-estado") === value;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+
+    if (defectFieldEl) defectFieldEl.hidden = value !== "DEFECTUOSA";
+
+    if (value !== "DEFECTUOSA" && tipoEl) tipoEl.value = "";
+  }
+
+  function currentCapture() {
+    const estado = estadoEl ? estadoEl.value : "BUENA";
+    const tipo =
+      estado === "DEFECTUOSA" && tipoEl && tipoEl.value ? tipoEl.value : null;
+
+    return { estado, tipo };
+  }
+
+  estadoButtons.forEach((button) => {
+    button.addEventListener("click", () =>
+      setEstado(button.getAttribute("data-estado"))
+    );
+  });
+
+  function setMessage(text, isError) {
+    if (!messageEl) return;
+    messageEl.innerHTML = text
+      ? `<div class="${isError ? "val-error" : "val-ok"}">${esc(text)}</div>`
+      : "";
+  }
+
+  function setBusy(value) {
+    busy = value;
+    [captureBtn, startBtn, evaluateBtn, completeBtn].forEach((button) => {
+      if (button) button.disabled = busy;
+    });
+    renderActions();
+  }
+
+  function assetUrl(caseId, kind) {
+    return config.urls.asset
+      .replace("/caso/0/", `/caso/${caseId}/`)
+      .replace("case_id=0", `case_id=${caseId}`)
+      .replace(/kind=original/, `kind=${kind}`);
+  }
+
+  function renderActions() {
+    if (captureBtn) captureBtn.disabled = busy || !state.can_capture;
+    if (evaluateBtn) evaluateBtn.disabled = busy || !state.can_evaluate;
+    if (completeBtn) completeBtn.disabled = busy || !state.can_complete || state.threshold_final === null || state.threshold_final === undefined;
+  }
+
+  function renderCounts() {
+    if (countsEl && state.counts_estado) {
+      Array.from(countsEl.children).forEach((card) => {
+        const key = card.getAttribute("data-estado");
+        const strong = card.querySelector("strong");
+        if (strong && key) {
+          strong.textContent = Number(state.counts_estado[key] || 0);
+        }
+      });
+    }
+
+    const defects = state.counts_defects || {};
+
+    if (manchasEl) manchasEl.textContent = Number(defects.MANCHA || 0);
+    if (agujerosEl) agujerosEl.textContent = Number(defects.AGUJERO || 0);
+  }
+
+  function renderStatus() {
+    if (statusEl) {
+      const labels = {
+        ENTRENADO: "ENTRENADO · PENDIENTE DE VALIDACIÓN",
+        VALIDACION: "EN VALIDACIÓN",
+        VALIDADO: "VALIDADO"
+      };
+      statusEl.textContent =
+        labels[state.model_status] || state.model_status || "";
+    }
+
+    if (sessionEl) {
+      sessionEl.textContent = state.session_status || "SIN SESIÓN";
+    }
+    const thresholdLabel = document.getElementById("thresholdFinalLabel");
+    const candidateLabel = document.getElementById("thresholdCandidateLabel");
+    if (candidateLabel) {
+      candidateLabel.textContent = `Threshold candidato: ${state.threshold_candidate === null || state.threshold_candidate === undefined ? "sin candidato" : Number(state.threshold_candidate).toFixed(2)}`;
+    }
+    if (thresholdLabel && state.threshold_final !== null && state.threshold_final !== undefined) {
+      thresholdLabel.textContent = `Threshold definitivo: ${Number(state.threshold_final).toFixed(2)} · CONGELADO`;
+    }
+      const thresholdProvenance = document.getElementById("thresholdProvenance");
+    if (thresholdProvenance && state.threshold_provenance) {
+      thresholdProvenance.textContent = state.threshold_provenance;
+    }
+  }
+
+  function renderMetrics() {
+    if (!metricsEl) return;
+    const metrics = state.metrics;
+
+    if (!metrics) {
+      metricsEl.innerHTML =
+        '<p class="val-empty" id="valMetricsEmpty">' +
+        "Todavía no hay métricas: se calculan cuando existen casos " +
+        "registrados («Evaluar validación»).</p>";
+      return;
+    }
+
+    const html = [];
+
+    const estadoCounts = metrics.estado_counts || {};
+    const byEstado = metrics.by_estado || {};
+
+    html.push(`
+      <div class="val-metric-row">
+        <div class="val-metric"><span>Prendas buenas evaluadas</span>
+          <strong>${Number((byEstado.BUENA || {}).evaluated || estadoCounts.BUENA || 0)}</strong></div>
+        <div class="val-metric"><span>Prendas defectuosas evaluadas</span>
+          <strong>${Number((byEstado.DEFECTUOSA || {}).evaluated || estadoCounts.DEFECTUOSA || 0)}</strong></div>
+        <div class="val-metric"><span>Casos totales</span>
+          <strong>${Number(metrics.total || 0)}</strong></div>
+      </div>
+    `);
+
+    if (metrics.distribution) {
+      const d = metrics.distribution;
+      html.push(`
+        <div class="val-metric-row">
+          <div class="val-metric"><span>Score mínimo</span><strong>${scoreLabel(d.min)}</strong></div>
+          <div class="val-metric"><span>Score máximo</span><strong>${scoreLabel(d.max)}</strong></div>
+          <div class="val-metric"><span>Media</span><strong>${scoreLabel(d.mean)}</strong></div>
+          <div class="val-metric"><span>Mediana</span><strong>${scoreLabel(d.median)}</strong></div>
+        </div>
+      `);
+    }
+
+    const applied = metrics.confusion ? metrics : null;
+    const candidate = metrics.threshold_candidate_metrics || null;
+    const binary = applied || candidate;
+
+    if (binary) {
+      const note = applied
+        ? "En el umbral aplicado"
+        : "En el threshold candidato " + scoreLabel(binary.threshold);
+
+      html.push(`
+        <div class="val-metric-row">
+          <div class="val-metric"><span>Falsos positivos</span><strong>${Number(binary.false_positives || 0)}</strong></div>
+          <div class="val-metric"><span>Falsos negativos</span><strong>${Number(binary.false_negatives || 0)}</strong></div>
+          <div class="val-metric"><span>Precisión</span><strong>${binary.precision === null || binary.precision === undefined ? "s/d" : Number(binary.precision).toFixed(3)}</strong></div>
+          <div class="val-metric"><span>Recall</span><strong>${binary.recall === null || binary.recall === undefined ? "s/d" : Number(binary.recall).toFixed(3)}</strong></div>
+          <div class="val-metric"><span>Especificidad</span><strong>${binary.specificity === null || binary.specificity === undefined ? "s/d" : Number(binary.specificity).toFixed(3)}</strong></div>
+          <div class="val-metric"><span>F1</span><strong>${binary.f1 === null || binary.f1 === undefined ? "s/d" : Number(binary.f1).toFixed(3)}</strong></div>
+        </div>
+        <p class="val-defect-detail">${esc(note)} (BUENA frente a DEFECTUOSA).</p>
+      `);
+    }
+
+    const defects = metrics.defects || {};
+    const defectCounts = metrics.defect_counts || {};
+
+    html.push(`
+      <p class="val-defect-detail">
+        Defectuosas — Manchas: <strong>${Number(defectCounts.MANCHA || (defects.MANCHA || {}).evaluated || 0)}</strong>
+        · Agujeros: <strong>${Number(defectCounts.AGUJERO || (defects.AGUJERO || {}).evaluated || 0)}</strong>
+      </p>
+    `);
+
+    const defectRows = ["MANCHA", "AGUJERO"]
+      .filter((key) => defects[key])
+      .map((key) => {
+        const row = defects[key];
+        const label = (defects.labels || {})[key] || key;
+        const detected =
+          row.detected === null || row.detected === undefined
+            ? "s/d"
+            : Number(row.detected);
+        const missed =
+          row.missed === null || row.missed === undefined
+            ? "s/d"
+            : Number(row.missed);
+
+        return `
+          <tr>
+            <td>${esc(label)}</td>
+            <td>${Number(row.evaluated || 0)}</td>
+            <td>${detected}</td>
+            <td>${missed}</td>
+          </tr>`;
+      })
+      .join("");
+
+    if (defectRows) {
+      html.push(`
+        <table class="val-table">
+          <thead>
+            <tr>
+              <th>Defecto (detalle humano)</th><th>Casos evaluados</th>
+              <th>Detectados como anomalía</th><th>No detectados</th>
+            </tr>
+          </thead>
+          <tbody>${defectRows}</tbody>
+        </table>
+        <p class="val-defect-detail">
+          PatchCore no clasifica el tipo de defecto: sólo decide BUENA
+          frente a DEFECTUOSA. Esta tabla es el detalle para la tesis.
+        </p>
+      `);
+    }
+
+    if (metrics.best_threshold !== null && metrics.best_threshold !== undefined) {
+      html.push(`
+        <div class="ai-capture-notice warn">
+          Threshold candidato (todavía NO aplicado):
+          <strong>${esc(scoreLabel(metrics.best_threshold))}</strong>.
+          La definición del umbral definitivo y la activación son
+          acciones posteriores.
+        </div>
+      `);
+    }
+
+    if (metrics.candidates && metrics.candidates.length) {
+      const rows = metrics.candidates
+        .slice(0, 12)
+        .map((c) => `
+          <tr>
+            <td>${scoreLabel(c.threshold)}</td>
+            <td>${Number(c.fp || 0)}</td>
+            <td>${Number(c.fn || 0)}</td>
+            <td>${c.precision === null || c.precision === undefined ? "s/d" : Number(c.precision).toFixed(3)}</td>
+            <td>${c.recall === null || c.recall === undefined ? "s/d" : Number(c.recall).toFixed(3)}</td>
+            <td>${c.specificity === null || c.specificity === undefined ? "s/d" : Number(c.specificity).toFixed(3)}</td>
+            <td>${c.f1 === null || c.f1 === undefined ? "s/d" : Number(c.f1).toFixed(3)}</td>
+          </tr>`)
+        .join("");
+
+      html.push(`
+        <table class="val-table">
+          <thead>
+            <tr>
+              <th>Threshold</th><th>FP</th><th>FN</th>
+              <th>Precisión</th><th>Recall</th><th>Espec.</th><th>F1</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `);
+    }
+
+    metricsEl.innerHTML = html.join("");
+  }
+
+  function renderCases() {
+    if (!state.cases) return;
+
+    if (!state.cases.length) {
+      if (casesBodyEl) casesBodyEl.innerHTML = "";
+      if (thumbsEl) thumbsEl.innerHTML = "";
+      if (casesWrapEl) casesWrapEl.hidden = true;
+      if (casesEmptyEl) casesEmptyEl.hidden = false;
+      return;
+    }
+
+    if (casesEmptyEl) casesEmptyEl.hidden = true;
+    if (casesWrapEl) casesWrapEl.hidden = false;
+
+    if (casesBodyEl) {
+      casesBodyEl.innerHTML = state.cases
+        .map((item) => `
+          <tr>
+            <td>${esc(classificationOf(item))}</td>
+            <td>${esc(scoreLabel(item.anomaly_score))}</td>
+            <td>${esc(state.version)}</td>
+            <td>${esc(item.result_label || "Pendiente de calibración")}</td>
+            <td>${esc(item.validation_cohort || "Validación")}</td>
+            <td>${esc(item.created_at)}</td>
+            <td>
+              <a href="${esc(assetUrl(item.id, "original"))}">original</a>${
+                item.heatmap_path
+                  ? ` · <a href="${esc(assetUrl(item.id, "heatmap"))}">heatmap</a>` +
+                    ` · <a href="${esc(assetUrl(item.id, "comparison"))}">comparación</a>`
+                  : ""
+              }
+            </td>
+            ${caseActionsCell(item)}
+          </tr>`)
+        .join("");
+    }
+
+    renderThumbs();
+  }
+
+  function renderThumbs() {
+    if (!thumbsEl || !state.cases) return;
+
+    thumbsEl.innerHTML = state.cases
+      .slice(-4)
+      .map((item) => `
+        <div class="val-thumb">
+          <img src="${esc(assetUrl(item.id, "original"))}" alt="Caso de validación">
+          ${esc(classificationOf(item))}${
+            item.heatmap_path
+              ? ` · <a href="${esc(assetUrl(item.id, "comparison"))}">comparación</a>`
+              : ""
+          }
+        </div>`)
+      .join("");
+  }
+
+  function caseActionsCell(item) {
+    if (!config.canManage) return "";
+
+    if (!state.can_edit_cases) {
+      return '<td class="val-case-actions"></td>';
+    }
+
+    const estadoLabels = state.estado_labels || config.estadoLabels || {};
+    const tipoLabels = state.defect_type_labels || config.defectTypeLabels || {};
+    const estado = estadoOf(item);
+    const tipo = item.tipo_defecto || "";
+
+    const estadoOptions = (config.estados || [])
+      .map((key) => `
+        <option
+          value="${esc(key)}"
+          ${estado === key ? "selected" : ""}
+        >${esc(estadoLabels[key] || key)}</option>`)
+      .join("");
+
+    const tipoOptions = (config.defectTypes || [])
+      .map((key) => `
+        <option
+          value="${esc(key)}"
+          ${tipo === key ? "selected" : ""}
+        >${esc(tipoLabels[key] || key)}</option>`)
+      .join("");
+
+    return `
+      <td class="val-case-actions">
+        <select
+          data-case-estado="${esc(item.id)}"
+          aria-label="Estado real del caso ${esc(item.id)}"
+        >${estadoOptions}</select>
+        <select
+          data-case-tipo="${esc(item.id)}"
+          aria-label="Tipo de defecto del caso ${esc(item.id)}"
+          ${estado === "DEFECTUOSA" ? "" : "hidden"}
+        >
+          <option value="">— Tipo —</option>${tipoOptions}
+        </select>
+        <button
+          type="button"
+          class="detail-button"
+          data-action="update"
+          data-case-id="${esc(item.id)}"
+        >Editar clasificación real</button>
+        <button
+          type="button"
+          class="detail-button"
+          data-action="delete"
+          data-case-id="${esc(item.id)}"
+        >Eliminar caso de validación</button>
+      </td>`;
+  }
+
+  function renderResult(item) {
+    if (!resultEl) return;
+
+    if (!item) {
+      resultEl.hidden = true;
+      resultEl.innerHTML = "";
+      return;
+    }
+
+    resultEl.hidden = false;
+    resultEl.innerHTML = `
+      <div class="val-result">
+        <div>
+          <span class="detail-label">Clasificación real</span>
+          <span class="detail-value">${esc(classificationOf(item))}</span>
+        </div>
+        <div>
+          <span class="detail-label">Score de anomalía</span>
+          <span class="detail-value">${esc(scoreLabel(item.anomaly_score))}</span>
+        </div>
+        <div>
+          <span class="detail-label">Modelo</span>
+          <span class="detail-value">${esc(item.version || state.version)}</span>
+        </div>
+        <div>
+          <span class="detail-label">Resultado</span>
+          <span class="detail-value">${esc(item.result_label || "Pendiente de calibración")}</span>
+        </div>
+      </div>
+      ${
+        item.comparison_path
+          ? `<div class="val-thumbs">
+               <div class="val-thumb">
+                 <a href="${esc(assetUrl(item.id, "comparison"))}">
+                   <img src="${esc(assetUrl(item.id, "comparison"))}" alt="Comparación original y heatmap">
+                 </a>
+                 ORIGINAL | HEATMAP
+               </div>
+             </div>`
+          : ""
+      }
+    `;
+  }
+
+  function applyState(next) {
+    if (!next) return;
+    state = Object.assign({}, state, next);
+    renderStatus();
+    renderCounts();
+    renderMetrics();
+    renderCases();
+    renderActions();
+  }
+
+  function post(url, payload) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payload || {})
+    }).then(async (response) => {
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || data.ok === false) {
+        throw new Error(
+          data.error || "La operación no pudo completarse."
+        );
+      }
+
+      return data;
+    });
+  }
+
+  if (bankExportBtn) {
+    bankExportBtn.addEventListener("click", async () => {
+      bankExportBtn.disabled = true;
+      if (bankMessageEl) bankMessageEl.textContent = "Actualizando…";
+      try {
+        const result = await post(config.urls.bankExport, {
+          garment_model_id: config.modelId,
+          ai_model_id: state.ai_model_id
+        });
+        const counts = result.bank.counts || {};
+        document.getElementById("bankBuenas").textContent = counts.buenas || 0;
+        document.getElementById("bankManchas").textContent = counts.manchas || 0;
+        document.getElementById("bankAgujeros").textContent = counts.agujeros || 0;
+        document.getElementById("bankTotal").textContent = counts.total || 0;
+        document.getElementById("bankSessions").textContent = (result.bank.source_validation_sessions || []).length;
+        document.getElementById("bankStatus").textContent = "Actualizado";
+        if (bankMessageEl) bankMessageEl.textContent = "Banco verificado y actualizado.";
+      } catch (error) {
+        document.getElementById("bankStatus").textContent = "Error de integridad";
+        if (bankMessageEl) bankMessageEl.textContent = error.message;
+      } finally {
+        bankExportBtn.disabled = false;
+      }
+    });
+  }
+
+  if (thresholdFreezeBtn) {
+    thresholdFreezeBtn.addEventListener("click", async () => {
+      thresholdFreezeBtn.disabled = true;
+      if (thresholdFreezeMessage) thresholdFreezeMessage.textContent = "Guardando congelación…";
+      try {
+        const result = await post(config.urls.freezeThreshold, {
+          garment_model_id: config.modelId,
+          ai_model_id: state.ai_model_id,
+          threshold_final: state.threshold_candidate,
+          provenance: "Candidato de la sesión EVALUADA; banco verificado. Threshold congelado antes de FINAL_TEST."
+        });
+        state.threshold_final = result.threshold.threshold_final;
+        state.threshold_frozen_at = result.threshold.frozen_at || null;
+        state.threshold_frozen_by = result.threshold.frozen_by || null;
+        state.threshold_provenance = result.threshold.provenance;
+        state.can_freeze_threshold = false;
+        renderStatus();
+        renderActions();
+        const label = document.getElementById("thresholdFinalLabel");
+        if (label) label.textContent = `Threshold definitivo: ${Number(state.threshold_final).toFixed(2)} · CONGELADO`;
+        if (thresholdFreezeMessage) thresholdFreezeMessage.textContent = "Threshold definitivo congelado. No podrá recalibrarse.";
+        const calibrationPanel = document.getElementById("thresholdCalibration");
+        if (calibrationPanel) calibrationPanel.hidden = true;
+      } catch (error) {
+        if (thresholdFreezeMessage) thresholdFreezeMessage.textContent = error.message;
+        thresholdFreezeBtn.disabled = false;
+      }
+    });
+  }
+
+  if (captureBtn) {
+    captureBtn.addEventListener("click", () => {
+      if (busy) return;
+      setMessage("");
+
+      const { estado, tipo } = currentCapture();
+
+      if (estado === "DEFECTUOSA" && !tipo) {
+        setMessage(
+          "Indique el tipo de defecto (Mancha o Agujero): no se puede "
+          + "guardar una prenda DEFECTUOSA sin su tipo.",
+          true
+        );
+        return;
+      }
+
+      setBusy(true);
+
+      post(config.urls.case, {
+        garment_model_id: config.modelId,
+        ai_model_id: state.ai_model_id,
+        estado_real: estado,
+        tipo_defecto: tipo,
+        observation: observationEl ? observationEl.value : ""
+      })
+        .then((data) => {
+          setMessage(data.message || "Caso registrado.", false);
+          applyState(data.validation);
+          renderResult(data.case);
+        })
+        .catch((error) => setMessage(error.message, true))
+        .finally(() => setBusy(false));
+    });
+  }
+
+  if (startBtn) {
+    startBtn.addEventListener("click", () => {
+      if (busy) return;
+      setMessage("");
+      setBusy(true);
+
+      post(config.urls.start, {
+        garment_model_id: config.modelId,
+        ai_model_id: state.ai_model_id
+      })
+        .then((data) => {
+          setMessage(data.message || "Validación iniciada.", false);
+          applyState(data.validation);
+          startBtn.hidden = true;
+          if (captureBtn) captureBtn.disabled = !state.can_capture;
+        })
+        .catch((error) => setMessage(error.message, true))
+        .finally(() => setBusy(false));
+    });
+  }
+
+  if (evaluateBtn) {
+    evaluateBtn.addEventListener("click", () => {
+      if (busy) return;
+      setMessage("");
+      setBusy(true);
+
+      post(config.urls.evaluate, {
+        garment_model_id: config.modelId,
+        ai_model_id: state.ai_model_id
+      })
+        .then((data) => {
+          setMessage(data.message || "Validación evaluada.", false);
+          applyState(data.validation);
+        })
+        .catch((error) => setMessage(error.message, true))
+        .finally(() => setBusy(false));
+    });
+  }
+
+  if (completeBtn) {
+    completeBtn.addEventListener("click", () => {
+      if (busy) return;
+
+      const confirmed = window.confirm(
+        "¿Marcar la versión como VALIDADA?\n\n" +
+        "Esto cierra la validación de esta versión. La activación es " +
+        "una acción posterior (FASE 3C)."
+      );
+
+      if (!confirmed) return;
+
+      setMessage("");
+      setBusy(true);
+
+      post(config.urls.complete, {
+        garment_model_id: config.modelId,
+        ai_model_id: state.ai_model_id
+      })
+        .then((data) => {
+          setMessage(data.message || "Validación completada.", false);
+          applyState(data.validation);
+        })
+        .catch((error) => setMessage(error.message, true))
+        .finally(() => setBusy(false));
+    });
+  }
+
+  if (casesBodyEl) {
+    casesBodyEl.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-action]");
+
+      if (!button || busy || !state.can_edit_cases) return;
+
+      const action = button.getAttribute("data-action");
+      const caseId = Number(button.getAttribute("data-case-id"));
+
+      if (!Number.isFinite(caseId)) return;
+
+      const estadoSelect = casesBodyEl.querySelector(
+        `select[data-case-estado="${caseId}"]`
+      );
+      const tipoSelect = casesBodyEl.querySelector(
+        `select[data-case-tipo="${caseId}"]`
+      );
+      const classificationLabels =
+        state.classification_labels || config.classificationLabels || {};
+
+      if (action === "update") {
+        const nextEstado = estadoSelect ? estadoSelect.value : "";
+        const nextTipo =
+          nextEstado === "DEFECTUOSA" && tipoSelect && tipoSelect.value
+            ? tipoSelect.value
+            : null;
+
+        if (!nextEstado) {
+          setMessage("Seleccione el estado real de la prenda.", true);
+          return;
+        }
+
+        if (nextEstado === "DEFECTUOSA" && !nextTipo) {
+          setMessage(
+            "Indique el tipo de defecto (Mancha o Agujero).",
+            true
+          );
+          return;
+        }
+
+        const previewLabel =
+          classificationLabels[
+            nextEstado === "DEFECTUOSA" ? nextTipo : "NORMAL"
+          ] || nextEstado;
+
+        const confirmed = window.confirm(
+          "¿Guardar la clasificación real de este caso como " +
+          `${previewLabel}?\n\n` +
+          "Solo se corrige la etiqueta humana: la imagen, el score y " +
+          "los artefactos NO cambian. Las métricas de la sesión " +
+          "quedan invalidadas y deberá evaluarlas de nuevo."
+        );
+
+        if (!confirmed) return;
+
+        setMessage("");
+        setBusy(true);
+
+        post(config.urls.caseUpdate, {
+          garment_model_id: config.modelId,
+          ai_model_id: state.ai_model_id,
+          case_id: caseId,
+          estado_real: nextEstado,
+          tipo_defecto: nextTipo
+        })
+          .then((data) => {
+            setMessage(
+              data.message || "Clasificación real actualizada.",
+              false
+            );
+            applyState(data.validation);
+          })
+          .catch((error) => setMessage(error.message, true))
+          .finally(() => setBusy(false));
+
+        return;
+      }
+
+      if (action === "delete") {
+        const confirmed = window.confirm(
+          "¿Eliminar este caso de validación?\n\n" +
+          "Reserve esta acción para errores operativos claros (imagen " +
+          "equivocada o captura fallida). El caso y sus artefactos se " +
+          "borran de forma definitiva; el entrenamiento y las demás " +
+          "versiones no se tocan."
+        );
+
+        if (!confirmed) return;
+
+        setMessage("");
+        setBusy(true);
+
+        post(config.urls.caseDelete, {
+          garment_model_id: config.modelId,
+          ai_model_id: state.ai_model_id,
+          case_id: caseId
+        })
+          .then((data) => {
+            setMessage(data.message || "Caso de validación eliminado.", false);
+            applyState(data.validation);
+          })
+          .catch((error) => setMessage(error.message, true))
+          .finally(() => setBusy(false));
+      }
+    });
+
+    // Al pasar a DEFECTUOSA se obliga a elegir el tipo de defecto.
+    casesBodyEl.addEventListener("change", (event) => {
+      const estadoSelect = event.target.closest(
+        "select[data-case-estado]"
+      );
+
+      if (!estadoSelect) return;
+
+      const tipoSelect = casesBodyEl.querySelector(
+        `select[data-case-tipo="${estadoSelect.getAttribute("data-case-estado")}"]`
+      );
+
+      if (!tipoSelect) return;
+
+      const defective = estadoSelect.value === "DEFECTUOSA";
+      tipoSelect.hidden = !defective;
+
+      if (!defective) tipoSelect.value = "";
+    });
+  }
+
+  if (frameEl) {
+    setInterval(() => {
+      if (document.hidden) return;
+      frameEl.src =
+        config.urls.frame + "?t=" + Date.now();
+    }, 1500);
+  }
+
+  renderActions();
+  renderStatus();
+})();
+</script>
+{% if validation.final_test %}
+<script>
+(() => {
+  const cfg = window.ASTRID_AI_VALIDATION;
+  if (!cfg) return;
+  let finalState = (cfg.state || {}).final_test || {};
+  const start = document.getElementById("finalTestStart");
+  const capture = document.getElementById("finalTestCapture");
+  const evaluate = document.getElementById("finalTestEvaluate");
+  const category = document.getElementById("finalTestCategory");
+  const message = document.getElementById("finalTestMessage");
+  const postJson = async (url, payload) => {
+    const response = await fetch(url, {
+      method: "POST", credentials: "same-origin",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) throw new Error(data.error || "La operación FINAL_TEST falló.");
+    return data;
+  };
+  const asset = (id, kind) => `${cfg.urls.finalTestAsset}?case_id=${id}&kind=${kind}`;
+  function render() {
+    const counts = finalState.counts || {BUENA: 0, MANCHA: 0, total: 0};
+    document.getElementById("finalGoodCount").textContent = `${counts.BUENA || 0} / 10`;
+    document.getElementById("finalStainCount").textContent = `${counts.MANCHA || 0} / 10`;
+    document.getElementById("finalTotalCount").textContent = `${counts.total || 0} / 20`;
+    document.getElementById("finalTestState").textContent = finalState.started
+      ? `FINAL_TEST ${finalState.status_label || "EN CURSO"} · ${finalState.created_at || ""} · responsable usuario ${finalState.created_by || ""} · threshold ${Number(finalState.threshold_fixed).toFixed(2)} · ${finalState.preprocessing_profile || ""}`
+      : "Cohorte FINAL_TEST vacía (0 casos). Los registros históricos no se copian.";
+    document.getElementById("finalTestStatus").textContent = finalState.status_label || "INACTIVA";
+    if (start) start.disabled = !!finalState.started;
+    if (capture) capture.disabled = !finalState.started || finalState.status !== "ABIERTA" || (counts.total || 0) >= 20;
+    if (evaluate) evaluate.disabled = !finalState.ready_to_evaluate || !!finalState.metrics;
+    const tbody = document.getElementById("finalTestCases");
+    tbody.innerHTML = (finalState.cases || []).map((item) => `
+      <tr><td>${item.category === "NORMAL" ? "BUENA" : "DEFECTUOSA → MANCHA"}</td>
+      <td>${Number(item.anomaly_score).toFixed(2)}</td>
+      <td>${item.prediction === "MANCHA" ? "DEFECTUOSA" : "BUENA"}</td>
+      <td>${item.correct ? "CORRECTO" : "INCORRECTO"}</td><td>${item.created_at || ""}</td>
+      <td><a href="${asset(item.id, "original")}">original</a>${item.heatmap_path ? ` · <a href="${asset(item.id, "heatmap")}">heatmap</a>` : ""}</td></tr>`).join("");
+    const metrics = finalState.metrics;
+    document.getElementById("finalTestMetrics").innerHTML = metrics ?
+      `<p>TP ${metrics.tp} · TN ${metrics.tn} · FP ${metrics.fp} · FN ${metrics.fn}</p>` +
+      `<p>Precisión ${metrics.precision ?? "s/d"} · Recall ${metrics.recall ?? "s/d"} · Especificidad ${metrics.specificity ?? "s/d"} · F1 ${metrics.f1 ?? "s/d"}</p>` +
+      `<p>Matriz de confusión: ${JSON.stringify(metrics.confusion_matrix)}</p>` : "";
+  }
+  async function act(button, operation) {
+    if (!button) return;
+    button.disabled = true;
+    if (message) message.textContent = "Procesando…";
+    try {
+      const response = await operation();
+      finalState = response.final_test || finalState;
+      if (response.metrics) finalState.metrics = response.metrics;
+      if (message) message.textContent = "FINAL_TEST actualizado. Threshold y modelo permanecen intactos.";
+      render();
+    } catch (error) {
+      if (message) message.textContent = error.message;
+      button.disabled = false;
+    }
+  }
+  if (start) start.addEventListener("click", () => act(start, () => postJson(cfg.urls.finalTestStart, {garment_model_id: cfg.modelId, ai_model_id: cfg.state.ai_model_id})));
+  if (capture) capture.addEventListener("click", () => act(capture, () => postJson(cfg.urls.finalTestCase, {garment_model_id: cfg.modelId, ai_model_id: cfg.state.ai_model_id, category: category.value})));
+    if (evaluate) evaluate.addEventListener("click", () => act(evaluate, () => postJson(cfg.urls.finalTestEvaluate, {garment_model_id: cfg.modelId, ai_model_id: cfg.state.ai_model_id})));
+  const camera = document.getElementById("finalTestFrame");
+  if (camera) setInterval(() => {
+    if (!document.hidden) camera.src = cfg.urls.frame + "?t=" + Date.now();
+  }, 1500);
+  render();
+})();
+</script>
+{% endif %}
+{% endblock %}

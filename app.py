@@ -1,4 +1,15 @@
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash, Response
+from flask import (
+    Flask,
+    render_template,
+    request,
+    redirect,
+    url_for,
+    session,
+    jsonify,
+    flash,
+    Response,
+    send_file,
+)
 from werkzeug.security import generate_password_hash, check_password_hash
 from pathlib import Path
 from datetime import datetime
@@ -6,14 +17,84 @@ from dotenv import load_dotenv
 from urllib.parse import quote
 from patchcore_inference import PatchCoreInspector
 import os
+import base64
 import time
 import uuid
+import json
 import threading
 from functools import wraps
 import io
 from zoneinfo import ZoneInfo
 
 import mysql.connector
+
+from ai_domain import (
+    AIDomainError,
+    CAPTURE_UI_STATE_LABELS,
+    atomic_write_bytes,
+    capture_image_relative_path,
+    capture_progress_gate,
+    capture_session_status_payload,
+    cancel_ai_capture_session,
+    claim_frame_sequence,
+    count_session_images,
+    ensure_ai_schema,
+    ensure_capture_session_dirs,
+    find_accepted_sha256,
+    get_ai_capture_config,
+    get_capture_session,
+    get_open_capture_session,
+    humanize_capture_error,
+    humanize_reject_reason,
+    is_technically_invalidated,
+    load_session_accepted_hashes,
+    next_garment_model_code,
+    record_ai_event,
+    register_training_image,
+    prepare_normal_augmentation_version,
+    prepare_normal_v2_version,
+    normal_augmentation_summary,
+    validate_normal_v2_capture_confirmation,
+    resolve_capture_ui_state,
+    resolve_under_root,
+    sha256_bytes,
+    start_ai_capture_session,
+    stop_ai_capture_session,
+    resolve_validation_category,
+    VALIDATION_CATEGORIES,
+    VALIDATION_DEFECT_TYPES,
+    VALIDATION_DEFECT_TYPE_LABELS,
+    VALIDATION_ESTADO_LABELS,
+    VALIDATION_ESTADOS,
+    VALIDATION_MODEL_STATUSES,
+    get_ai_artifacts_root,
+)
+import ai_validation
+import ai_capture
+import patchcore_preprocess
+from ai_capture import (
+    GUIDED_MESSAGES,
+    GUIDED_STATE_COLORS,
+    GUIDED_VALID_STATES,
+    GuidedTracker,
+    assert_production_allowed,
+    compute_sharpness,
+    compute_dhash_64,
+    ensure_ai_capture_can_start,
+    evaluate_candidate,
+    get_ai_guided_config,
+    is_ai_capture_mode_active,
+    mask_bbox,
+    reset_presence_candidate,
+    set_ai_capture_mode,
+    set_production_probe,
+)
+from ai_training import (
+    cancel_pending_training_job,
+    humanize_training_error,
+    request_training_job,
+    training_status_payload,
+)
 
 
 load_dotenv()
@@ -51,19 +132,17 @@ PATCHCORE_MAX_BOX_RATIO = float(
     os.getenv("PATCHCORE_MAX_BOX_RATIO", "0.15")
 )
 
+# Compatibilidad histórica: se conservan las variables globales para
+# utilidades y pruebas antiguas, pero la estación productiva ya NO carga
+# este checkpoint al iniciar. Cada lote resuelve su versión ACTIVA desde
+# garment_ai_models mediante resolve_active_production_ai_runtime().
 patchcore_inspector = None
 
 if PATCHCORE_CKPT:
-    try:
-        patchcore_inspector = PatchCoreInspector(
-            PATCHCORE_CKPT,
-            image_size=PATCHCORE_IMAGE_SIZE,
-        )
-        print("[PATCHCORE] Modelo preparado para inspección.")
-    except Exception as error:
-        print(f"[PATCHCORE] No se pudo preparar el modelo: {error}")
-else:
-    print("[PATCHCORE] PATCHCORE_CKPT no está configurado.")
+    print(
+        "[PATCHCORE] PATCHCORE_CKPT global configurado, pero no se carga "
+        "en producción; se utilizará la versión IA enlazada al lote activo."
+    )
 
 try:
     import cv2
@@ -87,6 +166,15 @@ RESULT_DIR = ROOT / "static" / "results"
 MODEL_DIR = ROOT / "models"
 MODEL_PATH = MODEL_DIR / "best.pt"
 
+# Experimento de latencia: candidatos 40/45/50 solo benchmark.
+# Default false => no se copian frames extra ni se escribe a disco.
+FRAME_SELECTION_BENCHMARK = str(
+    os.getenv("FRAME_SELECTION_BENCHMARK", "false")
+).strip().lower() in ("1", "true", "yes", "on")
+
+BENCHMARK_FRAMES_DIR = ROOT / "benchmark_frames"
+BENCHMARK_COVERAGE_LEVELS = (0.40, 0.45, 0.50)
+
 DB_NAME = os.environ.get("MYSQL_DATABASE", "textile_quality_db")
 DB_HOST = os.environ.get("MYSQL_HOST", "127.0.0.1")
 DB_PORT = int(os.environ.get("MYSQL_PORT", "3306"))
@@ -104,8 +192,19 @@ DEFECT_TYPES = [
 GARMENTS = ["Blusa", "Top corto", "Camisa cropped"]
 SIZES = ["S"]
 
+# protege el manejador VideoCapture (open/read/release del worker)
 camera_lock = threading.Lock()
+
+# protege latest_frame / timestamp / sequence (consumidores)
+latest_frame_lock = threading.Lock()
 latest_camera_frame = None
+latest_frame_timestamp_monotonic = None
+latest_frame_sequence = 0
+
+CAMERA_CAPTURE_WORKER = None
+CAMERA_CAPTURE_WORKER_LOCK = threading.Lock()
+CAMERA_CAPTURE_WORKER_STARTED = False
+CAMERA_FORCE_REOPEN = False
 yolo_model = None
 
 app = Flask(__name__)
@@ -391,6 +490,13 @@ def init_db():
         "activated_at DATETIME NULL AFTER validated_at",
     )
 
+    # ========================================================
+    # FASE 1 — PREPARACIÓN Y VERSIONADO DE IA
+    # Tablas de dominio, extensiones de garment_ai_models,
+    # constraint de un solo ACTIVO e inmutabilidad de datasets.
+    # ========================================================
+    ensure_ai_schema(cur, DB_NAME, ensure_column=ensure_column)
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS inspections (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -636,11 +742,16 @@ def init_db():
         ("L\u00ednea 2",),
     )
 
-    admin_username = os.getenv("ADMIN_USERNAME", "admin")
-    admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
+    admin_username = os.getenv("ADMIN_USERNAME", "admin").strip() or "admin"
 
     cur.execute("SELECT id FROM users WHERE username = %s", (admin_username,))
     if cur.fetchone() is None:
+        admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
+        if len(admin_password) < 12:
+            raise RuntimeError(
+                "ADMIN_PASSWORD es obligatorio para crear el administrador inicial "
+                "y debe tener al menos 12 caracteres."
+            )
         cur.execute(
             "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)",
             (admin_username, generate_password_hash(admin_password), "ADMIN"),
@@ -1190,12 +1301,61 @@ print(
     f"{CAMERA_USER}@{CAMERA_IP}:{CAMERA_RTSP_PORT} "
     f"canal={CAMERA_CHANNEL}, flujo={CAMERA_SUBTYPE}"
 )
+print(
+    "[CAMARA] IP .env="
+    f"{CAMERA_IP} | URL="
+    f"rtsp://{CAMERA_USER_ENCODED}:***"
+    f"@{CAMERA_IP}:{CAMERA_RTSP_PORT}"
+    f"/cam/realmonitor?channel={CAMERA_CHANNEL}"
+    f"&subtype={CAMERA_SUBTYPE}"
+)
 
 AUTO_INSPECTION_ENABLED = False
 AUTO_THREAD = None
 AUTO_LAST_RESULT = None
 AUTO_LAST_ERROR = None
 AUTO_LAST_CAPTURE_TIME = 0
+
+# ------------------------------------------------------------
+# FASE 2A — modo preparación IA (mutex con producción)
+# ------------------------------------------------------------
+AI_CAPTURE_THREAD = None
+AI_CAPTURE_THREAD_LOCK = threading.Lock()
+AI_CAPTURE_WORKER_ENABLED = False
+AI_CAPTURE_RUNTIME = {
+    "session_id": None,
+    "garment_model_id": None,
+    "target_ai_model_id": None,
+    "config": None,
+    "known_sha256": set(),
+    "known_dhashes": [],
+    "presence": None,
+    "waiting_for_exit": False,
+    "exit_frames": 0,
+    "last_sequence": -1,
+    "last_persisted_token": None,
+    "last_error": None,
+    "last_result": None,
+}
+
+# ------------------------------------------------------------
+# FASE 2C — estación guiada de captura (mismo candado que el
+# worker simple: nunca corren los dos a la vez).
+# ------------------------------------------------------------
+AI_GUIDED_ACTIVE = False
+AI_GUIDED_ENABLED = False
+AI_GUIDED_THREAD = None
+AI_GUIDED_RUNTIME = {
+    "garment_model_id": None,
+    "session_id": None,
+    "guide": None,
+    "tracker": None,
+    "tracker_model_id": None,
+    "last_error": None,
+    "pending_capture": None,
+}
+
+set_production_probe(lambda: bool(AUTO_INSPECTION_ENABLED))
 
 AUTO_COOLDOWN_SECONDS = float(os.getenv("AUTO_COOLDOWN_SECONDS", "4"))
 AUTO_MOTION_THRESHOLD = int(os.getenv("AUTO_MOTION_THRESHOLD", "18000"))
@@ -1249,6 +1409,371 @@ AUTO_GARMENT_MAX_TRACK_FRAMES = int(
     )
 )
 
+# ------------------------------------------------------------
+# Identidad temporal de prenda (Fase 3) + latencia (Fase 2).
+# Solo en memoria y logging: no se persiste en BD todavía.
+# ------------------------------------------------------------
+GARMENT_TOKEN_LOCK = threading.Lock()
+GARMENT_TOKEN_SEQ = 0
+
+
+def next_garment_token():
+    """Token secuencial único por ciclo de presencia de prenda."""
+    global GARMENT_TOKEN_SEQ
+    with GARMENT_TOKEN_LOCK:
+        GARMENT_TOKEN_SEQ += 1
+        return GARMENT_TOKEN_SEQ
+
+
+# ------------------------------------------------------------
+# Timeline por garment_token (experimento de latencia).
+# perf_counter para duraciones; time.time() para correlación.
+# ------------------------------------------------------------
+TIMELINE_LOCK = threading.Lock()
+TIMELINE_EVENTS = {}
+
+
+def timeline_mark(token, event):
+    """Registra el PRIMER cruce de un evento para el token."""
+    if token is None or not event:
+        return
+
+    snapshot = {
+        "perf": time.perf_counter(),
+        "wall_ms": int(time.time() * 1000),
+    }
+
+    with TIMELINE_LOCK:
+        bucket = TIMELINE_EVENTS.setdefault(token, {})
+        if event in bucket:
+            return
+        bucket[event] = snapshot
+
+
+def _timeline_delta_ms(token, from_event, to_event):
+    with TIMELINE_LOCK:
+        bucket = TIMELINE_EVENTS.get(token) or {}
+        start = bucket.get(from_event)
+        end = bucket.get(to_event)
+
+    if start is None or end is None:
+        return None
+
+    return (end["perf"] - start["perf"]) * 1000.0
+
+
+def log_timeline(token):
+    """Emite el bloque [TIMELINE] de una prenda."""
+    if token is None:
+        return
+
+    with TIMELINE_LOCK:
+        bucket = dict(TIMELINE_EVENTS.get(token) or {})
+
+    def fmt(value):
+        if value is None:
+            return "n/a"
+        return f"{float(value):.1f}"
+
+    detect = "garment_detected"
+
+    lines = [
+        f"[TIMELINE] token={token}",
+        (
+            "detect_to_40_ms="
+            + fmt(_timeline_delta_ms(token, detect, "coverage_40_reached"))
+        ),
+        (
+            "detect_to_45_ms="
+            + fmt(_timeline_delta_ms(token, detect, "coverage_45_reached"))
+        ),
+        (
+            "detect_to_50_ms="
+            + fmt(_timeline_delta_ms(token, detect, "coverage_50_reached"))
+        ),
+        (
+            "frame_selection_ms="
+            + fmt(_timeline_delta_ms(token, detect, "frame_selected"))
+        ),
+        (
+            "preprocess_ms="
+            + fmt(_timeline_delta_ms(token, "preprocess_start", "preprocess_end"))
+        ),
+        (
+            "inference_ms="
+            + fmt(_timeline_delta_ms(token, "inference_start", "inference_end"))
+        ),
+        (
+            "detect_to_decision_ms="
+            + fmt(_timeline_delta_ms(token, detect, "decision_ready"))
+        ),
+        (
+            "decision_to_alert_ms="
+            + fmt(_timeline_delta_ms(token, "decision_ready", "alert_emitted"))
+        ),
+        (
+            "detect_to_alert_ms="
+            + fmt(_timeline_delta_ms(token, detect, "alert_emitted"))
+        ),
+        (
+            "total_ms="
+            + fmt(_timeline_delta_ms(token, detect, "inspection_complete"))
+        ),
+    ]
+
+    print("\n".join(lines), flush=True)
+
+
+def reset_timeline(token):
+    if token is None:
+        return
+    with TIMELINE_LOCK:
+        TIMELINE_EVENTS.pop(token, None)
+
+
+def persist_benchmark_frames(
+    garment_token,
+    frames_by_level,
+    production_result=None,
+    production_score=None,
+    batch_id=None,
+    batch_position=None,
+):
+    """
+    Escribe candidatos 40/45/50 SOLO después de la inspección
+    productiva. No participa en la decisión.
+    """
+    if not FRAME_SELECTION_BENCHMARK:
+        return
+    if not frames_by_level or garment_token is None:
+        return
+
+    try:
+        out_dir = BENCHMARK_FRAMES_DIR / f"token_{garment_token}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        coverages = {}
+        for level, payload in frames_by_level.items():
+            pct = int(round(float(level) * 100))
+            frame = payload.get("frame")
+            if frame is None:
+                continue
+            path = out_dir / f"coverage_{pct}.jpg"
+            if not cv2.imwrite(str(path), frame):
+                print(
+                    "[BENCHMARK] No se pudo escribir "
+                    f"{path}",
+                    flush=True,
+                )
+                continue
+            coverages[str(pct)] = float(payload.get("coverage") or 0.0)
+
+        metadata = {
+            "token": garment_token,
+            "batch_id": batch_id,
+            "batch_position": batch_position,
+            "coverages": coverages,
+            "production_result": production_result,
+            "production_score": production_score,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "server_emitted_at_ms": int(time.time() * 1000),
+        }
+
+        meta_path = out_dir / "metadata.json"
+        meta_path.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        print(
+            "[BENCHMARK] Candidatos persistidos "
+            f"token={garment_token} dir={out_dir}",
+            flush=True,
+        )
+    except Exception as error:
+        print(
+            "[BENCHMARK] Error al persistir "
+            f"token={garment_token}: {error}",
+            flush=True,
+        )
+
+
+# ------------------------------------------------------------
+# Eventos de alarma de calidad en memoria (para SSE/polling).
+# No se persisten en BD. Se publican en el instante de la
+# decisión, antes de imagen/BD.
+# ------------------------------------------------------------
+QUALITY_ALERT_LOCK = threading.Lock()
+QUALITY_ALERT_SEQ = 0
+QUALITY_ALERT_EVENTS = []
+
+
+def publish_quality_alert_event(
+    garment_token,
+    confidence=None,
+    zone=None,
+    defect_type=None,
+    source="auto",
+):
+    """Publica un evento único de anomalía para el navegador."""
+    global QUALITY_ALERT_SEQ
+
+    with QUALITY_ALERT_LOCK:
+        QUALITY_ALERT_SEQ += 1
+        event = {
+            "alert_id": f"ae{QUALITY_ALERT_SEQ}",
+            "event_id": f"ae{QUALITY_ALERT_SEQ}",
+            "seq": QUALITY_ALERT_SEQ,
+            "token": garment_token,
+            "garment_token": garment_token,
+            "result": "ANOMALIA",
+            "confidence": confidence,
+            "zone": zone,
+            "defect_type": defect_type,
+            "source": source,
+            "batch_id": None,
+            "batch_position": None,
+            "code": None,
+            "ts": time.time(),
+            "server_emitted_at_ms": int(time.time() * 1000),
+        }
+        QUALITY_ALERT_EVENTS.append(event)
+        if len(QUALITY_ALERT_EVENTS) > 80:
+            del QUALITY_ALERT_EVENTS[: len(QUALITY_ALERT_EVENTS) - 80]
+        return dict(event)
+
+
+def enrich_quality_alert_event(
+    garment_token,
+    batch_id=None,
+    batch_position=None,
+    code=None,
+):
+    """
+    Completa posición/código tras el INSERT sin crear un nuevo
+    alert_id (el navegador no vuelve a sonar; solo puede refrescar
+    la alerta visual).
+    """
+    if garment_token is None:
+        return
+
+    global QUALITY_ALERT_SEQ
+
+    with QUALITY_ALERT_LOCK:
+        for event in reversed(QUALITY_ALERT_EVENTS):
+            if event.get("token") == garment_token:
+                if batch_id is not None:
+                    event["batch_id"] = batch_id
+                if batch_position is not None:
+                    event["batch_position"] = batch_position
+                if code is not None:
+                    event["code"] = code
+
+                update = dict(event)
+                QUALITY_ALERT_SEQ += 1
+                update["seq"] = QUALITY_ALERT_SEQ
+                update["enriched"] = True
+                QUALITY_ALERT_EVENTS.append(update)
+                if len(QUALITY_ALERT_EVENTS) > 80:
+                    del QUALITY_ALERT_EVENTS[
+                        : len(QUALITY_ALERT_EVENTS) - 80
+                    ]
+                break
+
+
+def get_quality_alerts_after(after_seq):
+    """Devuelve eventos con seq > after_seq (orden ascendente)."""
+    with QUALITY_ALERT_LOCK:
+        return [
+            dict(event)
+            for event in QUALITY_ALERT_EVENTS
+            if int(event.get("seq") or 0) > int(after_seq or 0)
+        ]
+
+
+def current_quality_alert_seq():
+    with QUALITY_ALERT_LOCK:
+        return QUALITY_ALERT_SEQ
+
+
+def trigger_quality_alert(
+    garment_token,
+    confidence=None,
+    zone=None,
+    defect_type=None,
+    source="auto",
+):
+    """
+    Punto único de alerta de calidad.
+
+    Se invoca INMEDIATAMENTE después de conocer ANOMALIA y ANTES de
+    persistencia secundaria (imagen de resultado, MySQL, contadores).
+    Publica el evento en memoria para que el navegador pueda sonar
+    sin esperar BD.
+    """
+    publish_quality_alert_event(
+        garment_token=garment_token,
+        confidence=confidence,
+        zone=zone,
+        defect_type=defect_type,
+        source=source,
+    )
+    timeline_mark(garment_token, "alert_emitted")
+
+    confidence_text = (
+        f"{confidence}"
+        if confidence is not None
+        else "n/a"
+    )
+    print(
+        "[ALERT] "
+        f"token={garment_token} "
+        "result=ANOMALIA "
+        f"confidence={confidence_text} "
+        f"zone={zone or 'n/a'} "
+        f"defect_type={defect_type or 'n/a'} "
+        f"source={source}",
+        flush=True,
+    )
+
+
+def log_latency_metrics(
+    garment_token,
+    metrics,
+    ai_decision,
+    batch_id=None,
+    batch_position=None,
+    source="auto",
+):
+    """Emite la línea [LATENCY] de una inspección completa."""
+    if not metrics:
+        return
+
+    def _ms(key):
+        value = metrics.get(key)
+        if value is None:
+            return "n/a"
+        return f"{float(value):.1f}"
+
+    print(
+        "[LATENCY] "
+        f"token={garment_token} "
+        f"decision_ms={_ms('decision_ms')} "
+        f"total_ms={_ms('total_complete_ms')} "
+        f"inference_ms={_ms('inference_ms')} "
+        f"capture_ms={_ms('capture_ms')} "
+        f"frame_selection_ms={_ms('frame_selection_ms')} "
+        f"preprocess_ms={_ms('preprocess_ms')} "
+        f"postprocess_ms={_ms('postprocess_ms')} "
+        f"image_storage_ms={_ms('image_storage_ms')} "
+        f"database_ms={_ms('database_ms')} "
+        f"batch_id={batch_id if batch_id is not None else 'n/a'} "
+        f"batch_position={batch_position if batch_position is not None else 'n/a'} "
+        f"source={source} "
+        f"result={ai_decision}",
+        flush=True,
+    )
+
 
 ROI_X1 = float(os.getenv("ROI_X1", "0.10"))
 ROI_Y1 = float(os.getenv("ROI_Y1", "0.10"))
@@ -1285,6 +1810,15 @@ CAMERA_READ_TIMEOUT_MS = int(
 CAMERA_RECONNECTING = False
 CAMERA_RECONNECT_LOCK = threading.Lock()
 CAMERA_CURRENT_IP = CAMERA_IP
+
+CAMERA_LATENCY_LOG_LOCK = threading.Lock()
+CAMERA_LATENCY_LAST_LOG = {}
+CAMERA_LATENCY_LOG_INTERVAL_S = float(
+    os.getenv("CAMERA_LATENCY_LOG_INTERVAL_S", "2.0")
+)
+CAMERA_READ_FAIL_RELEASE_LIMIT = int(
+    os.getenv("CAMERA_READ_FAIL_RELEASE_LIMIT", "3")
+)
 
 CAMERA_DISCOVERY_ENABLED = (
     os.getenv(
@@ -1623,12 +2157,110 @@ def parse_camera_source(source):
     return source
 
 
+def log_camera_latency(source, sequence, timestamp_monotonic):
+    """
+    Log limitado de edad del frame. No escribe en BD.
+    """
+    if timestamp_monotonic is None:
+        return
+
+    now = time.perf_counter()
+
+    with CAMERA_LATENCY_LOG_LOCK:
+        last = CAMERA_LATENCY_LAST_LOG.get(source, 0.0)
+        if (now - last) < CAMERA_LATENCY_LOG_INTERVAL_S:
+            return
+        CAMERA_LATENCY_LAST_LOG[source] = now
+
+    frame_age_ms = (now - timestamp_monotonic) * 1000.0
+    print(
+        "[CAMERA_LATENCY]\n"
+        f"sequence={sequence}\n"
+        f"frame_age_ms={frame_age_ms:.1f}\n"
+        f"source={source}",
+        flush=True,
+    )
+
+
+def get_latest_camera_frame():
+    """
+    Copia thread-safe del frame más reciente.
+    NO llama cap.read(). No mantiene lock durante procesamiento.
+    Devuelve: (frame|None, timestamp_monotonic|None, sequence:int)
+    """
+    global latest_camera_frame
+    global latest_frame_timestamp_monotonic
+    global latest_frame_sequence
+
+    with latest_frame_lock:
+        frame = (
+            latest_camera_frame.copy()
+            if latest_camera_frame is not None
+            else None
+        )
+        timestamp = latest_frame_timestamp_monotonic
+        sequence = latest_frame_sequence
+
+    return frame, timestamp, sequence
+
+
+def _publish_latest_frame(frame):
+    global latest_camera_frame
+    global latest_frame_timestamp_monotonic
+    global latest_frame_sequence
+
+    timestamp = time.perf_counter()
+
+    with latest_frame_lock:
+        latest_camera_frame = frame
+        latest_frame_timestamp_monotonic = timestamp
+        latest_frame_sequence += 1
+        sequence = latest_frame_sequence
+
+    return timestamp, sequence
+
+
+def _clear_latest_frame():
+    global latest_camera_frame
+    global latest_frame_timestamp_monotonic
+
+    with latest_frame_lock:
+        latest_camera_frame = None
+        latest_frame_timestamp_monotonic = None
+
+
+def _note_camera_signal_lost(error_message):
+    global CAMERA_CONNECTED
+    global CAMERA_FAILURE_COUNT
+    global CAMERA_LAST_ERROR
+    global AUTO_INSPECTION_ENABLED
+    global AUTO_LAST_ERROR
+
+    CAMERA_CONNECTED = False
+    CAMERA_FAILURE_COUNT += 1
+
+    if error_message:
+        CAMERA_LAST_ERROR = error_message
+
+    if (
+        AUTO_INSPECTION_ENABLED
+        and CAMERA_FAILURE_COUNT >= CAMERA_FAILURE_LIMIT
+    ):
+        AUTO_INSPECTION_ENABLED = False
+        AUTO_LAST_ERROR = (
+            "Inspección automática detenida: "
+            "la cámara perdió la señal."
+        )
+
+
 def get_camera():
     """
-    Devuelve una unica instancia de camara.
+    Abre/reutiliza la ÚNICA sesión VideoCapture del pipeline.
 
-    La direccion RTSP se construye usando la IP
-    localizada actualmente por el sistema.
+    No hace cap.read(). Los consumidores NO deben llamar esto
+    para obtener frames: usan get_latest_camera_frame().
+    Debe invocarse bajo camera_lock desde camera_capture_worker
+    o desde reset/reconexión controlada.
     """
     global camera_capture
     global CAMERA_LAST_CONNECT_ATTEMPT
@@ -1697,10 +2329,14 @@ def get_camera():
                 cv2.CAP_FFMPEG,
             )
 
-        camera_capture.set(
-            cv2.CAP_PROP_BUFFERSIZE,
-            1,
-        )
+        # Best-effort: FFmpeg/RTSP puede ignorarlo.
+        try:
+            camera_capture.set(
+                cv2.CAP_PROP_BUFFERSIZE,
+                1,
+            )
+        except Exception:
+            pass
 
         if not camera_capture.isOpened():
             try:
@@ -1736,100 +2372,33 @@ def get_camera():
         return None
 
 
-def read_camera_frame():
+def read_camera_frame(source="compat"):
     """
-    Lee un frame y mantiene el estado operativo de la cámara.
+    Compatibilidad: NO ejecuta cap.read().
 
-    Una pérdida de señal nunca registra una inspección.
-    Si ocurre durante el modo automático, este se detiene
-    después de varios fallos consecutivos.
+    Devuelve el latest_frame publicado por camera_capture_worker.
     """
-    global camera_capture
-    global latest_camera_frame
+    frame, timestamp, sequence = get_latest_camera_frame()
 
-    global CAMERA_CONNECTED
-    global CAMERA_LAST_OK_AT
-    global CAMERA_LAST_ERROR
-    global CAMERA_FAILURE_COUNT
-
-    global AUTO_INSPECTION_ENABLED
-    global AUTO_LAST_ERROR
-
-    if cv2 is None:
-        CAMERA_CONNECTED = False
-        CAMERA_LAST_ERROR = "OpenCV no está disponible."
+    if frame is None:
         return False, None
 
-    with camera_lock:
-        cap = get_camera()
+    log_camera_latency(
+        source=source,
+        sequence=sequence,
+        timestamp_monotonic=timestamp,
+    )
 
-        if cap is None:
-            CAMERA_CONNECTED = False
-            CAMERA_FAILURE_COUNT += 1
-
-            if not CAMERA_LAST_ERROR:
-                CAMERA_LAST_ERROR = "Cámara sin señal."
-
-            if (
-                AUTO_INSPECTION_ENABLED
-                and CAMERA_FAILURE_COUNT >= CAMERA_FAILURE_LIMIT
-            ):
-                AUTO_INSPECTION_ENABLED = False
-                AUTO_LAST_ERROR = (
-                    "Inspección automática detenida: "
-                    "la cámara perdió la señal."
-                )
-
-            return False, None
-
-        ok, frame = cap.read()
-
-        if not ok or frame is None:
-            try:
-                cap.release()
-            except Exception:
-                pass
-
-            camera_capture = None
-            CAMERA_CONNECTED = False
-            CAMERA_FAILURE_COUNT += 1
-            CAMERA_LAST_ERROR = (
-                "No se está recibiendo video de la cámara."
-            )
-
-            if (
-                AUTO_INSPECTION_ENABLED
-                and CAMERA_FAILURE_COUNT >= CAMERA_FAILURE_LIMIT
-            ):
-                AUTO_INSPECTION_ENABLED = False
-                AUTO_LAST_ERROR = (
-                    "Inspección automática detenida: "
-                    "la cámara perdió la señal."
-                )
-
-            return False, None
-
-        latest_camera_frame = frame.copy()
-
-        CAMERA_CONNECTED = True
-        CAMERA_FAILURE_COUNT = 0
-        CAMERA_LAST_ERROR = None
-        CAMERA_LAST_OK_AT = datetime.now().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-
-        return True, frame
-
+    return True, frame
 
 
 def reset_camera_connection():
     """
-    Libera la conexion RTSP actual para que la siguiente lectura
-    abra una sesion nueva con la camara.
+    Libera la conexion RTSP actual y limpia latest_frame.
     No modifica lotes ni registra inspecciones.
+    Solo debe usarse desde el capture worker / reconexión.
     """
     global camera_capture
-    global latest_camera_frame
     global CAMERA_CONNECTED
     global CAMERA_LAST_ERROR
     global CAMERA_LAST_CONNECT_ATTEMPT
@@ -1843,149 +2412,264 @@ def reset_camera_connection():
             pass
 
         camera_capture = None
-        latest_camera_frame = None
 
-        CAMERA_CONNECTED = False
-        CAMERA_LAST_ERROR = (
-            "Reconectando con la c\u00e1mara de inspecci\u00f3n."
-        )
-        CAMERA_LAST_CONNECT_ATTEMPT = 0.0
-        CAMERA_FAILURE_COUNT = 0
+    _clear_latest_frame()
+
+    CAMERA_CONNECTED = False
+    CAMERA_LAST_ERROR = (
+        "Reconectando con la c\u00e1mara de inspecci\u00f3n."
+    )
+    CAMERA_LAST_CONNECT_ATTEMPT = 0.0
+    CAMERA_FAILURE_COUNT = 0
 
 
-
-def camera_reconnect_worker():
+def _try_discover_camera_after_failures(direct_failures):
     """
-    Recuperacion persistente.
-
-    Primero intenta la IP conocida. Si falla varias
-    veces, busca automaticamente la camara en la LAN
-    y adopta la nueva IP cuando encuentra video real.
+    Solo el capture worker llama esto (evita 2 reconexiones).
     """
-    global CAMERA_RECONNECTING
     global CAMERA_CURRENT_IP
     global CAMERA_LAST_CONNECT_ATTEMPT
 
+    if not CAMERA_DISCOVERY_ENABLED:
+        return False
+
+    if not (
+        direct_failures == 2
+        or direct_failures % 5 == 0
+    ):
+        return False
+
     app.logger.warning(
-        "[CAMARA] Reconexion automatica iniciada."
+        "[CAMARA] IP actual sin respuesta. "
+        "Buscando camara en la red local."
     )
 
-    direct_failures = 0
+    discovered_ip = discover_camera_ip()
 
-    try:
+    if (
+        discovered_ip
+        and discovered_ip != CAMERA_CURRENT_IP
+    ):
+        old_ip = CAMERA_CURRENT_IP
+        CAMERA_CURRENT_IP = discovered_ip
+        CAMERA_LAST_CONNECT_ATTEMPT = 0.0
         reset_camera_connection()
 
+        app.logger.warning(
+            "[CAMARA] Cambio automatico "
+            f"de IP: {old_ip} -> "
+            f"{CAMERA_CURRENT_IP}"
+        )
+        return True
+
+    return False
+
+
+def camera_capture_worker():
+    """
+    ÚNICO lector continuo de RTSP.
+
+    while running:
+        ok, frame = cap.read()
+        if ok:
+            latest_frame = frame  (reemplaza; sin cola histórica)
+
+    Reconexión/discovery también viven aquí: no hay un segundo
+    worker que haga cap.read() concurrente.
+    """
+    global CAMERA_CONNECTED
+    global CAMERA_LAST_OK_AT
+    global CAMERA_LAST_ERROR
+    global CAMERA_FAILURE_COUNT
+    global CAMERA_RECONNECTING
+    global CAMERA_FORCE_REOPEN
+
+    with CAMERA_RECONNECT_LOCK:
+        CAMERA_RECONNECTING = True
+
+    app.logger.info(
+        "[CAMARA] camera_capture_worker iniciado "
+        f"(ip={CAMERA_CURRENT_IP}, "
+        f"channel={CAMERA_CHANNEL}, "
+        f"subtype={CAMERA_SUBTYPE})."
+    )
+
+    read_failures = 0
+
+    try:
         while True:
-            ok, frame = read_camera_frame()
-
-            if (
-                ok
-                and frame is not None
-            ):
-                app.logger.info(
-                    "[CAMARA] Conexion recuperada "
-                    "automaticamente en "
-                    f"{CAMERA_CURRENT_IP}."
+            if cv2 is None:
+                CAMERA_CONNECTED = False
+                CAMERA_LAST_ERROR = (
+                    "OpenCV no esta disponible."
                 )
-                return
+                time.sleep(1.0)
+                continue
 
-            direct_failures += 1
+            # Reapertura solicitada (botón reconectar / API).
+            # Solo el worker libera el VideoCapture.
+            force_reopen = False
+            with camera_lock:
+                force_reopen = CAMERA_FORCE_REOPEN
+                if force_reopen:
+                    CAMERA_FORCE_REOPEN = False
+                    try:
+                        if camera_capture is not None:
+                            camera_capture.release()
+                    except Exception:
+                        pass
+                    camera_capture = None
+                    CAMERA_LAST_CONNECT_ATTEMPT = 0.0
 
-            # No escanear toda la LAN en cada intento.
-            # Tras 2 fallos directos se realiza busqueda
-            # y luego se repite periodicamente.
-            if (
-                CAMERA_DISCOVERY_ENABLED
-                and (
-                    direct_failures == 2
-                    or direct_failures % 5 == 0
+            if force_reopen:
+                _clear_latest_frame()
+                CAMERA_CONNECTED = False
+
+            # --- abrir sesión si hace falta ---
+            with camera_lock:
+                cap = get_camera()
+
+            if cap is None:
+                _note_camera_signal_lost(
+                    CAMERA_LAST_ERROR
+                    or "Cámara sin señal."
                 )
-            ):
-                app.logger.warning(
-                    "[CAMARA] IP actual sin respuesta. "
-                    "Buscando camara en la red local."
+                with CAMERA_RECONNECT_LOCK:
+                    CAMERA_RECONNECTING = True
+
+                # Política de discovery de la reconexión clásica.
+                # direct_failures se deriva de CAMERA_FAILURE_COUNT.
+                _try_discover_camera_after_failures(
+                    CAMERA_FAILURE_COUNT
                 )
 
-                discovered_ip = (
-                    discover_camera_ip()
+                time.sleep(
+                    max(float(CAMERA_RETRY_SECONDS), 1.0)
+                )
+                continue
+
+            # --- ÚNICO cap.read() continuo del pipeline ---
+            try:
+                ok, frame = cap.read()
+            except Exception as error:
+                ok = False
+                frame = None
+                CAMERA_LAST_ERROR = (
+                    f"Error de lectura RTSP: {error}"
                 )
 
-                if (
-                    discovered_ip
-                    and discovered_ip
-                    != CAMERA_CURRENT_IP
-                ):
-                    old_ip = (
-                        CAMERA_CURRENT_IP
-                    )
-
-                    CAMERA_CURRENT_IP = (
-                        discovered_ip
-                    )
-
-                    CAMERA_LAST_CONNECT_ATTEMPT = (
-                        0.0
-                    )
-
-                    reset_camera_connection()
-
-                    app.logger.warning(
-                        "[CAMARA] Cambio automatico "
-                        f"de IP: {old_ip} -> "
-                        f"{CAMERA_CURRENT_IP}"
-                    )
-
-                    direct_failures = 0
-
-                    continue
-
-            time.sleep(
-                max(
-                    float(
-                        CAMERA_RETRY_SECONDS
-                    ),
-                    1.0,
+            if ok and frame is not None:
+                timestamp, sequence = _publish_latest_frame(
+                    frame
                 )
+
+                CAMERA_CONNECTED = True
+                CAMERA_FAILURE_COUNT = 0
+                CAMERA_LAST_ERROR = None
+                CAMERA_LAST_OK_AT = datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                read_failures = 0
+
+                with CAMERA_RECONNECT_LOCK:
+                    CAMERA_RECONNECTING = False
+
+                # Diagnóstico opcional del lector (limitado).
+                log_camera_latency(
+                    source="camera_capture_worker",
+                    sequence=sequence,
+                    timestamp_monotonic=timestamp,
+                )
+                continue
+
+            # --- fallo de lectura ---
+            read_failures += 1
+            _note_camera_signal_lost(
+                CAMERA_LAST_ERROR
+                or "No se está recibiendo video de la cámara."
             )
+            _clear_latest_frame()
+
+            if (
+                read_failures
+                >= max(1, CAMERA_READ_FAIL_RELEASE_LIMIT)
+            ):
+                with camera_lock:
+                    try:
+                        if camera_capture is not None:
+                            camera_capture.release()
+                    except Exception:
+                        pass
+                    camera_capture = None
+
+                CAMERA_LAST_CONNECT_ATTEMPT = 0.0
+                read_failures = 0
+
+                with CAMERA_RECONNECT_LOCK:
+                    CAMERA_RECONNECTING = True
+
+                _try_discover_camera_after_failures(
+                    CAMERA_FAILURE_COUNT
+                )
+
+            time.sleep(0.05)
 
     finally:
         with CAMERA_RECONNECT_LOCK:
             CAMERA_RECONNECTING = False
 
 
-def ensure_camera_reconnect_worker():
+def ensure_camera_capture_worker():
     """
-    Inicia la recuperacion automatica solamente
-    cuando no existe otro worker activo.
+    Garantiza EXACTAMENTE UN camera_capture_worker.
+    No crea un thread por request HTTP si ya corre.
     """
-    global CAMERA_RECONNECTING
+    global CAMERA_CAPTURE_WORKER
+    global CAMERA_CAPTURE_WORKER_STARTED
 
-    if CAMERA_CONNECTED:
+    if cv2 is None:
         return False
 
-    with CAMERA_RECONNECT_LOCK:
-        if CAMERA_RECONNECTING:
-            return False
+    with CAMERA_CAPTURE_WORKER_LOCK:
+        if (
+            CAMERA_CAPTURE_WORKER_STARTED
+            and CAMERA_CAPTURE_WORKER is not None
+            and CAMERA_CAPTURE_WORKER.is_alive()
+        ):
+            return True
 
-        CAMERA_RECONNECTING = True
-
-        thread = threading.Thread(
-            target=camera_reconnect_worker,
+        CAMERA_CAPTURE_WORKER = threading.Thread(
+            target=camera_capture_worker,
             daemon=True,
-            name="camera-reconnect-worker",
+            name="camera-capture-worker",
         )
-
-        thread.start()
+        CAMERA_CAPTURE_WORKER.start()
+        CAMERA_CAPTURE_WORKER_STARTED = True
 
     return True
 
 
+def ensure_camera_reconnect_worker():
+    """
+    Compatibilidad con rutas previas.
+    Solo asegura el único capture worker (ya incluye reconexión).
+    """
+    if CAMERA_CONNECTED:
+        return False
+
+    with CAMERA_RECONNECT_LOCK:
+        CAMERA_RECONNECTING = True
+
+    return ensure_camera_capture_worker()
+
+
 def get_camera_status():
     """
-    Devuelve el estado operativo de la camara.
-    Si esta desconectada, garantiza que exista
-    un worker de recuperacion en segundo plano.
+    Estado operativo. Si no hay señal, asegura el capture worker
+    (que también reconecta). No abre RTSP por su cuenta.
     """
+    ensure_camera_capture_worker()
+
     if CAMERA_CONNECTED:
         return {
             "connected": True,
@@ -1997,9 +2681,10 @@ def get_camera_status():
             "last_ok_at": CAMERA_LAST_OK_AT,
         }
 
-    ensure_camera_reconnect_worker()
+    with CAMERA_RECONNECT_LOCK:
+        reconnecting = CAMERA_RECONNECTING
 
-    if CAMERA_RECONNECTING:
+    if reconnecting:
         return {
             "connected": False,
             "reconnecting": True,
@@ -2114,6 +2799,24 @@ def crop_inspection_roi(frame):
     return frame[y1:y2, x1:x2]
 
 
+def compute_roi_coverage(frame):
+    """
+    Cobertura de prenda dentro del ROI — MISMA fórmula que usaba
+    auto_inspection_worker en línea (ahora compartida con captura IA).
+    Lanza si la segmentación falla; el caller decide cómo tratarlo.
+    """
+    garment_mask = create_garment_mask(frame)
+    roi_x1, roi_y1, roi_x2, roi_y2 = get_roi_bounds(frame)
+    roi_mask = garment_mask[roi_y1:roi_y2, roi_x1:roi_x2]
+    roi_area = float(
+        max(
+            1,
+            roi_mask.shape[0] * roi_mask.shape[1],
+        )
+    )
+    return float(cv2.countNonZero(roi_mask) / roi_area)
+
+
 def draw_inspection_overlay(frame):
     """
     Dibuja el área de inspección sobre el video en vivo.
@@ -2148,48 +2851,28 @@ def draw_inspection_overlay(frame):
 
 def generate_video_feed():
     """
-    Stream MJPEG.
+    Stream MJPEG desde latest_frame.
 
-    Cuando la camara esta desconectada, solamente el
-    worker de reconexion intenta abrir RTSP. El stream
-    muestra un placeholder y evita crear conexiones
-    paralelas que interfieran con la recuperacion.
+    NO ejecuta cap.read(). El capture worker sigue drenando RTSP.
     """
     while True:
+        ensure_camera_capture_worker()
 
-        if not CAMERA_CONNECTED:
-            ensure_camera_reconnect_worker()
+        frame, timestamp, sequence = get_latest_camera_frame()
 
-            frame_to_send = (
-                make_camera_error_frame(
-                    "RECONECTANDO CAMARA"
-                )
+        if frame is None:
+            frame_to_send = make_camera_error_frame(
+                "RECONECTANDO CAMARA"
             )
-
         else:
-            ok, frame = (
-                read_camera_frame()
+            log_camera_latency(
+                source="video_feed",
+                sequence=sequence,
+                timestamp_monotonic=timestamp,
             )
+            frame_to_send = draw_inspection_overlay(frame)
 
-            if ok:
-                frame_to_send = (
-                    draw_inspection_overlay(
-                        frame
-                    )
-                )
-
-            else:
-                ensure_camera_reconnect_worker()
-
-                frame_to_send = (
-                    make_camera_error_frame(
-                        "RECONECTANDO CAMARA"
-                    )
-                )
-
-        jpg = encode_jpeg(
-            frame_to_send
-        )
+        jpg = encode_jpeg(frame_to_send)
 
         if jpg is None:
             jpg = generate_placeholder_frame(
@@ -2239,7 +2922,7 @@ def save_image(file_storage=None):
 
         return path, f"captures/{name}"
 
-    ok, frame = read_camera_frame()
+    ok, frame = read_camera_frame(source="save_image")
 
     if not ok:
         return None, None
@@ -2250,6 +2933,10 @@ def save_image(file_storage=None):
 def register_inspection_from_frame(
     frame,
     notes="Registro generado por estación de inspección.",
+    garment_token=None,
+    decision_start=None,
+    frame_selection_ms=None,
+    source="auto",
 ):
     """
     Ejecuta la detección, guarda la evidencia y registra la blusa
@@ -2257,17 +2944,72 @@ def register_inspection_from_frame(
 
     Los contadores del lote se sincronizan con las inspecciones
     realmente almacenadas para evitar inconsistencias.
+
+    garment_token: identidad temporal de la prenda (Fase 3).
+    decision_start: time.perf_counter() cuando el frame válido
+        de esa prenda quedó disponible (para decision_ms).
+    frame_selection_ms: duración de la selección de best_frame.
+    source: "auto" | "manual" (solo logging).
     """
     global AUTO_INSPECTION_ENABLED
+
+    # Mutex estación: preparación IA no genera inspections productivas.
+    assert_production_allowed("registro de inspección productiva")
 
     if frame is None:
         raise ValueError(
             "No se recibió imagen de cámara para registrar la inspección."
         )
 
-    img_path, img_rel = save_frame_to_static(frame)
+    # La inferencia productiva debe usar exactamente la versión de IA
+    # asociada al lote activo. No se permite decidir con un checkpoint
+    # global de .env y después registrar otra versión en trazabilidad.
+    selected_batch = get_active_batch()
+    if selected_batch is None:
+        raise RuntimeError(
+            "No hay un lote activo. Crea o inicia un lote antes de inspeccionar."
+        )
 
-    status, defect, conf, zone, result_rel = detect_defect(img_path)
+    selected_batch_id = int(selected_batch["id"])
+    selected_ai_model_id = int(selected_batch["ai_model_id"] or 0)
+    if selected_ai_model_id <= 0:
+        raise AIDomainError(
+            "El lote activo no tiene una versión de IA asociada."
+        )
+
+    if garment_token is None:
+        garment_token = next_garment_token()
+
+    total_start = (
+        decision_start
+        if decision_start is not None
+        else time.perf_counter()
+    )
+    metrics = {}
+
+    if frame_selection_ms is not None:
+        metrics["frame_selection_ms"] = float(frame_selection_ms)
+
+    t_capture_0 = time.perf_counter()
+    img_path, img_rel = save_frame_to_static(frame)
+    metrics["capture_ms"] = (
+        time.perf_counter() - t_capture_0
+    ) * 1000.0
+
+    detect_metrics = {}
+    status, defect, conf, zone, result_rel = detect_defect(
+        img_path,
+        metrics=detect_metrics,
+        garment_token=garment_token,
+        decision_start=total_start,
+        source=source,
+    )
+    metrics.update(detect_metrics)
+
+    if "decision_ms" not in metrics:
+        metrics["decision_ms"] = (
+            time.perf_counter() - total_start
+        ) * 1000.0
 
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     code = (
@@ -2287,6 +3029,7 @@ def register_inspection_from_frame(
         else "PENDIENTE"
     )
 
+    t_database_0 = time.perf_counter()
     conn = db()
     cur = conn.cursor(dictionary=True)
 
@@ -2316,6 +3059,15 @@ def register_inspection_from_frame(
             raise RuntimeError(
                 "No hay un lote activo. "
                 "Crea o inicia un lote antes de inspeccionar."
+            )
+
+        if (
+            int(batch["id"]) != selected_batch_id
+            or int(batch["ai_model_id"] or 0) != selected_ai_model_id
+        ):
+            raise RuntimeError(
+                "El lote activo o su versión de IA cambió durante la inspección. "
+                "La captura se descartó para evitar trazabilidad incorrecta."
             )
 
         cur.execute(
@@ -2476,6 +3228,9 @@ def register_inspection_from_frame(
             AUTO_INSPECTION_ENABLED = False
 
         conn.commit()
+        metrics["database_ms"] = (
+            time.perf_counter() - t_database_0
+        ) * 1000.0
 
     except Exception:
         if conn.in_transaction:
@@ -2485,6 +3240,27 @@ def register_inspection_from_frame(
     finally:
         cur.close()
         conn.close()
+
+    metrics["total_complete_ms"] = (
+        time.perf_counter() - total_start
+    ) * 1000.0
+
+    if ai_decision == "ANOMALIA":
+        enrich_quality_alert_event(
+            garment_token=garment_token,
+            batch_id=batch["id"],
+            batch_position=processed_quantity,
+            code=code,
+        )
+
+    log_latency_metrics(
+        garment_token=garment_token,
+        metrics=metrics,
+        ai_decision=ai_decision,
+        batch_id=batch["id"],
+        batch_position=processed_quantity,
+        source=source,
+    )
 
     return {
         "code": code,
@@ -2511,6 +3287,7 @@ def register_inspection_from_frame(
         "ai_decision": ai_decision,
         "review_status": review_status,
         "batch_complete": batch_complete,
+        "garment_token": garment_token,
     }
 
 
@@ -2543,6 +3320,17 @@ def auto_inspection_worker():
     best_frame = None
     best_coverage = 0.0
 
+    # Identidad temporal de la prenda del ciclo actual (Fase 3).
+    garment_token = None
+    tracking_started_perf = None
+
+    # Experimento: primer cruce 40/45/50 + frames candidato en RAM.
+    seen_coverage_levels = set()
+    benchmark_frames = {}
+
+    # Secuencia last para no reprocesar el mismo frame.
+    last_camera_sequence = -1
+
     print(
         "[AUTO] Modo automático iniciado. "
         "Esperando entrada de una blusa."
@@ -2550,47 +3338,48 @@ def auto_inspection_worker():
 
     while AUTO_INSPECTION_ENABLED:
         try:
-            ok, frame = read_camera_frame()
+            # Mutex: si hay sesión de captura IA, la producción no consume frames.
+            if is_ai_capture_mode_active():
+                AUTO_LAST_ERROR = (
+                    "Modo preparación IA activo: producción en pausa."
+                )
+                time.sleep(0.5)
+                continue
 
-            if not ok or frame is None:
+            # Consumidor de latest_frame: NO cap.read().
+            # Mientras PatchCore corre, camera_capture_worker
+            # sigue drenando RTSP.
+            frame, frame_timestamp, sequence = (
+                get_latest_camera_frame()
+            )
+
+            if frame is None:
                 AUTO_LAST_ERROR = (
                     "Cámara no disponible."
                 )
                 time.sleep(0.5)
                 continue
 
+            if sequence == last_camera_sequence:
+                # Misma secuencia: no reintentar el mismo frame.
+                time.sleep(0.05)
+                continue
+
+            last_camera_sequence = sequence
+            log_camera_latency(
+                source="auto_inspection",
+                sequence=sequence,
+                timestamp_monotonic=frame_timestamp,
+            )
+
             # -------------------------------------------------
             # Medir presencia de prenda.
             #
             # Se reutiliza EXACTAMENTE la segmentación de la
-            # blusa que usa PatchCore.
+            # blusa que usa PatchCore (compute_roi_coverage).
             # -------------------------------------------------
             try:
-                garment_mask = create_garment_mask(
-                    frame
-                )
-
-                roi_x1, roi_y1, roi_x2, roi_y2 = (
-                    get_roi_bounds(frame)
-                )
-
-                roi_mask = garment_mask[
-                    roi_y1:roi_y2,
-                    roi_x1:roi_x2,
-                ]
-
-                roi_area = float(
-                    max(
-                        1,
-                        roi_mask.shape[0]
-                        * roi_mask.shape[1],
-                    )
-                )
-
-                coverage = (
-                    cv2.countNonZero(roi_mask)
-                    / roi_area
-                )
+                coverage = compute_roi_coverage(frame)
 
             except Exception:
                 # Una silueta demasiado pequeña normalmente
@@ -2625,6 +3414,10 @@ def auto_inspection_worker():
 
                     best_frame = None
                     best_coverage = 0.0
+                    garment_token = None
+                    tracking_started_perf = None
+                    seen_coverage_levels = set()
+                    benchmark_frames = {}
 
                     print(
                         "[AUTO] Blusa anterior sali?. "
@@ -2648,18 +3441,53 @@ def auto_inspection_worker():
                     tracked_frames = 0
                     best_frame = None
                     best_coverage = 0.0
+                    garment_token = next_garment_token()
+                    tracking_started_perf = time.perf_counter()
+                    seen_coverage_levels = set()
+                    benchmark_frames = {}
+                    timeline_mark(
+                        garment_token,
+                        "garment_detected",
+                    )
 
                     print(
-                        "[AUTO] Entrada de prenda detectada."
+                        "[AUTO] Entrada de prenda detectada. "
+                        f"token={garment_token}"
                     )
 
                 tracked_frames += 1
 
                 # Conservar siempre el frame donde la prenda
                 # ocupa mayor superficie dentro del ROI.
+                # BEST_FRAME DE PRODUCCIÓN: misma regla que antes.
                 if coverage > best_coverage:
                     best_coverage = coverage
                     best_frame = frame.copy()
+
+                # -------------------------------------------------
+                # Experimento (no altera best_frame productivo):
+                # primer cruce de 40/45/50 => marca timeline y,
+                # solo si FRAME_SELECTION_BENCHMARK, copia en RAM.
+                # -------------------------------------------------
+                if tracking and garment_token is not None:
+                    for level in BENCHMARK_COVERAGE_LEVELS:
+                        if level in seen_coverage_levels:
+                            continue
+                        if coverage < level:
+                            continue
+
+                        seen_coverage_levels.add(level)
+                        pct = int(round(level * 100))
+                        timeline_mark(
+                            garment_token,
+                            f"coverage_{pct}_reached",
+                        )
+
+                        if FRAME_SELECTION_BENCHMARK:
+                            benchmark_frames[level] = {
+                                "frame": frame.copy(),
+                                "coverage": float(coverage),
+                            }
 
                 print(
                     "[AUTO] "
@@ -2681,6 +3509,12 @@ def auto_inspection_worker():
                     tracked_frames = 0
                     best_frame = None
                     best_coverage = 0.0
+                    if garment_token is not None:
+                        reset_timeline(garment_token)
+                    garment_token = None
+                    tracking_started_perf = None
+                    seen_coverage_levels = set()
+                    benchmark_frames = {}
 
             # -------------------------------------------------
             # ESTADO 3: determinar el momento de captura.
@@ -2734,8 +3568,25 @@ def auto_inspection_worker():
                     print(
                         "[AUTO] Prenda completa confirmada. "
                         f"Capturando mejor frame "
-                        f"({best_coverage * 100:.2f}%)."
+                        f"({best_coverage * 100:.2f}%). "
+                        f"token={garment_token}"
                     )
+
+                    timeline_mark(
+                        garment_token,
+                        "frame_selected",
+                    )
+
+                    frame_selection_ms = None
+                    if tracking_started_perf is not None:
+                        frame_selection_ms = (
+                            time.perf_counter()
+                            - tracking_started_perf
+                        ) * 1000.0
+
+                    # La captura válida de ESTA prenda está
+                    # disponible a partir de este instante.
+                    decision_start = time.perf_counter()
 
                     result = (
                         register_inspection_from_frame(
@@ -2745,8 +3596,30 @@ def auto_inspection_worker():
                                 "por presencia de prenda en "
                                 "cinta transportadora."
                             ),
+                            garment_token=garment_token,
+                            decision_start=decision_start,
+                            frame_selection_ms=frame_selection_ms,
+                            source="auto",
                         )
                     )
+
+                    timeline_mark(
+                        garment_token,
+                        "inspection_complete",
+                    )
+                    log_timeline(garment_token)
+
+                    # Persistir candidatos SOLO después de la
+                    # inspección productiva terminar.
+                    if FRAME_SELECTION_BENCHMARK and benchmark_frames:
+                        persist_benchmark_frames(
+                            garment_token=garment_token,
+                            frames_by_level=dict(benchmark_frames),
+                            production_result=result.get("ai_decision"),
+                            production_score=result.get("confidence"),
+                            batch_id=result.get("batch_id"),
+                            batch_position=result.get("batch_position"),
+                        )
 
                     AUTO_LAST_RESULT = result
                     AUTO_LAST_ERROR = None
@@ -2758,7 +3631,8 @@ def auto_inspection_worker():
                         "[AUTO] Inspección registrada: "
                         f"{result.get('code')} | "
                         f"{result.get('status')} | "
-                        f"{result.get('defect_type')}"
+                        f"{result.get('defect_type')} | "
+                        f"token={result.get('garment_token')}"
                     )
 
                     # Esta misma blusa no puede generar otro
@@ -2772,6 +3646,10 @@ def auto_inspection_worker():
 
                     best_frame = None
                     best_coverage = 0.0
+                    garment_token = None
+                    tracking_started_perf = None
+                    seen_coverage_levels = set()
+                    benchmark_frames = {}
 
                     continue
 
@@ -2840,259 +3718,349 @@ def load_yolo_model():
 
 def create_garment_mask(image):
     """
-    Obtiene la silueta completa de la blusa rosa talla S.
+    Obtiene la silueta completa de la prenda (delegado compartido).
 
-    El color rosa se utiliza solamente como semilla para encontrar
-    la prenda. Después se rellena su contorno exterior para conservar
-    cualquier alteración visual situada sobre la tela, aunque tenga
-    un color diferente.
+    La implementacion vive en patchcore_preprocess para que el
+    entrenador de FASE 3A use exactamente el mismo preprocesamiento
+    que la inferencia productiva.
     """
-    if image is None:
-        raise ValueError(
-            "No se recibió una imagen válida."
-        )
-
-    height, width = image.shape[:2]
-
-    roi_x1, roi_y1, roi_x2, roi_y2 = (
-        get_roi_bounds(image)
+    return patchcore_preprocess.create_garment_mask(
+        image,
+        get_roi_bounds(image),
+        cv2_mod=cv2,
+        np_mod=np,
     )
 
-    roi = image[
-        roi_y1:roi_y2,
-        roi_x1:roi_x2,
-    ]
 
-    if roi is None or roi.size == 0:
-        raise ValueError(
-            "El ROI de inspección está vacío."
-        )
 
-    roi_height, roi_width = roi.shape[:2]
-    roi_area = float(
-        roi_height * roi_width
+
+
+
+GUIDED_SEGMENTATION_SCALE = 0.5
+GUIDED_MIN_CANDIDATE_FRACTION = 0.04
+GUIDED_COVERAGE_MIN = 0.20
+GUIDED_COVERAGE_MAX = 0.75
+
+
+def _guided_fill_holes(mask):
+    """Rellena los huecos encerrados por una silueta ya formada."""
+    inverted = cv2.bitwise_not(mask)
+    flood = inverted.copy()
+    seed_mask = np.zeros(
+        (inverted.shape[0] + 2, inverted.shape[1] + 2),
+        dtype=np.uint8,
     )
+    cv2.floodFill(flood, seed_mask, (0, 0), 0)
+    return cv2.bitwise_or(mask, flood)
 
-    hsv = cv2.cvtColor(
-        roi,
-        cv2.COLOR_BGR2HSV,
-    )
 
-    lab = cv2.cvtColor(
-        roi,
-        cv2.COLOR_BGR2LAB,
-    )
+def _guided_panel_bounds(gray, diagnostics, scale):
+    """
+    Límites del panel iluminado dentro del ROI.
 
-    saturation = hsv[:, :, 1]
-    lab_a = lab[:, :, 1]
+    El ROI de la estación a veces incluye la zona oscura de fuera del
+    panel. Si no se recorta, esa zona se confunde con una prenda.
+    """
+    percentile = float(np.percentile(gray, 35))
+    bright = np.where(gray >= percentile, 255, 0).astype(np.uint8)
+    kernel_size = max(5, int(25 * scale) | 1)
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    bright = cv2.morphologyEx(bright, cv2.MORPH_OPEN, kernel)
+    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, kernel)
 
-    # Semilla: tela rosa.
-    seed = np.where(
-        (saturation >= 30)
-        & (lab_a >= 136),
-        255,
-        0,
-    ).astype(np.uint8)
-
-    # Cerrar discontinuidades producidas por manchas,
-    # reflejos, costuras y pequeños huecos en la tela.
-    seed = cv2.morphologyEx(
-        seed,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (31, 31),
-        ),
-        iterations=1,
-    )
-
-    seed = cv2.morphologyEx(
-        seed,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (15, 15),
-        ),
-        iterations=1,
-    )
-
-    seed = cv2.morphologyEx(
-        seed,
-        cv2.MORPH_OPEN,
-        np.ones(
-            (5, 5),
-            dtype=np.uint8,
-        ),
-        iterations=1,
-    )
-
-    count, labels, stats, centroids = (
-        cv2.connectedComponentsWithStats(
-            seed,
-            connectivity=8,
-        )
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        bright,
+        8,
     )
 
     if count <= 1:
-        return np.zeros(
-            (height, width),
-            dtype=np.uint8,
-        )
+        diagnostics["panel"] = None
+        return None
 
+    index = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    left, top, width, height, area = (
+        int(stats[index, key]) for key in range(5)
+    )
+    fraction = float(area) / float(gray.size)
+    diagnostics["panel"] = {
+        "percentile": round(percentile, 1),
+        "fraction": round(fraction, 3),
+        "box": (left, top, width, height),
+    }
+
+    if fraction < 0.50:
+        return None
+
+    return left, top, width, height
+
+
+def _guided_adaptive_mask(sub_roi, roi_area, diagnostics, scale):
+    """
+    Segmentación sin color fijo: bordes en espacio LAB + islas.
+
+    Reglas, todas derivadas del propio fotograma (sin umbrales fijos
+    de color):
+
+    1. Umbral Otsu sobre la magnitud del gradiente en LAB, con
+       histéresis (fuerte = Otsu, débil = 40% de Otsu) para no romper
+       el contorno de la prenda.
+    2. Se consideran islas a las regiones NO unidas al borde del panel:
+       lo que está pegado al borde es el fondo, no la prenda.
+    3. Fracción de candidata entre 4% y 75% del ROI.
+    4. Cobertura final dentro de los mismos límites que producción
+       (20%–75%): fuera de ese rango no se devuelve silueta.
+    """
+    height, width = sub_roi.shape[:2]
+    lab = cv2.cvtColor(sub_roi, cv2.COLOR_BGR2LAB)
+    blur = cv2.GaussianBlur(lab, (5, 5), 0).astype(np.float32)
+
+    magnitude = np.zeros(blur.shape[:2], dtype=np.float32)
+    for channel in range(3):
+        grad_x = cv2.Scharr(blur[:, :, channel], cv2.CV_32F, 1, 0)
+        grad_y = cv2.Scharr(blur[:, :, channel], cv2.CV_32F, 0, 1)
+        magnitude += cv2.magnitude(grad_x, grad_y) ** 2
+    magnitude = np.sqrt(magnitude)
+
+    magnitude8 = np.clip(magnitude, 0, 255).astype(np.uint8)
+    otsu, _ = cv2.threshold(
+        magnitude8,
+        0,
+        255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+    )
+    otsu = float(max(otsu, 8.0))
+
+    strong = np.where(magnitude8 >= otsu, 255, 0).astype(np.uint8)
+    weak = np.where(magnitude8 >= 0.4 * otsu, 255, 0).astype(np.uint8)
+    linked = strong.copy()
+    hysteresis = max(3, int(9 * scale) | 1)
+    for _ in range(4):
+        grown = cv2.dilate(
+            linked,
+            np.ones((hysteresis, hysteresis), dtype=np.uint8),
+        )
+        linked = np.where((grown > 0) & (weak > 0), 255, 0).astype(np.uint8)
+
+    close_size = max(9, int(41 * scale) | 1)
+    barriers = cv2.morphologyEx(
+        linked,
+        cv2.MORPH_CLOSE,
+        np.ones((close_size, close_size), dtype=np.uint8),
+    )
+    barriers = cv2.dilate(
+        barriers,
+        np.ones((max(3, int(5 * scale)),) * 2, dtype=np.uint8),
+    )
+
+    free = cv2.bitwise_not(barriers)
+    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        free,
+        4,
+    )
+
+    border = max(3, int(6 * scale))
     candidates = []
+    rejected = []
+    selected = np.zeros((height, width), dtype=np.uint8)
 
-    for label in range(1, count):
-        area = int(
-            stats[
-                label,
-                cv2.CC_STAT_AREA,
-            ]
+    for index in range(1, count):
+        left, top, box_width, box_height, area = (
+            int(stats[index, key]) for key in range(5)
         )
+        fraction = float(area) / float(roi_area)
+        touches_border = (
+            left <= border
+            or top <= border
+            or (left + box_width) >= width - border
+            or (top + box_height) >= height - border
+        )
+        candidates.append({
+            "fraction": round(fraction, 3),
+            "box": (left, top, box_width, box_height),
+            "touch_border": bool(touches_border),
+        })
 
-        if area < roi_area * 0.04:
+        if touches_border:
+            rejected.append({"fraction": round(fraction, 3), "why": "borde"})
+            continue
+        if fraction < GUIDED_MIN_CANDIDATE_FRACTION:
+            rejected.append({"fraction": round(fraction, 3), "why": "minima"})
+            continue
+        if fraction > GUIDED_COVERAGE_MAX:
+            rejected.append({"fraction": round(fraction, 3), "why": "maxima"})
             continue
 
-        cx, cy = centroids[label]
+        selected[labels == index] = 255
 
-        dx = abs(
-            cx - roi_width / 2.0
-        ) / max(
-            1.0,
-            roi_width,
-        )
+    diagnostics["gradient_otsu"] = round(otsu, 1)
+    diagnostics["candidates"] = candidates[:5]
+    diagnostics["rejected"] = rejected[:5]
 
-        dy = abs(
-            cy - roi_height / 2.0
-        ) / max(
-            1.0,
-            roi_height,
-        )
+    if cv2.countNonZero(selected) == 0:
+        diagnostics["reason"] = "sin_candidata"
+        return None
 
-        score = (
-            area / roi_area
-            - dx * 0.20
-            - dy * 0.10
-        )
-
-        candidates.append(
-            (
-                score,
-                label,
-            )
-        )
-
-    if not candidates:
-        return np.zeros(
-            (height, width),
-            dtype=np.uint8,
-        )
-
-    candidates.sort(
-        key=lambda item: item[0],
-        reverse=True,
-    )
-
-    selected_label = (
-        candidates[0][1]
-    )
-
-    component = np.where(
-        labels == selected_label,
-        255,
-        0,
-    ).astype(np.uint8)
-
-    # Recuperar el CONTORNO EXTERIOR de la prenda.
-    #
-    # Es la diferencia fundamental respecto del algoritmo anterior:
-    # los huecos internos de otro color ya no desaparecen.
+    selected = _guided_fill_holes(selected)
     contours, _ = cv2.findContours(
-        component,
+        selected,
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE,
     )
 
     if not contours:
-        return np.zeros(
-            (height, width),
-            dtype=np.uint8,
-        )
+        diagnostics["reason"] = "sin_contorno"
+        return None
 
-    garment_contour = max(
-        contours,
-        key=cv2.contourArea,
-    )
-
-    garment_roi = np.zeros(
-        (roi_height, roi_width),
-        dtype=np.uint8,
-    )
-
+    garment_contour = max(contours, key=cv2.contourArea)
+    garment = np.zeros((height, width), dtype=np.uint8)
     cv2.drawContours(
-        garment_roi,
+        garment,
         [garment_contour],
         -1,
         255,
-        thickness=cv2.FILLED,
+        cv2.FILLED,
     )
 
-    # Ligero cierre del borde exterior sin convertirlo
-    # en un rectángulo ni en un convex hull.
-    garment_roi = cv2.morphologyEx(
-        garment_roi,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (11, 11),
-        ),
-        iterations=1,
-    )
+    coverage = float(cv2.countNonZero(garment)) / float(roi_area)
+    diagnostics["adaptive_coverage"] = round(coverage, 4)
 
-    garment_roi = cv2.dilate(
-        garment_roi,
-        np.ones(
-            (3, 3),
-            dtype=np.uint8,
-        ),
-        iterations=1,
-    )
+    if coverage < GUIDED_COVERAGE_MIN or coverage > GUIDED_COVERAGE_MAX:
+        diagnostics["reason"] = "cobertura_adaptativa"
+        return None
 
-    coverage = (
-        cv2.countNonZero(
-            garment_roi
+    return garment
+
+
+def create_guided_garment_mask(image, diagnostics=None):
+    """
+    Silueta de la prenda para la captura guiada (fallback incluido).
+
+    Cascada:
+      1. Semilla cromática de producción (create_garment_mask): misma
+         regla que la estación automática, para la blusa rosa.
+      2. Segmentación adaptativa sin color fijo, para prendas que la
+         semilla no reconoce (azul, verde, gris, negra, blanca...).
+      3. Máscara vacía con el motivo registrado.
+
+    Rellena `diagnostics` con nonzero, %, dimensiones, ROI min/max/mean
+    y el método usado, para poder diagnosticar SIN_PRENDA desde el log.
+    """
+    if image is None:
+        raise ValueError("No se recibió una imagen válida.")
+
+    if diagnostics is None:
+        diagnostics = {}
+
+    height, width = image.shape[:2]
+    roi_x1, roi_y1, roi_x2, roi_y2 = get_roi_bounds(image)
+    roi = image[roi_y1:roi_y2, roi_x1:roi_x2]
+
+    if roi is None or roi.size == 0:
+        raise ValueError("El ROI de inspección está vacío.")
+
+    diagnostics["roi"] = (int(roi_x1), int(roi_y1), int(roi_x2), int(roi_y2))
+    diagnostics["frame"] = (int(width), int(height))
+
+    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    diagnostics["roi_stats"] = {
+        "min": int(gray_roi.min()),
+        "max": int(gray_roi.max()),
+        "mean": round(float(gray_roi.mean()), 1),
+    }
+
+    def report(method, mask, reason=None):
+        diagnostics["method"] = method
+        nonzero = int(cv2.countNonZero(mask))
+        roi_mask = mask[roi_y1:roi_y2, roi_x1:roi_x2]
+        roi_nonzero = int(cv2.countNonZero(roi_mask))
+        roi_area = float(max(1, roi_mask.size))
+        diagnostics["mask_nonzero"] = nonzero
+        # % sobre el ROI (la misma base que coverage) y sobre el frame.
+        diagnostics["mask_pct"] = round(roi_nonzero / roi_area, 4)
+        diagnostics["mask_frame_pct"] = round(
+            nonzero / float(height * width),
+            4,
         )
-        / roi_area
+        diagnostics["mask_bbox"] = mask_bbox(mask, cv2)
+        if reason is not None:
+            diagnostics["reason"] = reason
+        return mask
+
+    zeros = np.zeros((height, width), dtype=np.uint8)
+
+    seed_diagnostics = {}
+    try:
+        seed_mask = create_garment_mask(image)
+    except Exception as error:  # noqa: BLE001 - el motivo queda en el log
+        seed_mask = None
+        seed_diagnostics["error"] = str(error)
+
+    if seed_mask is not None:
+        seed_roi = seed_mask[roi_y1:roi_y2, roi_x1:roi_x2]
+        seed_coverage = float(cv2.countNonZero(seed_roi)) / float(
+            max(1, seed_roi.size)
+        )
+        diagnostics["seed"] = {
+            "nonzero": int(cv2.countNonZero(seed_roi)),
+            "coverage": round(seed_coverage, 4),
+            **seed_diagnostics,
+        }
+        if GUIDED_COVERAGE_MIN <= seed_coverage <= GUIDED_COVERAGE_MAX:
+            return report("semilla", seed_mask)
+    else:
+        diagnostics["seed"] = dict(seed_diagnostics)
+
+    scale = float(GUIDED_SEGMENTATION_SCALE)
+    working = cv2.resize(
+        roi,
+        None,
+        fx=scale,
+        fy=scale,
+        interpolation=cv2.INTER_AREA,
+    )
+    working_area = float(working.shape[0] * working.shape[1])
+    adaptive_diagnostics = diagnostics.setdefault("adaptive", {})
+
+    panel = _guided_panel_bounds(
+        cv2.cvtColor(working, cv2.COLOR_BGR2GRAY),
+        adaptive_diagnostics,
+        scale,
     )
 
-    print(
-        "[SEGMENTACION] "
-        f"Cobertura silueta: "
-        f"{coverage * 100:.2f}%"
+    if panel is None:
+        adaptive_diagnostics["reason"] = "sin_panel"
+        return report("ninguno", zeros, "sin_prenda")
+
+    left, top, box_width, box_height = panel
+    sub_roi = working[top:top + box_height, left:left + box_width]
+    garment_small = _guided_adaptive_mask(
+        sub_roi,
+        working_area,
+        adaptive_diagnostics,
+        scale,
     )
 
-    if coverage < 0.20:
-        raise RuntimeError(
-            "La silueta detectada es demasiado pequeña."
+    if garment_small is None:
+        return report(
+            "ninguno",
+            zeros,
+            adaptive_diagnostics.get("reason") or "sin_prenda",
         )
 
-    if coverage > 0.75:
-        raise RuntimeError(
-            "La silueta detectada es demasiado grande."
-        )
+    # garment_small vive en el recorte del panel: hay que devolverlo a
+    # coordenadas del ROI antes de escalar al tamaño del frame.
+    garment_working = np.zeros(working.shape[:2], dtype=np.uint8)
+    garment_working[top:top + box_height, left:left + box_width] = garment_small
 
-    garment_mask = np.zeros(
-        (height, width),
-        dtype=np.uint8,
+    garment_roi = cv2.resize(
+        garment_working,
+        (roi_x2 - roi_x1, roi_y2 - roi_y1),
+        interpolation=cv2.INTER_NEAREST,
     )
+    garment_mask = np.zeros((height, width), dtype=np.uint8)
+    garment_mask[roi_y1:roi_y2, roi_x1:roi_x2] = garment_roi
 
-    garment_mask[
-        roi_y1:roi_y2,
-        roi_x1:roi_x2,
-    ] = garment_roi
-
-    return garment_mask
-
-
+    return report("adaptativo", garment_mask)
 
 
 def localize_patchcore_anomaly(
@@ -4044,12 +5012,178 @@ def localize_patchcore_anomaly(
 PATCHCORE_INFERENCE_LOCK = __import__("threading").Lock()
 
 
-def detect_defect(image_path):
-    # ========================================================
-    # 1. PATCHCORE: detector principal
-    # ========================================================
-    if patchcore_inspector is not None and cv2 is not None:
+def resolve_active_production_ai_runtime():
+    """Resuelve el modelo IA real del lote activo para inferencia productiva.
+
+    La estación no debe depender de PATCHCORE_CKPT/PATCHCORE_SCORE_THRESHOLD
+    globales: el lote ya está enlazado a una versión concreta de IA.
+    """
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        cur.execute(
+            """
+            SELECT
+                b.id AS batch_id,
+                b.garment_model_id,
+                b.ai_model_id,
+                ai.garment_model_id AS ai_garment_model_id,
+                ai.version AS ai_version,
+                ai.status AS ai_status,
+                ai.active AS ai_active,
+                ai.checkpoint_path,
+                ai.checkpoint_hash,
+                ai.input_size,
+                ai.threshold_final,
+                ai.threshold_frozen_at,
+                ai.dataset_id
+            FROM batches b
+            JOIN garment_ai_models ai ON ai.id = b.ai_model_id
+            WHERE b.status = 'EN_INSPECCION'
+            ORDER BY b.id DESC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+
+        if row is None:
+            raise RuntimeError(
+                "No hay un lote activo con una versión de IA asociada."
+            )
+
+        if (
+            int(row.get("ai_model_id") or 0) <= 0
+            or int(row.get("garment_model_id") or 0) <= 0
+            or int(row.get("ai_garment_model_id") or 0)
+            != int(row.get("garment_model_id") or 0)
+            or str(row.get("ai_status") or "").upper() != "ACTIVO"
+            or int(row.get("ai_active") or 0) != 1
+        ):
+            raise RuntimeError(
+                "El lote activo no tiene una versión de IA ACTIVA válida."
+            )
+
+        if row.get("threshold_final") is None or row.get("threshold_frozen_at") is None:
+            raise RuntimeError(
+                "La versión de IA activa no tiene threshold definitivo congelado."
+            )
+
+        checkpoint_relative = str(row.get("checkpoint_path") or "").strip()
+        if not checkpoint_relative:
+            raise RuntimeError(
+                "La versión de IA activa no tiene checkpoint asociado."
+            )
+
+        artifacts_root = get_ai_artifacts_root()
+        checkpoint_abs = resolve_under_root(artifacts_root, checkpoint_relative)
+        if not checkpoint_abs.exists():
+            raise RuntimeError(
+                "No se encontró el checkpoint de la versión de IA activa."
+            )
+
         try:
+            input_size = int(row.get("input_size") or 256)
+        except (TypeError, ValueError):
+            input_size = 256
+        if input_size <= 0:
+            input_size = 256
+
+        config_path = (
+            artifacts_root
+            / f"garment_{int(row['garment_model_id'])}"
+            / "models"
+            / f"ai_model_{int(row['ai_model_id'])}"
+            / "training"
+            / "config.json"
+        )
+        config = {}
+        if config_path.exists():
+            try:
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                config = {}
+
+        training_config = (
+            config.get("config") if isinstance(config, dict) else None
+        )
+        preprocessing_profile = (
+            training_config.get("validation_preprocessing_profile")
+            if isinstance(training_config, dict)
+            else None
+        )
+        preprocessing_profile = str(
+            preprocessing_profile or "PER_IMAGE"
+        ).upper()
+
+        bundle = {
+            "ai_model_id": int(row["ai_model_id"]),
+            "garment_model_id": int(row["garment_model_id"]),
+            "version": row.get("ai_version"),
+            "status": str(row.get("ai_status") or "").upper(),
+            "dataset_id": row.get("dataset_id"),
+            "checkpoint_path": checkpoint_relative,
+            "checkpoint_abs": str(checkpoint_abs),
+            "checkpoint_hash": row.get("checkpoint_hash"),
+            "input_size": input_size,
+            "preprocessing_profile": preprocessing_profile,
+            "threshold_final": float(row["threshold_final"]),
+        }
+
+        inspector = ai_validation.get_model_inspector(bundle)
+
+        return {
+            "batch_id": int(row["batch_id"]),
+            "ai_model_id": int(row["ai_model_id"]),
+            "garment_model_id": int(row["garment_model_id"]),
+            "version": row.get("ai_version"),
+            "threshold": float(row["threshold_final"]),
+            "input_size": input_size,
+            "preprocessing_profile": preprocessing_profile,
+            "checkpoint_path": checkpoint_relative,
+            "inspector": inspector,
+        }
+    finally:
+        cur.close()
+        conn.close()
+
+
+def detect_defect(
+    image_path,
+    metrics=None,
+    garment_token=None,
+    decision_start=None,
+    source="auto",
+):
+    """
+    Ejecuta la inferencia y, al conocer NORMAL/ANOMALIA, dispara
+    trigger_quality_alert antes de la persistencia secundaria
+    (imagen de resultado).
+
+    metrics: dict opcional que se rellena con preprocess_ms,
+    inference_ms, postprocess_ms, image_storage_ms y decision_ms.
+    """
+    m = metrics if metrics is not None else {}
+
+    # ========================================================
+    # 1. PATCHCORE: detector principal enlazado al lote activo
+    # ========================================================
+    production_runtime = resolve_active_production_ai_runtime()
+    production_inspector = production_runtime["inspector"]
+    production_threshold = float(production_runtime["threshold"])
+    preprocessing_profile = str(
+        production_runtime.get("preprocessing_profile") or "PER_IMAGE"
+    ).upper()
+
+    m["ai_model_id"] = int(production_runtime["ai_model_id"])
+    m["ai_version"] = production_runtime.get("version")
+    m["threshold_used"] = production_threshold
+    m["preprocessing_profile"] = preprocessing_profile
+
+    if production_inspector is not None and cv2 is not None:
+        try:
+            timeline_mark(garment_token, "preprocess_start")
+            t_preprocess_0 = time.perf_counter()
             image = cv2.imread(str(image_path))
 
             if image is None:
@@ -4057,43 +5191,62 @@ def detect_defect(image_path):
                     f"No se pudo abrir la imagen: {image_path}"
                 )
 
-            garment_mask_full = create_garment_mask(
-                image
-            )
+            if preprocessing_profile == "FULL_ROI":
+                garment_mask_full = np.zeros(
+                    image.shape[:2],
+                    dtype=np.uint8,
+                )
+                print(
+                    "[PATCHCORE] preprocessing_profile=FULL_ROI; "
+                    "ROI rectangular."
+                )
+            else:
+                try:
+                    garment_mask_full = create_garment_mask(
+                        image
+                    )
+                except Exception as segmentation_error:
+                    # Mismo contrato que validación/FINAL_TEST: si la
+                    # segmentación geométrica no es utilizable, PatchCore
+                    # recibe el ROI completo. No se cambia de checkpoint,
+                    # threshold ni perfil de preprocesamiento.
+                    garment_mask_full = np.zeros(
+                        image.shape[:2],
+                        dtype=np.uint8,
+                    )
+                    print(
+                        "[SEGMENTACION] Fallback productivo a ROI completo: "
+                        f"{segmentation_error}"
+                    )
 
             if cv2.countNonZero(
                 garment_mask_full
             ) == 0:
-                raise RuntimeError(
-                    "No se pudo separar la blusa del fondo."
+                # La mascara de prenda no describio la prenda. El
+                # fallback al ROI completo (compartido con el
+                # entrenador) vive en build_patchcore_regions: asi
+                # entrenamiento e inferencia reciben la misma imagen.
+                print(
+                    "[SEGMENTACION] Mascara de prenda vacia: "
+                    "se usara el ROI completo."
                 )
 
             roi_x1, roi_y1, roi_x2, roi_y2 = (
                 get_roi_bounds(image)
             )
 
-            roi_image = image[
-                roi_y1:roi_y2,
-                roi_x1:roi_x2
-            ]
-
-            roi_garment_mask = garment_mask_full[
-                roi_y1:roi_y2,
-                roi_x1:roi_x2
-            ]
-
-            # Fondo blanco uniforme.
-            # PatchCore recibe ?nicamente la blusa.
-            patchcore_input = np.full_like(
-                roi_image,
-                255,
+            # Fondo blanco uniforme sobre el ROI.
+            # PatchCore recibe únicamente la prenda.
+            # Misma implementación que usa el entrenador de FASE 3A
+            # (patchcore_preprocess) para evitar training-serving skew.
+            roi_image, roi_garment_mask, patchcore_input = (
+                patchcore_preprocess.build_patchcore_regions(
+                    image,
+                    garment_mask_full,
+                    (roi_x1, roi_y1, roi_x2, roi_y2),
+                    cv2_mod=cv2,
+                )
             )
-
-            patchcore_input[
-                roi_garment_mask > 0
-            ] = roi_image[
-                roi_garment_mask > 0
-            ]
 
             roi_name = (
                 f"_patchcore_roi_"
@@ -4110,24 +5263,35 @@ def detect_defect(image_path):
                     "No se pudo preparar el ROI para PatchCore."
                 )
 
+            m["preprocess_ms"] = (
+                time.perf_counter() - t_preprocess_0
+            ) * 1000.0
+            timeline_mark(garment_token, "preprocess_end")
+
             try:
                 print(
                     "[PATCHCORE] Esperando acceso exclusivo "
                     "al motor de inferencia."
                 )
 
+                timeline_mark(garment_token, "inference_start")
+                t_inference_0 = time.perf_counter()
                 with PATCHCORE_INFERENCE_LOCK:
                     print(
                         "[PATCHCORE] Inferencia iniciada."
                     )
 
-                    prediction = patchcore_inspector.inspect(
+                    prediction = production_inspector.inspect(
                         str(roi_path)
                     )
 
                     print(
                         "[PATCHCORE] Inferencia finalizada."
                     )
+                m["inference_ms"] = (
+                    time.perf_counter() - t_inference_0
+                ) * 1000.0
+                timeline_mark(garment_token, "inference_end")
             finally:
                 try:
                     roi_path.unlink(
@@ -4160,9 +5324,10 @@ def detect_defect(image_path):
             # La decisión de producción utiliza el threshold calibrado.
             # El pred_label interno se conserva únicamente para diagnóstico.
             is_anomaly = (
-                confidence >= PATCHCORE_SCORE_THRESHOLD
+                confidence >= production_threshold
             )
 
+            t_postprocess_0 = time.perf_counter()
             annotated_roi, zone, anomaly_count = localize_patchcore_anomaly(
                 image=patchcore_input,
                 anomaly_map=prediction["anomaly_map"],
@@ -4183,6 +5348,46 @@ def detect_defect(image_path):
                 roi_x1:roi_x2
             ] = annotated_roi
 
+            if is_anomaly:
+                status = "Defecto"
+                if anomaly_count > 1:
+                    defect_type = f"Manchas ({anomaly_count})"
+                else:
+                    defect_type = "Mancha"
+            else:
+                status = "Aprobado"
+                defect_type = "Sin defecto"
+                zone = "Centro"
+
+            m["postprocess_ms"] = (
+                time.perf_counter() - t_postprocess_0
+            ) * 1000.0
+            timeline_mark(garment_token, "decision_ready")
+
+            # ====================================================
+            # DECISIÓN NORMAL/ANOMALIA conocida.
+            # Punto de alerta: ANTES de persistencia secundaria
+            # (imagen de resultado, MySQL, contadores).
+            # ====================================================
+            if decision_start is not None:
+                m["decision_ms"] = (
+                    time.perf_counter() - decision_start
+                ) * 1000.0
+
+            if is_anomaly:
+                trigger_quality_alert(
+                    garment_token=garment_token,
+                    confidence=confidence,
+                    zone=zone,
+                    defect_type=defect_type,
+                    source=source,
+                )
+
+            # -------------------------------------------------
+            # Persistencia secundaria: solo después de la
+            # decisión y de haber disparado la alerta.
+            # -------------------------------------------------
+            t_image_storage_0 = time.perf_counter()
             result_name = (
                 f"result_patchcore_"
                 f"{uuid.uuid4().hex[:10]}.jpg"
@@ -4198,22 +5403,19 @@ def detect_defect(image_path):
                     "No se pudo guardar el resultado PatchCore."
                 )
 
-            if is_anomaly:
-                status = "Defecto"
-                if anomaly_count > 1:
-                    defect_type = f"Manchas ({anomaly_count})"
-                else:
-                    defect_type = "Mancha"
-            else:
-                status = "Aprobado"
-                defect_type = "Sin defecto"
-                zone = "Centro"
+            m["image_storage_ms"] = (
+                time.perf_counter() - t_image_storage_0
+            ) * 1000.0
 
             print(
                 f"[PATCHCORE] Estado={status}, "
                 f"decision={int(is_anomaly)}, "
                 f"model_label={int(model_label)}, "
-                f"threshold={PATCHCORE_SCORE_THRESHOLD:.2f}, "
+                f"ai_model_id={production_runtime['ai_model_id']}, "
+                f"version={production_runtime.get('version')}, "
+                f"input_size={production_runtime['input_size']}, "
+                f"profile={preprocessing_profile}, "
+                f"threshold={production_threshold:.2f}, "
                 f"raw_score={raw_score:.6f}, "
                 f"confianza_mostrada={confidence}%, "
                 f"zona={zone}"
@@ -4257,16 +5459,22 @@ def detect_defect(image_path):
                     "en el área de inspección."
                 ) from error
 
-            # Solamente un fallo técnico real de PatchCore
-            # puede utilizar el método de respaldo.
+            # Una versión IA activa define la trazabilidad del lote. Si
+            # PatchCore falla técnicamente, no se puede decidir con otro
+            # algoritmo y guardar el registro como si lo hubiera decidido
+            # esa versión. Se falla de forma segura y no se persiste la
+            # inspección.
             print(
-                "[PATCHCORE] Error técnico durante "
-                f"la inferencia: {error}. "
-                "Se usará el método alternativo."
+                "[PATCHCORE] Error técnico durante la inferencia: "
+                f"{error}. Inspección cancelada sin método alternativo."
             )
+            raise RuntimeError(
+                "La versión de IA activa no pudo completar la inferencia. "
+                "No se registró la inspección."
+            ) from error
 
     # ========================================================
-    # 2. YOLO O DETECTOR PROVISIONAL COMO RESPALDO
+    # 2. RESPALDO LEGACY (solo alcanzable sin motor PatchCore utilizable)
     # ========================================================
     model = load_yolo_model()
 
@@ -4278,7 +5486,6 @@ def detect_defect(image_path):
         result_path = RESULT_DIR / result_name
 
         annotated = result.plot()
-        cv2.imwrite(str(result_path), annotated)
 
         boxes = result.boxes
 
@@ -4305,8 +5512,37 @@ def detect_defect(image_path):
                 zone = "Zona frontal"
 
             status = "Defecto" if confidence >= (YOLO_DEFECT_THRESHOLD * 100) else "Revisar"
+
+            if decision_start is not None:
+                m["decision_ms"] = (
+                    time.perf_counter() - decision_start
+                ) * 1000.0
+
+            if status != "Aprobado":
+                trigger_quality_alert(
+                    garment_token=garment_token,
+                    confidence=round(confidence, 2),
+                    zone=zone,
+                    defect_type=defect_type,
+                    source=source,
+                )
+
+            t_image_storage_0 = time.perf_counter()
+            cv2.imwrite(str(result_path), annotated)
+            m["image_storage_ms"] = (
+                time.perf_counter() - t_image_storage_0
+            ) * 1000.0
             return status, defect_type, round(confidence, 2), zone, f"results/{result_name}"
 
+        if decision_start is not None:
+            m["decision_ms"] = (
+                time.perf_counter() - decision_start
+            ) * 1000.0
+        t_image_storage_0 = time.perf_counter()
+        cv2.imwrite(str(result_path), annotated)
+        m["image_storage_ms"] = (
+            time.perf_counter() - t_image_storage_0
+        ) * 1000.0
         return "Aprobado", "Sin defecto", 90.0, "Centro", f"results/{result_name}"
 
     if cv2 is None or np is None:
@@ -4400,7 +5636,26 @@ def detect_defect(image_path):
             2,
         )
 
+    if decision_start is not None:
+        m["decision_ms"] = (
+            time.perf_counter() - decision_start
+        ) * 1000.0
+
+    if status != "Aprobado":
+        trigger_quality_alert(
+            garment_token=garment_token,
+            confidence=confidence,
+            zone=zone,
+            defect_type=defect_type,
+            source=source,
+        )
+
+    t_image_storage_0 = time.perf_counter()
     cv2.imwrite(str(result_path), original)
+    m["image_storage_ms"] = (
+        time.perf_counter() - t_image_storage_0
+    ) * 1000.0
+
     return status, defect_type, confidence, zone, f"results/{result_name}"
 
 
@@ -4494,6 +5749,57 @@ def get_batch_alerts(batch_id):
         """,
         (batch_id,),
     )
+
+
+def get_batch_garments(batch_id, page=1, per_page=50):
+    """
+    Todas las inspecciones del lote (sin filtrar por
+    ai_decision ni review_status), con paginación.
+    """
+    per_page = max(1, int(per_page))
+    page = max(1, int(page or 1))
+
+    total_row = fetch_one(
+        """
+        SELECT COUNT(*) AS total
+        FROM inspections
+        WHERE batch_id = %s
+        """,
+        (batch_id,),
+    )
+    total = int((total_row or {}).get("total") or 0)
+
+    max_page = max(1, (total + per_page - 1) // per_page)
+    if page > max_page:
+        page = max_page
+
+    offset = (page - 1) * per_page
+
+    rows = fetch_all(
+        """
+        SELECT *
+        FROM inspections
+        WHERE batch_id = %s
+        ORDER BY
+            batch_position IS NULL,
+            batch_position ASC,
+            id ASC
+        LIMIT %s OFFSET %s
+        """,
+        (batch_id, per_page, offset),
+    ) or []
+
+    return {
+        "items": rows,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "max_page": max_page,
+        "has_prev": page > 1,
+        "has_next": page < max_page,
+        "start_index": (offset + 1) if total else 0,
+        "end_index": min(offset + per_page, total),
+    }
 
 
 
@@ -7181,10 +8487,23 @@ def batch_review(batch_id):
 
     alerts = get_batch_alerts(batch_id)
 
+    garment_page = request.args.get(
+        "garment_page",
+        1,
+        type=int,
+    )
+    garments = get_batch_garments(
+        batch_id,
+        page=garment_page,
+        per_page=50,
+    )
+
     return render_template(
         "batch_review.html",
         batch=batch,
         alerts=alerts,
+        garments=garments,
+        garment_page=garments["page"],
     )
 
 
@@ -7605,7 +8924,8 @@ def station_manual_inspect():
                 ),
             }), 409
 
-        ok, frame = read_camera_frame()
+        # latest_frame: NO cap.read(); no abre otra sesión RTSP.
+        ok, frame = read_camera_frame(source="manual")
 
         if not ok:
             return jsonify({
@@ -7616,13 +8936,42 @@ def station_manual_inspect():
                 ),
             }), 503
 
-        result = register_inspection_from_frame(
-            frame,
-            notes=(
-                "Registro manual generado desde "
-                "estación de inspección."
-            ),
-        )
+        frame_available = time.perf_counter()
+        try:
+            result = register_inspection_from_frame(
+                frame,
+                notes=(
+                    "Registro manual generado desde "
+                    "estación de inspección."
+                ),
+                decision_start=frame_available,
+                source="manual",
+            )
+        except AIDomainError as domain_error:
+            return jsonify({
+                "ok": False,
+                "message": str(domain_error),
+            }), 409
+        except RuntimeError as runtime_error:
+            if not is_garment_not_detected_error(runtime_error):
+                app.logger.exception(
+                    "Error inesperado en la inspección manual."
+                )
+                return jsonify({
+                    "ok": False,
+                    "message": (
+                        "No se pudo completar la inspección. "
+                        "Intente de nuevo."
+                    ),
+                }), 500
+
+            return jsonify({
+                "ok": False,
+                "message": (
+                    "No se detectó una prenda completa en el área de "
+                    "inspección. Colóquela correctamente e intente de nuevo."
+                ),
+            }), 409
 
         AUTO_LAST_RESULT = result
         AUTO_LAST_ERROR = None
@@ -7635,15 +8984,15 @@ def station_manual_inspect():
             "result": result,
         })
 
-    except Exception as e:
-        AUTO_LAST_ERROR = str(e)
+    except Exception:
+        app.logger.exception("Error al ejecutar la inspección manual.")
+        AUTO_LAST_ERROR = "Error al ejecutar la inspección manual."
 
         return jsonify({
             "ok": False,
             "message": (
                 "Error al ejecutar la inspección manual."
             ),
-            "detail": str(e),
         }), 500
 
 
@@ -7651,26 +9000,23 @@ def station_manual_inspect():
 
 @app.route("/api/station/camera/reconnect", methods=["POST"])
 @login_required
-@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER, ROLE_MODEL_MANAGER)
 def station_camera_reconnect():
-    started = (
-        ensure_camera_reconnect_worker()
-    )
+    """
+    Pide reabrir RTSP. No crea otro camera_capture_worker.
+    La liberación real la hace el worker (evita release concurrente).
+    """
+    global CAMERA_FORCE_REOPEN
 
-    if not started:
-        return jsonify({
-            "ok": True,
-            "message": (
-                "La reconexion de la camara "
-                "ya esta en curso."
-            ),
-            "camera": get_camera_status(),
-        }), 202
+    with camera_lock:
+        CAMERA_FORCE_REOPEN = True
+
+    ensure_camera_capture_worker()
 
     return jsonify({
         "ok": True,
         "message": (
-            "Reconexion de camara iniciada."
+            "Reconexion de camara solicitada."
         ),
         "camera": get_camera_status(),
     }), 202
@@ -7682,6 +9028,15 @@ def station_camera_reconnect():
 def station_auto_start():
     global AUTO_INSPECTION_ENABLED
     global AUTO_THREAD
+
+    if is_ai_capture_mode_active():
+        return jsonify({
+            "ok": False,
+            "message": (
+                "Hay una sesión de captura IA activa. "
+                "Finalízala o cancélala antes de iniciar producción."
+            ),
+        }), 409
 
     active_batch = get_active_batch()
 
@@ -7791,7 +9146,156 @@ def station_auto_status():
         "last_error": AUTO_LAST_ERROR,
         "active_batch": row_to_json(active_batch),
         "camera": get_camera_status(),
+        "alert_seq": current_quality_alert_seq(),
     })
+
+
+@app.route("/api/station/alerts/stream")
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def station_alerts_stream():
+    """
+    Server-Sent Events de anomalías.
+
+    Por defecto (sin query after) solo emite eventos NUEVOS
+    desde la conexión: un reload no reanima alarmas viejas.
+    """
+    after_raw = request.args.get("after")
+    if after_raw is None:
+        start_after = current_quality_alert_seq()
+    else:
+        try:
+            start_after = int(after_raw)
+        except (TypeError, ValueError):
+            start_after = current_quality_alert_seq()
+
+    def event_stream():
+        last_sent = start_after
+        last_beat = time.time()
+
+        while True:
+            events = get_quality_alerts_after(last_sent)
+            for event in events:
+                last_sent = int(event["seq"])
+                payload = json.dumps(event, ensure_ascii=False)
+                yield (
+                    f"id: {event['seq']}\n"
+                    f"event: quality-alert\n"
+                    f"data: {payload}\n\n"
+                )
+
+            now = time.time()
+            if now - last_beat >= 15.0:
+                last_beat = now
+                yield f": heartbeat {int(now)}\n\n"
+
+            time.sleep(0.12)
+
+    return Response(
+        event_stream(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.route("/api/station/alerts/last")
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def station_alerts_last():
+    """Polling corto de respaldo si SSE no está disponible."""
+    after_raw = request.args.get("after")
+
+    if after_raw is None:
+        # Suscripción desde ahora: no reenviar alarmas antiguas.
+        events = []
+        after = current_quality_alert_seq()
+    else:
+        try:
+            after = int(after_raw)
+        except (TypeError, ValueError):
+            after = current_quality_alert_seq()
+        events = get_quality_alerts_after(after)
+
+    return jsonify({
+        "ok": True,
+        "seq": current_quality_alert_seq(),
+        "after": after,
+        "events": events,
+    })
+
+
+@app.route("/api/station/alerts/ack", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def station_alerts_ack():
+    """
+    Diagnóstico de entrega de alarma. Solo logging; no toca BD
+    y no bloquea el sonido del navegador.
+    """
+    data = request.get_json(silent=True) or {}
+
+    try:
+        server_emitted_at_ms = int(
+            data.get("server_emitted_at_ms") or 0
+        )
+    except (TypeError, ValueError):
+        server_emitted_at_ms = 0
+
+    try:
+        browser_received_at_ms = int(
+            data.get("browser_received_at_ms") or 0
+        )
+    except (TypeError, ValueError):
+        browser_received_at_ms = 0
+
+    try:
+        audio_started_at_ms = int(
+            data.get("audio_started_at_ms") or 0
+        )
+    except (TypeError, ValueError):
+        audio_started_at_ms = 0
+
+    event_id = data.get("event_id") or data.get("alert_id") or "n/a"
+    garment_token = (
+        data.get("garment_token")
+        if data.get("garment_token") is not None
+        else data.get("token")
+    )
+
+    transport_ms = "n/a"
+    browser_audio_delay_ms = "n/a"
+    server_to_audio_ms = "n/a"
+
+    if server_emitted_at_ms and browser_received_at_ms:
+        transport_ms = str(
+            browser_received_at_ms - server_emitted_at_ms
+        )
+
+    if browser_received_at_ms and audio_started_at_ms:
+        browser_audio_delay_ms = str(
+            audio_started_at_ms - browser_received_at_ms
+        )
+
+    if server_emitted_at_ms and audio_started_at_ms:
+        server_to_audio_ms = str(
+            audio_started_at_ms - server_emitted_at_ms
+        )
+
+    print(
+        "[ALERT_DELIVERY]\n"
+        f"token={garment_token}\n"
+        f"event_id={event_id}\n"
+        f"transport_ms={transport_ms}\n"
+        f"browser_audio_delay_ms={browser_audio_delay_ms}\n"
+        f"server_to_audio_ms={server_to_audio_ms}",
+        flush=True,
+    )
+
+    return jsonify({"ok": True})
 
 
 
@@ -7814,6 +9318,27 @@ def station_latest():
     })
 
 
+GARMENT_NOT_DETECTED_MARKERS = (
+    "blusa completa",
+    "prenda completa",
+)
+
+
+def is_garment_not_detected_error(error) -> bool:
+    """
+    Error de negocio: la prenda no quedó completa en el área.
+
+    No es un fallo técnico: se muestra un mensaje amigable y jamás
+    un traceback.
+    """
+    text = str(error or "").strip().lower()
+
+    if not text:
+        return False
+
+    return any(marker in text for marker in GARMENT_NOT_DETECTED_MARKERS)
+
+
 @app.route("/inspeccion", methods=["GET", "POST"])
 @login_required
 @role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
@@ -7831,7 +9356,33 @@ def inspection():
             flash("No se pudo leer la cámara. No se guardó ningún registro.", "error")
             return render_template("inspection.html", result=None)
 
-        status, defect, conf, zone, result_rel = detect_defect(img_path)
+        decision_start = time.perf_counter()
+
+        try:
+            status, defect, conf, zone, result_rel = detect_defect(
+                img_path,
+                garment_token=next_garment_token(),
+                decision_start=decision_start,
+                source="legacy",
+            )
+        except Exception as error:
+            if is_garment_not_detected_error(error):
+                flash(
+                    "No se detectó una prenda completa en el área de "
+                    "inspección. Colóquela correctamente e intente de nuevo.",
+                    "error",
+                )
+            else:
+                app.logger.exception(
+                    "Error inesperado durante la inspección manual."
+                )
+                flash(
+                    "No se pudo completar la inspección. "
+                    "Intente de nuevo.",
+                    "error",
+                )
+
+            return render_template("inspection.html", result=None)
 
         code = f"INS-{datetime.now().strftime('%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
 
@@ -9680,10 +11231,327 @@ def get_informe_data():
     }
 
 
+def goal_time_value(value, default):
+    """Convierte TIME de MySQL (timedelta o time) a datetime.time."""
+    from datetime import time as dt_time, timedelta
+
+    if isinstance(value, timedelta):
+        total = int(value.total_seconds())
+        return dt_time(
+            (total // 3600) % 24,
+            (total % 3600) // 60,
+            total % 60,
+        )
+
+    if isinstance(value, dt_time):
+        return value
+
+    return default
+
+
+def goal_shift_end(day, goal):
+    """Momento local en que termina el turno de la meta de `day`."""
+    from datetime import time as dt_time, timedelta
+
+    timezone_gt = ZoneInfo("America/Guatemala")
+
+    start_time = goal_time_value(
+        goal.get("shift_start"),
+        dt_time(8, 0),
+    )
+    end_time = goal_time_value(
+        goal.get("shift_end"),
+        dt_time(17, 0),
+    )
+
+    start_dt = datetime.combine(
+        day,
+        start_time,
+        tzinfo=timezone_gt,
+    )
+    end_dt = datetime.combine(
+        day,
+        end_time,
+        tzinfo=timezone_gt,
+    )
+
+    # Un turno que termina a medianoche o crusa el día siguiente.
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
+
+    return end_dt
+
+
+def resolve_goal_history_period(args, today=None):
+    """Resuelve fechas locales; 'hoy' consulta la jornada en curso."""
+    from datetime import timedelta
+
+    if today is None:
+        today = datetime.now(ZoneInfo("America/Guatemala")).date()
+
+    yesterday = today - timedelta(days=1)
+    monday = today - timedelta(days=today.weekday())
+    period = args.get("goal_period", "ayer").strip()
+    result = {
+        "period": period,
+        "date_from": args.get("goal_from", "").strip(),
+        "date_to": args.get("goal_to", "").strip(),
+        "max_date": yesterday.isoformat(),
+        "custom_date_from": yesterday.isoformat(),
+        "custom_date_to": yesterday.isoformat(),
+        "is_today": period == "hoy",
+        "start_date": None,
+        "end_date": None,
+        "error": None,
+        "notice": None,
+    }
+    presets = {
+        "hoy": (today, today),
+        "ayer": (yesterday, yesterday),
+        "esta_semana": (monday, yesterday),
+        "semana_pasada": (
+            monday - timedelta(days=7),
+            monday - timedelta(days=1),
+        ),
+        "este_mes": (today.replace(day=1), yesterday),
+    }
+
+    if period in presets:
+        start_date, end_date = presets[period]
+    elif period == "personalizado":
+        try:
+            start_date = datetime.strptime(
+                result["date_from"], "%Y-%m-%d"
+            ).date()
+            end_date = datetime.strptime(
+                result["date_to"], "%Y-%m-%d"
+            ).date()
+        except ValueError:
+            result["error"] = "Ingrese fechas Desde y Hasta válidas."
+            return result
+
+        if end_date < start_date:
+            result["error"] = "Desde no puede ser posterior a Hasta."
+            return result
+        if end_date > yesterday:
+            end_date = yesterday
+            result["notice"] = (
+                "Se excluyeron hoy y las fechas futuras del período "
+                "personalizado: use el acceso HOY para consultar la "
+                "jornada en curso."
+            )
+    else:
+        result["error"] = "Seleccione un período válido."
+        return result
+
+    result.update({
+        "start_date": start_date,
+        "end_date": end_date,
+        "date_from": start_date.isoformat(),
+        "date_to": end_date.isoformat(),
+        "custom_date_from": (
+            start_date.isoformat()
+            if start_date <= yesterday
+            else yesterday.isoformat()
+        ),
+        "custom_date_to": (
+            end_date.isoformat()
+            if end_date <= yesterday
+            else yesterday.isoformat()
+        ),
+    })
+    return result
+
+
+def summarize_goal_history(rows):
+    """Pondera por prendas; la producción sin meta no compensa otros días."""
+    with_goal = [row for row in rows if row["has_goal"]]
+    finished = [
+        row for row in with_goal if row["status"] != "En curso"
+    ]
+    in_progress = [
+        row for row in with_goal if row["status"] == "En curso"
+    ]
+    target = sum(row["target_garments"] for row in with_goal)
+    inspected_with_goal = sum(row["inspected"] for row in with_goal)
+    met = sum(row["status"] == "Cumplida" for row in finished)
+    return {
+        "target_garments": target,
+        "inspected": sum(row["inspected"] for row in rows),
+        "inspected_with_goal": inspected_with_goal,
+        "progress": (
+            round(inspected_with_goal / target * 100, 1)
+            if target > 0 else None
+        ),
+        "days_with_goal": len(with_goal),
+        "days_met": met,
+        "days_unmet": len(finished) - met,
+        "days_in_progress": len(in_progress),
+    }
+
+
+
+def get_goal_history_data(start_date, end_date):
+    """Lee metas finales y eventos UTC en una misma fotografía de MySQL."""
+    import json
+    from datetime import time as dt_time, timedelta
+
+    empty = {"rows": [], "summary": summarize_goal_history([])}
+    if start_date is None or end_date is None or start_date > end_date:
+        return empty
+
+    timezone_gt = ZoneInfo("America/Guatemala")
+    timezone_utc = ZoneInfo("UTC")
+    days = []
+    calendar = []
+    day = start_date
+    while day <= end_date:
+        # Mismo contrato UTC que dashboard/get_informe_data. Los límites
+        # se convierten por fecha, sin asumir un offset fijo ni depender
+        # de las tablas de zonas horarias instaladas en MySQL.
+        start = datetime.combine(day, dt_time.min, tzinfo=timezone_gt)
+        end = datetime.combine(
+            day + timedelta(days=1), dt_time.min, tzinfo=timezone_gt
+        )
+        days.append(day)
+        calendar.append({
+            "day": day.isoformat(),
+            "start": start.astimezone(timezone_utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.astimezone(timezone_utc).strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        day += timedelta(days=1)
+
+    # JSON_TABLE está disponible en MySQL 8 (docker-compose.yaml).
+    # El calendario completo es un parámetro, nunca SQL interpolado.
+    calendar_sql = """
+        WITH calendar AS (
+            SELECT day, start_utc, end_utc
+            FROM JSON_TABLE(
+                %s, '$[*]' COLUMNS (
+                    day DATE PATH '$.day',
+                    start_utc DATETIME PATH '$.start',
+                    end_utc DATETIME PATH '$.end'
+                )
+            ) AS dates
+        )
+    """
+    params = (
+        json.dumps(calendar),
+        calendar[0]["start"],
+        calendar[-1]["end"],
+    )
+    conn = db()
+    cur = None
+    try:
+        conn.start_transaction(
+            isolation_level="REPEATABLE READ",
+            consistent_snapshot=True,
+            readonly=True,
+        )
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT
+                goal_date,
+                target_garments,
+                target_batches,
+                shift_start,
+                shift_end
+            FROM daily_production_goals
+            WHERE goal_date >= %s AND goal_date <= %s
+            """,
+            (start_date, end_date),
+        )
+
+        goals = {row["goal_date"]: row for row in cur.fetchall()}
+        if any(int(goal["target_garments"]) <= 0 for goal in goals.values()):
+            raise ValueError(
+                "Hay metas guardadas con cantidad de prendas no válida. "
+                "No se calculó el cumplimiento del período."
+            )
+
+        cur.execute(
+            calendar_sql + """
+            SELECT c.day, COUNT(*) AS inspected
+            FROM inspections i
+            JOIN calendar c
+              ON i.created_at >= c.start_utc
+             AND i.created_at < c.end_utc
+            WHERE i.created_at >= %s AND i.created_at < %s
+            GROUP BY c.day
+            """,
+            params,
+        )
+        inspected = {row["day"]: int(row["inspected"]) for row in cur.fetchall()}
+        cur.execute(
+            calendar_sql + """
+            SELECT c.day, COUNT(*) AS completed_batches
+            FROM batches b
+            JOIN calendar c
+              ON b.inspection_completed_at >= c.start_utc
+             AND b.inspection_completed_at < c.end_utc
+            WHERE b.inspection_completed_at >= %s
+              AND b.inspection_completed_at < %s
+              AND EXISTS (
+                  SELECT 1 FROM inspections i WHERE i.batch_id = b.id
+              )
+            GROUP BY c.day
+            """,
+            params,
+        )
+        completed = {
+            row["day"]: int(row["completed_batches"])
+            for row in cur.fetchall()
+        }
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
+
+    rows = []
+    now_gt = datetime.now(ZoneInfo("America/Guatemala"))
+    local_today = now_gt.date()
+    for day in days:
+        goal = goals.get(day)
+        actual = inspected.get(day, 0)
+        target = int(goal["target_garments"]) if goal else None
+        status = "Sin meta configurada"
+        if goal:
+            # La jornada en curso nunca se evalúa como incumplida:
+            # solo los días terminados usan la regla histórica.
+            shift_ends = goal_shift_end(day, goal)
+            if day == local_today and now_gt < shift_ends:
+                status = "En curso"
+            else:
+                status = "Cumplida" if actual >= target else "No cumplida"
+
+        rows.append({
+            "date": day,
+            "has_goal": goal is not None,
+            "target_garments": target,
+            "inspected": actual,
+            "progress": round(actual / target * 100, 1) if target else None,
+            "target_batches": int(goal["target_batches"]) if goal else None,
+            "completed_batches": completed.get(day, 0),
+            "status": status,
+        })
+    return {"rows": rows, "summary": summarize_goal_history(rows)}
+
+
 @app.route("/informes")
 @login_required
 def informes():
     data = get_informe_data()
+
+    goal_history = resolve_goal_history_period(request.args)
+    goal_history.update({"rows": [], "summary": summarize_goal_history([])})
+    if not goal_history["error"]:
+        try:
+            goal_history.update(get_goal_history_data(
+                goal_history["start_date"], goal_history["end_date"]
+            ))
+        except ValueError as error:
+            goal_history["error"] = str(error)
 
     models_options = fetch_all(
         """
@@ -9709,6 +11577,7 @@ def informes():
 
     return render_template(
         "informes.html",
+        goal_history=goal_history,
         models_options=models_options,
         batches_options=batches_options,
         **data,
@@ -10176,6 +12045,47 @@ def informe_excel():
 
     data = get_informe_data()
 
+    # Trazabilidad del usuario que genera el informe Excel.
+    # Solo agrega metadatos al archivo; no modifica métricas ni cálculos.
+    excel_report_user = fetch_one(
+        "SELECT username, full_name, role FROM users WHERE id = %s",
+        (session.get("user_id"),),
+    ) or {}
+
+    excel_generated_by_username = (
+        excel_report_user.get("username")
+        or session.get("username")
+        or "usuario"
+    )
+
+    excel_generated_by_name = (
+        excel_report_user.get("full_name")
+        or excel_generated_by_username
+    )
+
+    excel_generated_by_role = normalize_role(
+        excel_report_user.get("role")
+        or session.get("role")
+    )
+
+    excel_generated_by_role_label = {
+        "ADMIN": "Administrador",
+        "MODEL_MANAGER": "Encargado de modelos",
+        "QUALITY_MANAGER": "Gestor de calidad",
+    }.get(
+        excel_generated_by_role,
+        excel_generated_by_role or "Sin rol",
+    )
+
+    if excel_generated_by_name != excel_generated_by_username:
+        excel_generated_by_display = (
+            f"{excel_generated_by_name} "
+            f"(@{excel_generated_by_username})"
+        )
+    else:
+        excel_generated_by_display = excel_generated_by_username
+
+
     insights = build_report_insights(
         data
     )
@@ -10266,7 +12176,7 @@ def informe_excel():
             get_column_letter(column)
         ].width = 16
 
-    cover_sheet.row_dimensions[2].height = 115
+    cover_sheet.row_dimensions[2].height = 165
 
     if logo_path.exists():
         excel_logo = XLImage(
@@ -10280,7 +12190,7 @@ def informe_excel():
             excel_logo.height or 1
         )
 
-        target_width = 250
+        target_width = 340
 
         excel_logo.width = target_width
         excel_logo.height = (
@@ -10294,7 +12204,7 @@ def informe_excel():
         excel_logo.anchor = OneCellAnchor(
             _from=AnchorMarker(
                 col=3,
-                colOff=pixels_to_EMU(90),
+                colOff=pixels_to_EMU(5),
                 row=1,
                 rowOff=0,
             ),
@@ -10376,8 +12286,27 @@ def informe_excel():
         italic=True,
     )
     cover_sheet["B15"].alignment = Alignment(
+
         horizontal="center",
     )
+
+    # Responsable que generó el archivo.
+    cover_sheet.merge_cells("B16:H16")
+    cover_sheet["B16"] = (
+        f"Generado por: {excel_generated_by_display} | "
+        f"Rol: {excel_generated_by_role_label}"
+    )
+    cover_sheet["B16"].font = Font(
+        name="Calibri",
+        size=10,
+        italic=True,
+        color="666666",
+    )
+    cover_sheet["B16"].alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+    )
+    cover_sheet.row_dimensions[16].height = 18
 
     cover_sheet.merge_cells(
         "B18:H18"
@@ -10668,6 +12597,11 @@ def informe_excel():
         or 0
     )
 
+    discarded = int(
+        summary["discarded"]
+        or 0
+    )
+
     batches_count = int(
         summary[
             "batches_with_activity"
@@ -10812,31 +12746,31 @@ def informe_excel():
             None,
         ),
         (
-            "APTAS CONFIRMADAS",
-            approval_rate,
+            "APTAS",
+            passed,
             (
                 f"{passed} de "
                 f"{inspected} prendas"
             ),
-            "0.0%",
+            None,
         ),
         (
-            "RECHAZO CONFIRMADO",
-            rejection_rate,
+            "DEFECTOS CONFIRMADOS",
+            rejected,
             (
                 f"{rejected} de "
                 f"{inspected} prendas"
             ),
-            "0.0%",
+            None,
         ),
         (
-            "ALERTAS REVISADAS",
-            reviewed_rate,
+            "PENDIENTES DE REVISI\u00d3N",
+            pending,
             (
-                f"{pending} pendientes "
-                f"de {alerts} alertas"
+                f"de {alerts} "
+                "alertas IA"
             ),
-            "0.0%",
+            None,
         ),
     ]
 
@@ -10952,6 +12886,31 @@ def informe_excel():
     summary_sheet.row_dimensions[10].height = 21
     summary_sheet.row_dimensions[11].height = 21
 
+    # Indicador secundario: la tasa no ocupa una de las cuatro
+    # categorías principales (Inspeccionadas = Aptas + Confirmados
+    # + Pendientes).
+    summary_sheet.merge_cells(
+        "A12:H12"
+    )
+
+    summary_sheet["A12"] = (
+        "Tasa de rechazo confirmada: "
+        + f"{rejection_rate * 100:.1f} %"
+    )
+
+    summary_sheet["A12"].font = Font(
+        italic=True,
+        size=10,
+        color="69727A",
+    )
+
+    summary_sheet["A12"].alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+    )
+
+    summary_sheet.row_dimensions[12].height = 18
+
 
     # --------------------------------------------------------
     # ESTADO GENERAL
@@ -11038,7 +12997,7 @@ def informe_excel():
 
 
     # --------------------------------------------------------
-    # LECTURA RAPIDA
+    # SEGUIMIENTO DE CALIDAD
     # --------------------------------------------------------
 
     summary_sheet.merge_cells(
@@ -11046,7 +13005,7 @@ def informe_excel():
     )
 
     summary_sheet["A19"] = (
-        "Lectura r\u00e1pida"
+        "Seguimiento de calidad"
     )
 
     summary_sheet["A19"].font = Font(
@@ -11065,83 +13024,32 @@ def informe_excel():
         border_value=border,
     )
 
-    production_main = (
-        f"{inspected} prendas"
-    )
-
-    production_detail = (
-        f"{batches_count} "
-        + (
-            "lote con actividad."
-            if batches_count == 1
-            else "lotes con actividad."
-        )
-    )
-
-    quality_main = (
-        f"{approval_rate:.1%} aptas"
-    )
-
-    quality_detail = (
-        f"{rejection_rate:.1%} de rechazo "
-        "confirmado."
-    )
-
-    review_main = (
-        f"{pending_alert_rate:.1%} pendiente"
-    )
-
-    review_detail = (
-        f"{pending} de {alerts} alertas "
-        "todav\u00eda requieren revisi\u00f3n."
-    )
-
-    best_model = insights[
-        "best_model"
-    ]
-
-    if best_model:
-        model_main = (
-            best_model["code"]
-        )
-
-        model_detail = (
-            f"{best_model['name']} | "
-            f"{best_model['rejection_rate']:.1f}% "
-            "de rechazo confirmado."
-        )
-
-    else:
-        model_main = (
-            "A\u00fan no definido"
-        )
-
-        model_detail = (
-            "Se necesita completar la revisi\u00f3n "
-            "antes de comparar el rendimiento "
-            "definitivo de los modelos."
-        )
-
     quick_cards = [
         (
-            "PRODUCCI\u00d3N",
-            production_main,
-            production_detail,
+            "ALERTAS IA",
+            alerts,
+            (
+                f"de {inspected} "
+                "prendas inspeccionadas"
+            ),
         ),
         (
-            "CALIDAD",
-            quality_main,
-            quality_detail,
+            "CONFIRMADAS",
+            rejected,
+            "defectos confirmados "
+            "por revisi\u00f3n humana",
         ),
         (
-            "REVISI\u00d3N",
-            review_main,
-            review_detail,
+            "DESCARTADAS",
+            discarded,
+            "alertas descartadas "
+            "por revisi\u00f3n humana",
         ),
         (
-            "MODELO DESTACADO",
-            model_main,
-            model_detail,
+            "PENDIENTES",
+            pending,
+            "alertas a\u00fan "
+            "sin revisar",
         ),
     ]
 
@@ -11251,6 +13159,34 @@ def informe_excel():
     summary_sheet.row_dimensions[24].height = 21
     summary_sheet.row_dimensions[25].height = 21
     summary_sheet.row_dimensions[26].height = 21
+
+    # Quinto indicador del seguimiento, como l\u00ednea secundaria.
+    summary_sheet.merge_cells(
+        "A27:H27"
+    )
+
+    summary_sheet["A27"] = (
+        "% de alertas revisadas: "
+        + f"{reviewed_rate * 100:.1f} %"
+        + (
+            f"  ({rejected + discarded} de {alerts} alertas)"
+            if alerts
+            else ""
+        )
+    )
+
+    summary_sheet["A27"].font = Font(
+        italic=True,
+        size=10,
+        color="69727A",
+    )
+
+    summary_sheet["A27"].alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+    )
+
+    summary_sheet.row_dimensions[27].height = 18
 
 
     # --------------------------------------------------------
@@ -12324,6 +14260,44 @@ def informe_pdf():
         timezone_gt
     )
 
+
+    # Trazabilidad del usuario que genera el informe PDF.
+    # Se consulta el usuario autenticado sin modificar la sesión ni
+    # ninguna métrica, filtro o cálculo del informe.
+    current_report_user = fetch_one(
+        """
+        SELECT username, full_name, role
+        FROM users
+        WHERE id = %s
+        """,
+        (session.get("user_id"),),
+    ) or {}
+
+    generated_by_username = (
+        current_report_user.get("username")
+        or session.get("username")
+        or "usuario"
+    )
+
+    generated_by_name = (
+        current_report_user.get("full_name")
+        or generated_by_username
+    )
+
+    generated_by_role = normalize_role(
+        current_report_user.get("role")
+        or session.get("role")
+    )
+
+    generated_by_role_label = {
+        "ADMIN": "Administrador",
+        "MODEL_MANAGER": "Encargado de modelos",
+        "QUALITY_MANAGER": "Gestor de calidad",
+    }.get(
+        generated_by_role,
+        generated_by_role or "Sin rol",
+    )
+
     buffer = io.BytesIO()
 
     page_size = landscape(letter)
@@ -12440,6 +14414,18 @@ def informe_pdf():
         fontName="Helvetica-Bold",
         fontSize=7.5,
         leading=9,
+        textColor=colors.HexColor(
+            "#6B625A"
+        ),
+    )
+
+    secondary_metric_style = ParagraphStyle(
+        "SecondaryMetric",
+        parent=styles["Normal"],
+        alignment=TA_CENTER,
+        fontName="Helvetica-Bold",
+        fontSize=9,
+        leading=12,
         textColor=colors.HexColor(
             "#6B625A"
         ),
@@ -12738,6 +14724,33 @@ def informe_pdf():
         )
     )
 
+    generated_by_text = (
+        "Generado por: "
+        + escape(str(generated_by_name))
+    )
+
+    if (
+        generated_by_username
+        and str(generated_by_username) != str(generated_by_name)
+    ):
+        generated_by_text += (
+            " (@"
+            + escape(str(generated_by_username))
+            + ")"
+        )
+
+    generated_by_text += (
+        " | Rol: "
+        + escape(str(generated_by_role_label))
+    )
+
+    elements.append(
+        Paragraph(
+            generated_by_text,
+            exact_style,
+        )
+    )
+
     summary = data["summary"]
 
     elements.append(
@@ -12767,19 +14780,34 @@ def informe_pdf():
                 ),
             ),
             (
-                "Defectos confirmados",
+                "Defecto confirmado",
                 str(
                     summary["rejected"]
                     or 0
                 ),
             ),
             (
-                "Tasa de rechazo",
-                (
-                    f"{float(summary['rejection_rate'] or 0):.1f}%"
+                "Pendientes de revisi\u00f3n",
+                str(
+                    summary["pending"]
+                    or 0
                 ),
             ),
         ])
+    )
+
+    elements.append(
+        Spacer(1, 5)
+    )
+
+    elements.append(
+        paragraph(
+            (
+                "Tasa de rechazo confirmada: "
+                + f"{float(summary['rejection_rate'] or 0):.1f}%"
+            ),
+            secondary_metric_style,
+        )
     )
 
     elements.append(
@@ -13552,7 +15580,7 @@ def build_patchcore_dataset_name(model):
 
 
 def get_garment_ai_versions(model_id):
-    return fetch_all(
+    rows = fetch_all(
         """
         SELECT
             ai.*,
@@ -13590,6 +15618,13 @@ def get_garment_ai_versions(model_id):
         """,
         (model_id,),
     )
+
+    for row in rows:
+        row["technically_invalidated"] = is_technically_invalidated(
+            row.get("notes")
+        )
+
+    return rows
 
 
 def get_garment_model(model_id):
@@ -13789,6 +15824,27 @@ def garment_models_page():
     )
 
 
+def generate_garment_model_code():
+    """
+    Código de modelo nuevo, generado siempre en backend.
+
+    La usuaria nunca lo escribe: la unicidad no depende del frontend.
+    """
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        code = next_garment_model_code(cur)
+        conn.commit()
+        return code
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
 @app.route(
     "/modelos-prenda/nuevo",
     methods=["GET", "POST"],
@@ -13797,34 +15853,12 @@ def garment_models_page():
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
 def garment_model_create():
     if request.method == "POST":
-        code = request.form.get("code", "").strip().upper()
         name = request.form.get("name", "").strip()
         color = request.form.get("color", "").strip()
         description = request.form.get(
             "description",
             "",
         ).strip()
-
-        if not code:
-            code = datetime.now().strftime(
-                "BLUSA-%Y%m%d-%H%M%S"
-            )
-
-        code = code.replace(" ", "-")
-
-        if not all(
-            character.isalnum()
-            or character in {"-", "_"}
-            for character in code
-        ):
-            flash(
-                "El c\u00f3digo solo puede contener letras, "
-                "n\u00fameros, guiones y guion bajo.",
-                "error",
-            )
-            return render_template(
-                "garment_model_form.html"
-            )
 
         if not name:
             flash(
@@ -13844,18 +15878,20 @@ def garment_model_create():
                 "garment_model_form.html"
             )
 
-        existing = fetch_one(
-            """
-            SELECT id
-            FROM garment_models
-            WHERE code = %s
-            """,
-            (code,),
-        )
-
-        if existing:
+        try:
+            code = generate_garment_model_code()
+        except AIDomainError as error:
+            flash(str(error), "error")
+            return render_template(
+                "garment_model_form.html"
+            )
+        except Exception:
+            app.logger.exception(
+                "No se pudo generar el código del modelo."
+            )
             flash(
-                "Ya existe un modelo con ese c\u00f3digo.",
+                "No se pudo generar el código del modelo. "
+                "Intente guardar de nuevo.",
                 "error",
             )
             return render_template(
@@ -13978,6 +16014,93 @@ def garment_model_detail(model_id):
     )
 
     ai_versions = get_garment_ai_versions(model_id)
+    source_v1 = next(
+        (item for item in ai_versions if str(item.get("version")).lower() == "v1"),
+        None,
+    )
+    existing_normal_v2 = next(
+        (
+            item for item in ai_versions
+            if source_v1
+            and int(item.get("parent_ai_model_id") or 0) == int(source_v1["id"])
+            and str(item.get("version")).lower() == "v2"
+        ),
+        None,
+    )
+    source_v1_dataset_count = 0
+    if source_v1 and source_v1.get("dataset_id"):
+        dataset_row = fetch_one(
+            "SELECT image_count FROM ai_datasets WHERE id=%s",
+            (int(source_v1["dataset_id"]),),
+        )
+        source_v1_dataset_count = int((dataset_row or {}).get("image_count") or 0)
+    normal_v2_can_prepare = bool(
+        int(model_id) == 1082
+        and model.get("code") == "BLUSA-762"
+        and source_v1
+        and str(source_v1.get("status") or "").upper() == "VALIDACION"
+        and int(source_v1.get("active") or 0) == 0
+        and source_v1.get("threshold_final") is None
+        and source_v1_dataset_count == 27
+        and existing_normal_v2 is None
+        and not any(
+            str(item.get("version") or "").lower() != "v1"
+            for item in ai_versions
+        )
+        and not any(
+            item.get("status") in {"PREPARACION", "ENTRENANDO"}
+            and not item.get("technically_invalidated")
+            for item in ai_versions
+        )
+    )
+    normal_v2 = None
+    if existing_normal_v2:
+        conn = db()
+        cur = conn.cursor(dictionary=True)
+        try:
+            normal_v2 = normal_augmentation_summary(cur, int(existing_normal_v2["id"]))
+        finally:
+            cur.close()
+            conn.close()
+
+    source_v2 = next(
+        (item for item in ai_versions if str(item.get("version")).lower() == "v2"),
+        None,
+    )
+    existing_normal_v3 = next(
+        (
+            item for item in ai_versions
+            if source_v2
+            and int(item.get("parent_ai_model_id") or 0) == int(source_v2["id"])
+            and str(item.get("version")).lower() == "v3"
+        ),
+        None,
+    )
+    normal_augmentation_can_prepare = bool(
+        source_v2
+        and str(source_v2.get("model_type") or "").lower() == "patchcore"
+        and source_v2.get("status") == "VALIDACION"
+        and int(source_v2.get("active") or 0) == 0
+        and source_v2.get("threshold_final") is not None
+        and source_v2.get("threshold_frozen_at") is not None
+        and existing_normal_v3 is None
+        and not any(
+            item.get("status") in {"PREPARACION", "ENTRENANDO"}
+            and not item.get("technically_invalidated")
+            for item in ai_versions
+        )
+    )
+    normal_augmentation = None
+    if existing_normal_v3:
+        conn = db()
+        cur = conn.cursor(dictionary=True)
+        try:
+            normal_augmentation = normal_augmentation_summary(
+                cur, int(existing_normal_v3["id"])
+            )
+        finally:
+            cur.close()
+            conn.close()
 
     pending_ai_statuses = {
         "PREPARACION",
@@ -13989,6 +16112,15 @@ def garment_model_detail(model_id):
 
     ai_in_progress = any(
         version.get("status") in pending_ai_statuses
+        and not version.get("technically_invalidated")
+        for version in ai_versions
+    )
+
+    # Solo quedan versiones invalidadas "en proceso": para la ficha eso
+    # no es proceso, es historia (FASE 3A.3). Habilita el mensaje de
+    # versión histórica y no tapa la preparación de una versión nueva.
+    ai_historical_only = bool(ai_versions) and not ai_in_progress and any(
+        version.get("technically_invalidated")
         for version in ai_versions
     )
 
@@ -14001,6 +16133,47 @@ def garment_model_detail(model_id):
         and int(model.get("active") or 0) == 1
     )
 
+    ai_capture_state = None
+
+    if model.get("status") == "APROBADO":
+        try:
+            ai_capture_state = _json_sanitize(
+                _ai_capture_status_payload(
+                    garment_model_id=model_id,
+                    allowed=can_prepare_ai,
+                )
+            )
+        except Exception:
+            app.logger.exception(
+                "No se pudo leer el estado de captura IA "
+                f"(garment_model_id={model_id})."
+            )
+            ai_capture_state = None
+
+    ai_capture_visible = bool(
+        can_prepare_ai
+        and ai_capture_state
+        and (
+            ai_capture_state.get("has_preparation_version")
+            or ai_capture_state.get("session_id")
+        )
+    )
+
+    ai_training_state = None
+
+    if model.get("status") == "APROBADO":
+        try:
+            ai_training_state = _ai_training_status_payload(
+                model_id,
+                allowed=can_prepare_ai,
+            )
+        except Exception:
+            app.logger.exception(
+                "No se pudo leer el estado del entrenamiento IA "
+                f"(garment_model_id={model_id})."
+            )
+            ai_training_state = None
+
     return render_template(
         "garment_model_detail.html",
         model=model,
@@ -14009,7 +16182,15 @@ def garment_model_detail(model_id):
         can_manage=can_manage,
         ai_versions=ai_versions,
         ai_in_progress=ai_in_progress,
+        ai_historical_only=ai_historical_only,
         can_prepare_ai=can_prepare_ai,
+        ai_capture=ai_capture_state,
+        ai_capture_visible=ai_capture_visible,
+        ai_training=ai_training_state,
+        normal_augmentation=normal_augmentation,
+        normal_augmentation_can_prepare=normal_augmentation_can_prepare,
+        normal_v2_can_prepare=normal_v2_can_prepare,
+        normal_v2=normal_v2,
     )
 
 
@@ -14358,6 +16539,118 @@ def garment_ai_prepare(model_id):
             model_id=model_id,
         )
     )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/ia/preparar-v2-normal",
+    methods=["POST"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_ai_prepare_v2_normal(model_id):
+    garment = get_garment_model(model_id)
+    if not garment or not can_manage_garment_model(garment):
+        flash("No tiene permisos para preparar una versión IA.", "error")
+        return redirect(url_for("garment_models_page"))
+    if int(model_id) != 1082 or garment.get("code") != "BLUSA-762":
+        flash("La ampliación normal v2 de esta fase está definida para BLUSA-762.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute(
+            "SELECT id FROM garment_ai_models WHERE garment_model_id=%s AND version='v1' ORDER BY id DESC LIMIT 1",
+            (int(model_id),),
+        )
+        source = cur.fetchone()
+        if not source:
+            raise AIDomainError("No existe BLUSA-762 v1 como fuente de training.")
+        result = prepare_normal_v2_version(
+            cur,
+            garment_model_id=1082,
+            parent_ai_model_id=int(source["id"]),
+            actor_id=session.get("user_id"),
+            artifacts_root=get_ai_artifacts_root(),
+            min_new_images=30,
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        flash(str(error), "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo preparar v2 normal (garment_model_id=%s).", model_id)
+        flash("No se pudo preparar BLUSA-762 v2.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    finally:
+        cur.close()
+        conn.close()
+    flash(
+        "v2 preparada INACTIVA: 27 imágenes normales heredadas, mínimo 30 nuevas; no se creó job ni checkpoint.",
+        "success",
+    )
+    return redirect(url_for("garment_model_detail", model_id=model_id))
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/ia/preparar-v3-normal",
+    methods=["POST"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_ai_prepare_v3_normal(model_id):
+    garment = get_garment_model(model_id)
+    if not garment or not can_manage_garment_model(garment):
+        flash("No tiene permisos para preparar una versión IA.", "error")
+        return redirect(url_for("garment_models_page"))
+    if garment.get("status") != "APROBADO" or int(garment.get("active") or 0) != 1:
+        flash("La preparación requiere un modelo aprobado y activo.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute(
+            "SELECT id FROM garment_ai_models WHERE garment_model_id = %s "
+            "AND version = 'v2' ORDER BY id DESC LIMIT 1",
+            (int(model_id),),
+        )
+        source = cur.fetchone()
+        if source is None:
+            raise AIDomainError("No existe una versión v2 para ampliar.")
+        result = prepare_normal_augmentation_version(
+            cur,
+            garment_model_id=model_id,
+            parent_ai_model_id=int(source["id"]),
+            actor_id=session.get("user_id"),
+            artifacts_root=get_ai_artifacts_root(),
+            min_new_images=20,
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        flash(str(error), "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo preparar v3 normal (garment_model_id=%s).", model_id)
+        flash("No se pudo preparar la nueva versión normal.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    finally:
+        cur.close()
+        conn.close()
+    flash(
+        f"v3 preparada: {result['inherited_good_images']} imágenes buenas heredadas; "
+        "aún no se ha iniciado el entrenamiento.",
+        "success",
+    )
+    return redirect(url_for("garment_model_detail", model_id=model_id))
 
 
 @app.route(
@@ -14765,15 +17058,4437 @@ def health():
 
 @app.before_request
 def discard_persistent_flash_messages():
+    """
+    Los mensajes flash no pueden mostrarse en respuestas JSON, así que
+    se descartan ahí para que no aparezcan en una página siguiente.
+
+    En respuestas HTML sí se conservan: es lo que permite que una
+    redirección muestre "Captura completada" u otros avisos.
+    """
     from flask import session as flask_session
 
-    flask_session.pop(
-        "_flashes",
-        None,
+    if request.path.startswith("/api/"):
+        flask_session.pop(
+            "_flashes",
+            None,
+        )
+
+
+# ============================================================
+# FASE 2A — CAPTURA DE DATASET IA (estación)
+# Solo consume latest_frame; no abre RTSP ni crea inspections.
+# ============================================================
+
+def _ai_capture_encode_jpeg(frame):
+    cfg = AI_CAPTURE_RUNTIME["config"] or get_ai_capture_config()
+    ok, buffer = cv2.imencode(
+        ".jpg",
+        frame,
+        [
+            cv2.IMWRITE_JPEG_QUALITY,
+            int(cfg["jpeg_quality"]),
+        ],
     )
+    if not ok:
+        raise RuntimeError("No se pudo codificar el JPEG del candidato IA.")
+    return buffer.tobytes()
+
+
+def _ai_capture_evaluate(frame, coverage, sequence):
+    state = AI_CAPTURE_RUNTIME
+    return evaluate_candidate(
+        frame,
+        coverage=float(coverage),
+        frame_sequence=int(sequence),
+        known_sha256=set(state["known_sha256"]),
+        known_dhashes=list(state["known_dhashes"]),
+        get_roi_bounds=get_roi_bounds,
+        cv2_mod=cv2,
+        config=state["config"],
+    )
+
+
+def _seed_normal_augmentation_capture_hashes(cur, ai_model_id):
+    """Carga SHA y dHash del snapshot base para dedupe local de la estación."""
+    cur.execute(
+        """SELECT ti.sha256, ti.image_path
+           FROM garment_ai_models v
+           JOIN ai_dataset_images di ON di.dataset_id = v.source_dataset_id
+           JOIN ai_training_images ti ON ti.id = di.image_id
+           WHERE v.id = %s AND ti.status = 'ACEPTADA'
+           ORDER BY ti.id""",
+        (int(ai_model_id),),
+    )
+    sha_hashes = set()
+    dhashes = []
+    for row in cur.fetchall():
+        sha_hashes.add(str(row["sha256"]).lower())
+        image_path = resolve_under_root(get_ai_artifacts_root(), row["image_path"])
+        image = cv2.imread(str(image_path))
+        if image is not None:
+            dhashes.append(compute_dhash_64(image, cv2_mod=cv2))
+    return sha_hashes, dhashes
+
+
+def _ai_capture_persist(decision, jpeg_bytes, candidate):
+    session_id = AI_CAPTURE_RUNTIME["session_id"]
+    garment_model_id = AI_CAPTURE_RUNTIME["garment_model_id"]
+    cfg = AI_CAPTURE_RUNTIME["config"] or get_ai_capture_config()
+    sequence = decision.get("frame_sequence")
+    accepted = bool(decision.get("accepted"))
+    keep_file = accepted or bool(cfg.get("keep_rejected"))
+
+    rel_path = None
+    sha = decision.get("sha256")
+
+    if keep_file and jpeg_bytes:
+        ensure_capture_session_dirs(
+            garment_model_id,
+            session_id,
+            keep_rejected=bool(cfg.get("keep_rejected")),
+        )
+        filename = f"frame_{int(sequence)}.jpg"
+        rel_path = capture_image_relative_path(
+            garment_model_id,
+            session_id,
+            filename,
+            rejected=not accepted,
+        )
+        abs_path = resolve_under_root(get_ai_artifacts_root(), rel_path)
+        atomic_write_bytes(abs_path, jpeg_bytes)
+        sha = sha256_bytes(jpeg_bytes)
+    else:
+        # Solo metadata: ruta lógica controlada bajo AI_ARTIFACTS_ROOT.
+        rel_path = capture_image_relative_path(
+            garment_model_id,
+            session_id,
+            f"frame_{int(sequence)}_meta.jpg",
+            rejected=not accepted,
+        )
+        if sha is None:
+            sha = "0" * 64
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+
+        claim_frame_sequence(cur, session_id, int(sequence))
+
+        if accepted and sha:
+            dup = find_accepted_sha256(cur, garment_model_id, sha)
+            if dup is not None:
+                conn.rollback()
+                if keep_file and rel_path:
+                    resolve_under_root(get_ai_artifacts_root(), rel_path).unlink(missing_ok=True)
+                return {
+                    "skipped": True,
+                    "reason": "DUPLICATE_SHA256",
+                    "existing_id": dup["id"],
+                }
+            if AI_CAPTURE_RUNTIME.get("target_ai_model_id"):
+                cur.execute(
+                    """SELECT COUNT(*) AS total
+                       FROM ai_validation_cases c
+                       JOIN garment_ai_models v ON v.id = c.ai_model_id
+                       WHERE v.id = (
+                         SELECT parent_ai_model_id FROM garment_ai_models
+                         WHERE id = %s
+                       ) AND c.image_sha256 = %s""",
+                    (int(AI_CAPTURE_RUNTIME["target_ai_model_id"]), sha),
+                )
+                if int(cur.fetchone()["total"] or 0):
+                    conn.rollback()
+                    if keep_file and rel_path:
+                        resolve_under_root(get_ai_artifacts_root(), rel_path).unlink(missing_ok=True)
+                    return {
+                        "skipped": True,
+                        "reason": "DUPLICATE_VALIDATION_SHA256",
+                    }
+                cur.execute(
+                    """SELECT id FROM ai_final_test_cases
+                       WHERE garment_model_id=%s AND image_sha256=%s LIMIT 1""",
+                    (int(garment_model_id), sha),
+                )
+                if cur.fetchone():
+                    conn.rollback()
+                    if keep_file and rel_path:
+                        resolve_under_root(get_ai_artifacts_root(), rel_path).unlink(missing_ok=True)
+                    return {
+                        "skipped": True,
+                        "reason": "DUPLICATE_FINAL_TEST_SHA256",
+                    }
+
+        status = "ACEPTADA" if accepted else "RECHAZADA"
+        record = register_training_image(
+            cur,
+            garment_model_id=garment_model_id,
+            image_path=rel_path,
+            sha256=sha,
+            capture_session_id=session_id,
+            frame_sequence=int(sequence),
+            coverage=decision.get("coverage"),
+            quality_score=decision.get("quality_score"),
+            status=status,
+            reject_reason=decision.get("reject_reason"),
+        )
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+    if accepted and decision.get("dhash") is not None:
+        AI_CAPTURE_RUNTIME["known_dhashes"].append(
+            int(decision["dhash"])
+        )
+        if sha:
+            AI_CAPTURE_RUNTIME["known_sha256"].add(str(sha).lower())
+
+    return {
+        "skipped": False,
+        "record": record,
+        "accepted": accepted,
+        "rel_path": rel_path,
+        "garment_token": candidate.garment_token,
+    }
+
+
+def ai_capture_worker():
+    """Consumidor de latest_frame para preparación de dataset IA."""
+    global AI_CAPTURE_WORKER_ENABLED
+
+    cfg = get_ai_capture_config()
+    AI_CAPTURE_RUNTIME["config"] = cfg
+
+    enter_coverage = float(
+        os.getenv("AUTO_GARMENT_ENTER_COVERAGE", "0.28")
+    )
+    exit_coverage = float(
+        os.getenv("AUTO_GARMENT_EXIT_COVERAGE", "0.12")
+    )
+    confirm_frames = int(
+        os.getenv("AUTO_GARMENT_CONFIRM_FRAMES", "3")
+    )
+    exit_frames_needed = int(
+        os.getenv("AUTO_GARMENT_EXIT_FRAMES", "3")
+    )
+    max_track_frames = int(
+        os.getenv("AUTO_GARMENT_MAX_TRACK_FRAMES", "16")
+    )
+
+    print(
+        "[AI_CAPTURE] Worker iniciado. "
+        f"session_id={AI_CAPTURE_RUNTIME['session_id']} "
+        f"target={cfg['target_images']}"
+    )
+
+    while (
+        AI_CAPTURE_WORKER_ENABLED
+        and is_ai_capture_mode_active()
+        and not AI_GUIDED_ACTIVE
+    ):
+        try:
+            frame, frame_timestamp, sequence = (
+                get_latest_camera_frame()
+            )
+
+            if frame is None:
+                time.sleep(0.5)
+                continue
+
+            if sequence == AI_CAPTURE_RUNTIME["last_sequence"]:
+                time.sleep(0.05)
+                continue
+
+            AI_CAPTURE_RUNTIME["last_sequence"] = sequence
+            log_camera_latency(
+                source="ai_capture",
+                sequence=sequence,
+                timestamp_monotonic=frame_timestamp,
+            )
+
+            try:
+                coverage = compute_roi_coverage(frame)
+            except Exception:
+                coverage = 0.0
+
+            presence = AI_CAPTURE_RUNTIME["presence"]
+            waiting_exit = AI_CAPTURE_RUNTIME["waiting_for_exit"]
+
+            # -------------------------------------------------
+            # Esperando salida de la prenda ya trackeada.
+            # -------------------------------------------------
+            if waiting_exit:
+                if coverage <= exit_coverage:
+                    AI_CAPTURE_RUNTIME["exit_frames"] += 1
+                else:
+                    AI_CAPTURE_RUNTIME["exit_frames"] = 0
+
+                if (
+                    AI_CAPTURE_RUNTIME["exit_frames"]
+                    >= exit_frames_needed
+                ):
+                    candidate = AI_CAPTURE_RUNTIME["presence"]
+                    if (
+                        candidate is not None
+                        and not candidate.finalized
+                        and candidate.best_frame is not None
+                        and candidate.best_coverage
+                        >= cfg["min_coverage"]
+                    ):
+                        try:
+                            result = ai_capture.persist_best_candidate(
+                                candidate,
+                                evaluate_fn=_ai_capture_evaluate,
+                                encode_jpeg_fn=_ai_capture_encode_jpeg,
+                                persist_fn=_ai_capture_persist,
+                                config=cfg,
+                            )
+                            AI_CAPTURE_RUNTIME["last_result"] = result
+                            AI_CAPTURE_RUNTIME["last_persisted_token"] = (
+                                candidate.garment_token
+                            )
+                            AI_CAPTURE_RUNTIME["last_error"] = None
+                            print(
+                                "[AI_CAPTURE] Candidato persistido: "
+                                f"token={candidate.garment_token} "
+                                f"accepted={result['accepted']} "
+                                f"reason={result['reject_reason']}"
+                            )
+                        except Exception as error:
+                            AI_CAPTURE_RUNTIME["last_error"] = str(error)
+                            print(
+                                "[AI_CAPTURE] Error al persistir: "
+                                f"{error}"
+                            )
+                    elif candidate is not None:
+                        candidate.finalized = True
+                        print(
+                            "[AI_CAPTURE] Presencia descartada "
+                            "(sin cobertura suficiente)."
+                        )
+
+                    AI_CAPTURE_RUNTIME["presence"] = None
+                    AI_CAPTURE_RUNTIME["waiting_for_exit"] = False
+                    AI_CAPTURE_RUNTIME["exit_frames"] = 0
+
+                time.sleep(0.20)
+                continue
+
+            # -------------------------------------------------
+            # Seguimiento de presencia (1 candidato por token).
+            # -------------------------------------------------
+            if coverage >= enter_coverage:
+                if AI_CAPTURE_RUNTIME["presence"] is None:
+                    token = next_garment_token()
+                    AI_CAPTURE_RUNTIME["presence"] = (
+                        reset_presence_candidate(token)
+                    )
+                    AI_CAPTURE_RUNTIME["exit_frames"] = 0
+                    print(
+                        "[AI_CAPTURE] Presencia detectada. "
+                        f"token={token}"
+                    )
+
+                presence = AI_CAPTURE_RUNTIME["presence"]
+                presence.observe(
+                    frame,
+                    coverage,
+                    sequence,
+                    enter_coverage=enter_coverage,
+                    confirm_frames=confirm_frames,
+                )
+
+                coverage_dropping = (
+                    presence.best_coverage >= cfg["min_coverage"]
+                    and coverage < presence.best_coverage - 0.015
+                )
+                max_tracked = (
+                    presence.tracked_frames >= max_track_frames
+                )
+
+                if coverage_dropping or max_tracked:
+                    # Misma idea que producción: la prenda ya estuvo
+                    # completa; esperar a que salga y persistir el mejor.
+                    AI_CAPTURE_RUNTIME["waiting_for_exit"] = True
+                    AI_CAPTURE_RUNTIME["exit_frames"] = 0
+            else:
+                presence = AI_CAPTURE_RUNTIME["presence"]
+                if presence is not None:
+                    if presence.best_coverage >= cfg["min_coverage"]:
+                        # Salió del umbral de entrada con buen candidato.
+                        AI_CAPTURE_RUNTIME["waiting_for_exit"] = True
+                        if coverage <= exit_coverage:
+                            AI_CAPTURE_RUNTIME["exit_frames"] += 1
+                        else:
+                            AI_CAPTURE_RUNTIME["exit_frames"] = 0
+                    else:
+                        # Nunca alcanzó cobertura válida: descartar.
+                        presence.finalized = True
+                        AI_CAPTURE_RUNTIME["presence"] = None
+                        AI_CAPTURE_RUNTIME["exit_frames"] = 0
+
+            time.sleep(0.20)
+
+        except Exception as error:
+            AI_CAPTURE_RUNTIME["last_error"] = str(error)
+            print(f"[AI_CAPTURE] Error controlado: {error}")
+            time.sleep(0.5)
+
+    print("[AI_CAPTURE] Worker finalizado.")
+
+
+def _ensure_ai_capture_worker():
+    global AI_CAPTURE_THREAD
+    global AI_CAPTURE_WORKER_ENABLED
+
+    with AI_CAPTURE_THREAD_LOCK:
+        if (
+            AI_GUIDED_ACTIVE
+            and AI_GUIDED_ENABLED
+        ):
+            # La estación guiada es el único motor mientras dura.
+            return False
+
+        if (
+            AI_CAPTURE_THREAD is not None
+            and AI_CAPTURE_THREAD.is_alive()
+            and AI_CAPTURE_WORKER_ENABLED
+        ):
+            return True
+
+        if cv2 is None:
+            return False
+
+        AI_CAPTURE_WORKER_ENABLED = True
+        AI_CAPTURE_THREAD = threading.Thread(
+            target=ai_capture_worker,
+            daemon=True,
+            name="ai-capture-worker",
+        )
+        AI_CAPTURE_THREAD.start()
+        return True
+
+
+def _stop_ai_capture_worker(timeout=5.0):
+    global AI_CAPTURE_WORKER_ENABLED
+
+    AI_CAPTURE_WORKER_ENABLED = False
+    thread = AI_CAPTURE_THREAD
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=timeout)
+
+
+def _ensure_ai_guided_worker():
+    """Arranca el motor guiado (siempre a costa del worker simple)."""
+    global AI_GUIDED_THREAD
+    global AI_GUIDED_ENABLED
+    global AI_GUIDED_ACTIVE
+    global AI_CAPTURE_THREAD
+    global AI_CAPTURE_WORKER_ENABLED
+
+    with AI_CAPTURE_THREAD_LOCK:
+        if (
+            AI_GUIDED_THREAD is not None
+            and AI_GUIDED_THREAD.is_alive()
+            and AI_GUIDED_ENABLED
+        ):
+            return True
+
+        if cv2 is None:
+            return False
+
+        AI_CAPTURE_WORKER_ENABLED = False
+        plain = AI_CAPTURE_THREAD
+        if plain is not None and plain.is_alive():
+            plain.join(timeout=5.0)
+
+        AI_GUIDED_ACTIVE = True
+        AI_GUIDED_ENABLED = True
+        AI_GUIDED_THREAD = threading.Thread(
+            target=ai_guided_worker,
+            daemon=True,
+            name="ai-guided-worker",
+        )
+        AI_GUIDED_THREAD.start()
+        return True
+
+
+def _stop_ai_guided_worker(timeout=5.0):
+    global AI_GUIDED_ENABLED
+    global AI_GUIDED_ACTIVE
+
+    AI_GUIDED_ENABLED = False
+    thread = AI_GUIDED_THREAD
+    if thread is not None and thread.is_alive():
+        if threading.current_thread() is not thread:
+            thread.join(timeout=timeout)
+    AI_GUIDED_ACTIVE = False
+
+
+# Un guide publicado hace más de esto se considera obsoleto: la UI
+# muestra "Preparando la cámara" en vez de un estado congelado.
+AI_GUIDED_STALE_SECONDS = 5.0
+AI_GUIDED_FRAME_MAX_AGE_SECONDS = 2.5
+AI_GUIDED_DIAGNOSTIC_INTERVAL_SECONDS = 2.0
+AI_GUIDED_LAST_DIAGNOSTIC = 0.0
+
+
+def _ai_guided_segment(frame, roi):
+    """
+    ÚNICA segmentación de un frame de la captura guiada.
+
+    Devuelve (mask, bbox, coverage, diagnostics) con bbox y cobertura
+    calculados sobre la misma máscara: dos ejecuciones del segmentador
+    podían no coincidir y dejar detected=False con coverage > 0.
+    """
+    diagnostics = {}
+
+    try:
+        mask = create_guided_garment_mask(frame, diagnostics)
+    except Exception as error:  # noqa: BLE001 - el motivo queda en diagnostics
+        mask = None
+        diagnostics["error"] = str(error)
+
+    bbox = mask_bbox(mask, cv2) if mask is not None else None
+
+    coverage = 0.0
+    if mask is not None:
+        try:
+            x1, y1, x2, y2 = roi
+            roi_mask = mask[y1:y2, x1:x2]
+            coverage = float(
+                cv2.countNonZero(roi_mask) / max(1, roi_mask.size)
+            )
+        except Exception:
+            coverage = 0.0
+
+    return mask, bbox, float(coverage), diagnostics
+
+
+def _ai_guided_reset_state():
+    AI_GUIDED_RUNTIME["guide"] = None
+    AI_GUIDED_RUNTIME["tracker"] = None
+    AI_GUIDED_RUNTIME["tracker_model_id"] = None
+    AI_GUIDED_RUNTIME["last_error"] = None
+    AI_GUIDED_RUNTIME["pending_capture"] = None
+
+
+def _ai_camera_frame_status():
+    """Edad y frescura del último frame compartido por la cámara."""
+    with latest_frame_lock:
+        timestamp = latest_frame_timestamp_monotonic
+        sequence = latest_frame_sequence
+    age = None
+    if timestamp is not None:
+        age = max(0.0, time.perf_counter() - float(timestamp))
+    return {
+        "sequence": int(sequence or 0),
+        "frame_age_ms": None if age is None else round(age * 1000.0, 1),
+        "frame_fresh": bool(
+            age is not None and age <= AI_GUIDED_FRAME_MAX_AGE_SECONDS
+        ),
+    }
+
+
+def _ai_guided_publish(tracker):
+    """Reemplaza el estado visible (referencia atómica, sin candados)."""
+    guide = tracker.snapshot()
+    guide["published_at"] = time.time()
+    AI_GUIDED_RUNTIME["guide"] = guide
+    AI_GUIDED_RUNTIME["tracker"] = tracker
+    AI_GUIDED_RUNTIME["tracker_model_id"] = (
+        AI_GUIDED_RUNTIME.get("garment_model_id")
+    )
+
+
+def _ai_guided_guide_is_fresh(guide) -> bool:
+    if not isinstance(guide, dict):
+        return False
+    published = guide.get("published_at")
+    if not published:
+        return False
+    try:
+        return (time.time() - float(published)) <= AI_GUIDED_STALE_SECONDS
+    except (TypeError, ValueError):
+        return False
+
+
+def _ai_guided_ensure_alive():
+    """
+    Reaviva el motor guiado si murió sin avisar.
+
+    Sin esto, la cámara sigue en vivo pero el estado de la prenda
+    queda congelado (p. ej. "SIN PRENDA") aunque la prenda esté
+    dentro del área.
+    """
+    if not (AI_GUIDED_ACTIVE and AI_GUIDED_ENABLED):
+        return False
+
+    thread = AI_GUIDED_THREAD
+    if thread is not None and thread.is_alive():
+        return True
+
+    try:
+        return bool(_ensure_ai_guided_worker())
+    except Exception:
+        app.logger.exception("No se pudo reavivar el motor guiado.")
+        return False
+
+
+def _ai_guided_payload(garment_model_id=None):
+    """Estado guiado visible para la ficha y la pantalla de captura."""
+    empty = {
+        "active": False,
+        "state": None,
+        "state_label": None,
+        "message": "Preparando la cámara",
+        "aligned": False,
+        "ready": False,
+        "reason": None,
+        "bbox": None,
+        **_ai_camera_frame_status(),
+    }
+
+    if not (AI_GUIDED_ACTIVE and AI_GUIDED_ENABLED):
+        return empty
+
+    guide = AI_GUIDED_RUNTIME.get("guide")
+    if guide is None:
+        return empty
+
+    guide_model = AI_GUIDED_RUNTIME.get("garment_model_id")
+    if (
+        garment_model_id is not None
+        and guide_model is not None
+        and int(guide_model) != int(garment_model_id)
+    ):
+        return empty
+
+    if not _ai_guided_guide_is_fresh(guide):
+        # Estado viejo: mejor decir "Preparando" que mentir.
+        return empty
+
+    payload = dict(guide)
+    payload["active"] = True
+    payload["ready"] = bool(guide.get("ready"))
+    payload["last_error"] = AI_GUIDED_RUNTIME.get("last_error")
+    payload.update(_ai_camera_frame_status())
+    return payload
+
+
+def _ai_guided_prepare_runtime(session_id, garment_model_id):
+    """Monta el runtime de sesión para que el worker guiado pueda persistir."""
+    set_ai_capture_mode(
+        True,
+        session_id=session_id,
+        garment_model_id=garment_model_id,
+    )
+
+    cfg = get_ai_guided_config()
+    capture_cfg = get_ai_capture_config()
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        capture_row = get_capture_session(cur, int(session_id))
+    finally:
+        cur.close()
+        conn.close()
+    target_ai_model_id = (
+        capture_row.get("target_ai_model_id") if capture_row else None
+    )
+    if target_ai_model_id:
+        capture_cfg["target_images"] = 40
+    runtime_cfg = {**capture_cfg, **cfg}
+    AI_CAPTURE_RUNTIME.update(
+        {
+            "session_id": session_id,
+            "garment_model_id": garment_model_id,
+            "config": runtime_cfg,
+            "known_sha256": set(),
+            "known_dhashes": [],
+            "presence": None,
+            "waiting_for_exit": False,
+            "exit_frames": 0,
+            "last_sequence": -1,
+            "last_persisted_token": None,
+            "last_error": None,
+            "last_result": None,
+        }
+    )
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        hashes = load_session_accepted_hashes(cur, session_id)
+        AI_CAPTURE_RUNTIME["known_sha256"] = set(hashes["sha256"])
+    finally:
+        cur.close()
+        conn.close()
+
+    AI_GUIDED_RUNTIME.update(
+        {
+            "garment_model_id": garment_model_id,
+            "session_id": session_id,
+            "last_error": None,
+        }
+    )
+    _ai_guided_reset_state()
+    return cfg
+
+
+def _ai_guided_capture(tracker, *, manual=False):
+    """
+    Persiste el mejor frame del paso.
+
+    - manual=False: captura automática (solo con AI_GUIDED_AUTO_CAPTURE).
+    - manual=True: botón "CAPTURAR IMAGEN"; si falla se vuelve al paso
+      de posicionamiento para poder reintentar sin retirar la prenda.
+    """
+    cfg = tracker.config
+    AI_CAPTURE_RUNTIME["config"] = cfg
+
+    def abort(reason):
+        if manual:
+            tracker.cancel_capture()
+        else:
+            tracker.release()
+        _ai_guided_publish(tracker)
+        return {"ok": False, "error": reason}
+
+    tracker.begin_capture()
+    _ai_guided_publish(tracker)
+
+    candidate = tracker.best_candidate(next_garment_token())
+    if candidate is None:
+        return abort(GUIDED_MESSAGES["NO_GARMENT"])
+
+    try:
+        result = ai_capture.persist_best_candidate(
+            candidate,
+            evaluate_fn=_ai_capture_evaluate,
+            encode_jpeg_fn=_ai_capture_encode_jpeg,
+            persist_fn=_ai_capture_persist,
+            config=cfg,
+        )
+    except Exception as error:
+        AI_GUIDED_RUNTIME["last_error"] = str(error)
+        print(f"[AI_GUIDED] Error al persistir: {error}")
+        return abort("No se pudo guardar la captura. Intente de nuevo.")
+
+    record = result.get("record") or {}
+
+    if record.get("skipped"):
+        # Imagen idéntica a una ya guardada: no cuenta ni se repite.
+        return abort("Imagen repetida. Cambie la prenda o muévala un poco.")
+
+    AI_GUIDED_RUNTIME["last_error"] = None
+    tracker.confirm_capture(result)
+    _ai_guided_publish(tracker)
+    print(
+        "[AI_GUIDED] Captura guardada: "
+        f"accepted={result.get('accepted')} "
+        f"reason={result.get('reject_reason')}"
+    )
+    return {
+        "ok": True,
+        "result": result,
+        "record": record,
+        "accepted": bool(result.get("accepted")),
+    }
+
+
+# Candado del botón manual: evita dos capturas simultáneas del mismo
+# fotograma cuando la operadora presiona dos veces muy rápido.
+AI_GUIDED_MANUAL_LOCK = threading.Lock()
+
+# Anti-mismo-fotograma: separa tomas manuales para que dos capturas
+# consecutivas no sean el mismo frame (o casi el mismo).
+AI_GUIDED_MANUAL_COOLDOWN_DEFAULT = 0.6
+AI_GUIDED_MANUAL_LAST = {"at": 0.0, "sequence": -1}
+
+
+def _ai_guided_manual_cooldown():
+    """
+    Segundos mínimos entre tomas manuales.
+
+    Se lee en cada llamada (no al importar) para poder ajustarlo por
+    entorno y poder parchearlo desde los tests.
+    """
+    raw = os.environ.get("AI_GUIDED_MANUAL_COOLDOWN_SECONDS")
+
+    try:
+        value = (
+            AI_GUIDED_MANUAL_COOLDOWN_DEFAULT
+            if raw in (None, "")
+            else float(raw)
+        )
+    except (TypeError, ValueError):
+        value = AI_GUIDED_MANUAL_COOLDOWN_DEFAULT
+
+    return max(0.0, min(value, 10.0))
+
+
+def reset_for_next_manual_capture():
+    """
+    Libera la vista previa para poder capturar otra imagen.
+
+    Único punto que limpia el estado de la toma pendiente: se usa
+    cuando se acepta, se repite, se descarta o se cancela.
+    """
+    AI_GUIDED_RUNTIME["pending_capture"] = None
+
+
+def _ai_guided_manual_capture(garment_model_id):
+    """
+    Congela una imagen fresca para revisión; no la persiste aún.
+
+    Devuelve (payload, status_code). Nunca crea inspecciones ni toca
+    la estación productiva: solo escribe en la sesión de captura IA.
+    """
+    with AI_GUIDED_MANUAL_LOCK:
+        if AI_GUIDED_RUNTIME.get("pending_capture") is not None:
+            return {
+                "ok": False,
+                "error": "Revise la imagen pendiente antes de capturar otra.",
+            }, 409
+        frame, timestamp, sequence = get_latest_camera_frame()
+        age = (
+            None
+            if timestamp is None
+            else max(0.0, time.perf_counter() - float(timestamp))
+        )
+        if frame is None or age is None or age > AI_GUIDED_FRAME_MAX_AGE_SECONDS:
+            return {
+                "ok": False,
+                "error": "La cámara no tiene una imagen reciente. Espere y vuelva a intentar.",
+            }, 409
+
+        cooldown = _ai_guided_manual_cooldown()
+        last_at = float(AI_GUIDED_MANUAL_LAST.get("at") or 0.0)
+        elapsed = time.perf_counter() - last_at
+
+        if last_at > 0.0:
+            if int(sequence) == int(AI_GUIDED_MANUAL_LAST.get("sequence") or -1):
+                return {
+                    "ok": False,
+                    "error": (
+                        "La imagen es idéntica a la anterior: la cámara "
+                        "debe entregar un fotograma nuevo. Repita en un "
+                        "instante."
+                    ),
+                }, 409
+            if elapsed < cooldown:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Espere {cooldown:.1f} s entre capturas para no "
+                        "repetir la misma imagen."
+                    ),
+                }, 429
+
+
+        try:
+            x1, y1, x2, y2 = get_roi_bounds(frame)
+            crop = frame[y1:y2, x1:x2].copy()
+            if crop.size == 0:
+                raise ValueError("ROI vacío")
+        except Exception:
+            return {"ok": False, "error": "El área de captura no es válida."}, 409
+
+        _mask, bbox, coverage, segmentation = _ai_guided_segment(
+            frame,
+            (x1, y1, x2, y2),
+        )
+
+        try:
+            sharpness = compute_sharpness(
+                frame,
+                get_roi_bounds=get_roi_bounds,
+                cv2_mod=cv2,
+            )
+        except Exception:
+            sharpness = 0.0
+
+        decision = _ai_capture_evaluate(frame, coverage, sequence)
+        warnings = []
+        if segmentation.get("method") == "ninguno":
+            warnings.append(
+                "No se detectó la prenda dentro del área: el sistema "
+                "no pudo confirmar una posición ideal. Colóquela entera "
+                "dentro del rectángulo antes de aceptar."
+            )
+        elif bbox is None:
+            warnings.append("El sistema no pudo confirmar una posición ideal. Revise la imagen antes de aceptarla.")
+        if float(sharpness or 0.0) < float((AI_CAPTURE_RUNTIME.get("config") or get_ai_capture_config())["min_sharpness"]):
+            warnings.append("Imagen posiblemente borrosa.")
+        if float(coverage or 0.0) < float((AI_CAPTURE_RUNTIME.get("config") or get_ai_capture_config())["min_coverage"]):
+            warnings.append("La prenda podría quedar parcial o poco visible dentro del área.")
+        if decision.get("reason") in (
+            "MOVE_LEFT", "MOVE_RIGHT", "MOVE_UP", "MOVE_DOWN",
+            "HIGH_COVERAGE",
+        ):
+            warnings.append("Parte de la prenda podría quedar fuera del área o descentrada.")
+        if decision.get("reject_reason") in (
+            "DUPLICATE_SHA256", "DUPLICATE_PERCEPTUAL"
+        ):
+            warnings.append("Esta captura es muy similar a una anterior.")
+        if age > 1.0:
+            warnings.append("La imagen tiene cierto retraso respecto a la cámara.")
+        if not warnings:
+            warnings.append("La posición parece adecuada. Confirme visualmente antes de aceptar.")
+
+        try:
+            source_jpeg = _ai_capture_encode_jpeg(frame)
+            stored_frame = cv2.imdecode(
+                np.frombuffer(source_jpeg, dtype=np.uint8),
+                cv2.IMREAD_COLOR,
+            )
+            stored_crop = stored_frame[y1:y2, x1:x2].copy()
+            preview_ok, preview_png = cv2.imencode(".png", stored_crop)
+        except Exception:
+            preview_ok = False
+            source_jpeg = None
+        if not preview_ok:
+            return {"ok": False, "error": "No se pudo preparar la vista previa."}, 500
+
+        token = uuid.uuid4().hex
+        candidate = ai_capture.PresenceCandidate(garment_token=next_garment_token())
+        candidate.best_frame = frame.copy()
+        candidate.best_coverage = float(coverage or 0.0)
+        candidate.best_sequence = int(sequence)
+        pending = {
+            "token": token,
+            "candidate": candidate,
+            "decision": dict(decision),
+            "jpeg_bytes": source_jpeg,
+            "roi": (x1, y1, x2, y2),
+            "bbox": bbox,
+            "sharpness": float(sharpness or 0.0),
+            "frame_age_ms": round(age * 1000.0, 1),
+            "warnings": warnings,
+            "segmentation": dict(segmentation),
+        }
+        AI_GUIDED_RUNTIME["pending_capture"] = pending
+        AI_GUIDED_MANUAL_LAST["at"] = time.perf_counter()
+        AI_GUIDED_MANUAL_LAST["sequence"] = int(sequence)
+        log_camera_latency(
+            source="ai_guided_manual_preview",
+            sequence=sequence,
+            timestamp_monotonic=timestamp,
+        )
+        preview = base64.b64encode(preview_png.tobytes()).decode("ascii")
+        return {
+            "ok": True,
+            "pending_token": token,
+            "preview_data_url": "data:image/png;base64," + preview,
+            "warnings": warnings,
+            "metrics": {
+                "sequence": int(sequence),
+                "frame_age_ms": round(age * 1000.0, 1),
+                "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
+                "roi": [x1, y1, x2, y2],
+                "coverage": round(float(coverage or 0.0), 4),
+                "sharpness": round(float(sharpness or 0.0), 2),
+                "detected": bbox is not None,
+                "bbox": list(bbox) if bbox else None,
+                "mask_method": segmentation.get("method"),
+                "mask_nonzero": segmentation.get("mask_nonzero"),
+                "mask_pct": segmentation.get("mask_pct"),
+                "roi_stats": segmentation.get("roi_stats"),
+                "segmentation_reason": segmentation.get("reason"),
+            },
+            "guide": _ai_guided_payload(garment_model_id),
+        }, 200
+
+
+def ai_guided_worker():
+    """
+    Motor de la estación guiada: posicionamiento + captura automática.
+
+    Lee el mismo latest_frame que producción; nunca escribe en
+    inspecciones ni en la estación de calidad.
+    """
+    global AI_GUIDED_ENABLED
+
+    cfg = get_ai_guided_config()
+    tracker = GuidedTracker(cfg)
+    AI_CAPTURE_RUNTIME["config"] = {
+        **get_ai_capture_config(),
+        **cfg,
+    }
+    _ai_guided_publish(tracker)
+
+    last_sequence = -1
+
+    print(
+        "[AI_GUIDED] Worker iniciado: "
+        f"model={AI_GUIDED_RUNTIME.get('garment_model_id')} "
+        f"session={AI_GUIDED_RUNTIME.get('session_id')} "
+        f"target={cfg['target_images']}"
+    )
+
+    while AI_GUIDED_ENABLED and is_ai_capture_mode_active():
+        try:
+            frame, frame_timestamp, sequence = get_latest_camera_frame()
+
+            if frame is None:
+                time.sleep(0.5)
+                continue
+
+            if sequence == last_sequence:
+                time.sleep(0.05)
+                continue
+
+            last_sequence = sequence
+            log_camera_latency(
+                source="ai_guided",
+                sequence=sequence,
+                timestamp_monotonic=frame_timestamp,
+            )
+
+            try:
+                roi = get_roi_bounds(frame)
+            except Exception:
+                time.sleep(0.20)
+                continue
+
+            _mask, bbox, coverage, segmentation = _ai_guided_segment(
+                frame,
+                roi,
+            )
+
+            try:
+                sharpness = compute_sharpness(
+                    frame,
+                    get_roi_bounds=get_roi_bounds,
+                    cv2_mod=cv2,
+                )
+            except Exception:
+                sharpness = 0.0
+
+            guide = tracker.step(
+                roi=roi,
+                bbox=bbox,
+                coverage=coverage,
+                sharpness=sharpness,
+                sequence=sequence,
+                frame=frame,
+            )
+            _ai_guided_publish(tracker)
+
+            global AI_GUIDED_LAST_DIAGNOSTIC
+            now = time.perf_counter()
+            if now - AI_GUIDED_LAST_DIAGNOSTIC >= AI_GUIDED_DIAGNOSTIC_INTERVAL_SECONDS:
+                AI_GUIDED_LAST_DIAGNOSTIC = now
+                height, width = frame.shape[:2]
+                age_ms = (
+                    None if frame_timestamp is None
+                    else max(0.0, now - float(frame_timestamp)) * 1000.0
+                )
+                print(
+                    "[AI_GUIDE] "
+                    f"seq={sequence} frame={width}x{height} "
+                    f"roi={tuple(int(v) for v in roi)} "
+                    f"detected={bool(bbox)} bbox={bbox} "
+                    f"coverage={float(coverage):.4f} "
+                    f"sharpness={float(sharpness):.2f} "
+                    f"frame_age_ms={age_ms:.1f} "
+                    f"state={guide.get('state')} "
+                    f"method={segmentation.get('method')} "
+                    f"mask_nonzero={segmentation.get('mask_nonzero')} "
+                    f"mask_pct={segmentation.get('mask_pct')} "
+                    f"roi_stats={segmentation.get('roi_stats')} "
+                    f"reason={segmentation.get('reason')} "
+                    f"seed={segmentation.get('seed')} "
+                    f"worker={threading.current_thread().is_alive()}",
+                    flush=True,
+                )
+
+            # Flujo MANUAL por defecto: la operadora decide cuándo
+            # capturar con el botón "CAPTURAR IMAGEN".
+            if guide.get("wants_capture") and cfg.get("auto_capture"):
+                _ai_guided_capture(tracker)
+
+            time.sleep(0.20)
+
+        except Exception as error:
+            AI_GUIDED_RUNTIME["last_error"] = str(error)
+            print(f"[AI_GUIDED] Error controlado: {error}")
+            time.sleep(0.5)
+
+    print("[AI_GUIDED] Worker finalizado.")
+
+
+def _ai_capture_recover_mode_from_db():
+    """
+    Si MySQL tiene una sesión ABIERTA pero el proceso se reinició,
+    reconstruye el modo en memoria y relanza el worker.
+    """
+    if is_ai_capture_mode_active():
+        return None
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        row = get_open_capture_session(cur)
+    finally:
+        cur.close()
+        conn.close()
+
+    if row is None:
+        return None
+
+    session_id = int(row["id"])
+    garment_model_id = int(row["garment_model_id"])
+    set_ai_capture_mode(
+        True,
+        session_id=session_id,
+        garment_model_id=garment_model_id,
+    )
+    cfg = get_ai_capture_config()
+    if row.get("target_ai_model_id"):
+        cfg["target_images"] = 40
+    target_ai_model_id = row.get("target_ai_model_id")
+    AI_CAPTURE_RUNTIME.update(
+        {
+            "session_id": session_id,
+            "garment_model_id": garment_model_id,
+            "target_ai_model_id": target_ai_model_id,
+            "target_ai_model_id": target_ai_model_id,
+            "config": cfg,
+            "known_sha256": set(),
+            "known_dhashes": [],
+            "presence": None,
+            "waiting_for_exit": False,
+            "exit_frames": 0,
+            "last_sequence": -1,
+            "last_error": None,
+        }
+    )
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        hashes = load_session_accepted_hashes(cur, session_id)
+        AI_CAPTURE_RUNTIME["known_sha256"] = set(hashes["sha256"])
+        if target_ai_model_id:
+            base_sha, base_dhash = _seed_normal_augmentation_capture_hashes(
+                cur, int(target_ai_model_id)
+            )
+            AI_CAPTURE_RUNTIME["known_sha256"].update(base_sha)
+            AI_CAPTURE_RUNTIME["known_dhashes"].extend(base_dhash)
+        if target_ai_model_id:
+            base_sha, base_dhash = _seed_normal_augmentation_capture_hashes(
+                cur, int(target_ai_model_id)
+            )
+            AI_CAPTURE_RUNTIME["known_sha256"].update(base_sha)
+            AI_CAPTURE_RUNTIME["known_dhashes"].extend(base_dhash)
+    finally:
+        cur.close()
+        conn.close()
+    ensure_camera_capture_worker()
+    _ensure_ai_capture_worker()
+    print(
+        "[AI_CAPTURE] Sesión abierta recuperada tras reinicio: "
+        f"session_id={session_id}"
+    )
+    return session_id
+
+
+def _json_sanitize(value):
+    """Convierte fechas y tipos de BD en texto seguro para el template."""
+    if isinstance(value, dict):
+        return {key: _json_sanitize(item) for key, item in value.items()}
+
+    if isinstance(value, (list, tuple)):
+        return [_json_sanitize(item) for item in value]
+
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    return str(value)
+
+
+def _latest_capture_session_for_garment(cur, garment_model_id):
+    """Última sesión del modelo (prefiere la que está ABIERTA)."""
+    cur.execute(
+        """
+        SELECT id, garment_model_id, status, started_at, finished_at,
+               created_by, notes
+        FROM ai_capture_sessions
+        WHERE garment_model_id = %s
+        ORDER BY (status = 'ABIERTA') DESC, id DESC
+        LIMIT 1
+        """,
+        (garment_model_id,),
+    )
+    return cur.fetchone()
+
+
+def _has_preparation_version(cur, garment_model_id):
+    if not garment_model_id:
+        return False
+
+    cur.execute(
+        """
+        SELECT id
+        FROM garment_ai_models
+        WHERE garment_model_id = %s
+          AND status = 'PREPARACION'
+        LIMIT 1
+        """,
+        (garment_model_id,),
+    )
+    return cur.fetchone() is not None
+
+
+def _ai_capture_idle_payload(
+    cur, cfg, garment_model_id=None, allowed=None,
+    augmentation_ai_model_id=None,
+):
+    """Payload cuando el modelo todavía no tiene sesión de captura."""
+    garment = {"id": garment_model_id, "code": None}
+
+    if garment_model_id:
+        cur.execute(
+            "SELECT id, code FROM garment_models WHERE id = %s",
+            (garment_model_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            garment = {"id": row["id"], "code": row["code"]}
+
+    has_prep = _has_preparation_version(cur, garment_model_id)
+    augmentation = (
+        normal_augmentation_summary(cur, augmentation_ai_model_id)
+        if augmentation_ai_model_id is not None else None
+    )
+    if augmentation:
+        cfg["target_images"] = 40
+
+    station_row = get_open_capture_session(cur)
+    station_busy = bool(
+        station_row
+        and (
+            garment_model_id is None
+            or int(station_row["garment_model_id"])
+            != int(garment_model_id)
+        )
+    )
+    station_code = None
+    if station_busy:
+        cur.execute(
+            "SELECT code FROM garment_models WHERE id = %s",
+            (station_row["garment_model_id"],),
+        )
+        station_row_model = cur.fetchone()
+        station_code = (station_row_model or {}).get("code")
+
+    payload = {
+        "ok": True,
+        "active": False,
+        "session": None,
+        "session_id": None,
+        "status": None,
+        "garment_model": garment,
+        "accepted_count": 0,
+        "rejected_count": 0,
+        "target_count": int(cfg["target_images"]),
+        "last_capture": None,
+        "started_at": None,
+        "finished_at": None,
+        "mode": ai_capture.get_ai_capture_mode_state(),
+        "config": {
+            "min_coverage": cfg["min_coverage"],
+            "min_sharpness": cfg["min_sharpness"],
+            "duplicate_max_distance": cfg["duplicate_max_distance"],
+            "keep_rejected": cfg["keep_rejected"],
+        },
+        "has_preparation_version": has_prep,
+        "normal_augmentation": augmentation,
+        "station_busy": station_busy,
+        "station_busy_model_code": station_code,
+    }
+    return _ai_capture_enrich(
+        payload,
+        cur,
+        allowed=allowed,
+        config=cfg,
+    )
+
+
+def _ai_capture_enrich(payload, cur, allowed=None, config=None):
+    """
+    Agrega el estado visible y los mensajes comprensibles para la ficha.
+
+    Nunca expone ids internos ni nombres técnicos a la usuaria.
+    """
+    cfg = dict(config or get_ai_capture_config())
+    garment = payload.get("garment_model") or {}
+    garment_id = garment.get("id")
+
+    has_prep = payload.get("has_preparation_version")
+    if has_prep is None:
+        has_prep = _has_preparation_version(cur, garment_id)
+    has_prep = bool(has_prep)
+    payload["has_preparation_version"] = has_prep
+
+    state = resolve_capture_ui_state(
+        session_status=payload.get("status"),
+        accepted_count=payload.get("accepted_count"),
+        min_images=cfg.get("min_images"),
+        has_preparation_version=has_prep,
+    )
+    payload["ui_state"] = state
+    payload["ui_state_label"] = CAPTURE_UI_STATE_LABELS.get(state, state)
+
+    target = int(payload.get("target_count") or 0)
+    accepted = int(payload.get("accepted_count") or 0)
+    payload["target_reached"] = bool(target > 0 and accepted >= target)
+
+    # Finalizar y entrenar exigen el mínimo configurable; el objetivo
+    # recomendado solo informa avance y nunca bloquea.
+    gate = capture_progress_gate(
+        accepted,
+        min_images=cfg.get("min_images"),
+        target_count=target or cfg.get("target_images"),
+    )
+    payload["min_count"] = gate["min_count"]
+    payload["can_finalize"] = gate["can_finalize"]
+    payload["can_train"] = gate["can_train"]
+    payload["missing_to_train"] = gate["missing_to_train"]
+
+    last = payload.get("last_capture")
+    if last:
+        accepted_last = (
+            str(last.get("status") or "").strip().upper() == "ACEPTADA"
+        )
+        payload["last_capture_human"] = {
+            "accepted": accepted_last,
+            "label": "Aceptada" if accepted_last else "Descartada",
+            "reason": (
+                None
+                if accepted_last
+                else humanize_reject_reason(last.get("reject_reason"))
+            ),
+            "captured_at": str(last.get("captured_at") or ""),
+        }
+    else:
+        payload["last_capture_human"] = None
+
+    if allowed is not None:
+        payload["allowed"] = bool(allowed)
+
+    payload["guide"] = _ai_guided_payload(garment_id)
+
+    # Estado del entrenamiento (FASE 3A): la ficha y la estación
+    # consultan el mismo payload sin duplicar consultas en el front.
+    try:
+        payload["training"] = (
+            training_status_payload(
+                cur,
+                garment_id,
+                allowed=allowed,
+            )
+            if garment_id
+            else None
+        )
+    except Exception:
+        app.logger.exception(
+            "No se pudo leer el estado del entrenamiento IA "
+            f"(garment_model_id={garment_id})."
+        )
+        payload["training"] = None
+
+    return payload
+
+
+def _ai_capture_status_payload(
+    session_id=None,
+    garment_model_id=None,
+    allowed=None,
+):
+    cfg = get_ai_capture_config()
+    if session_id is None:
+        _ai_capture_recover_mode_from_db()
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        augmentation_ai_model_id = None
+        if session_id is None:
+            if garment_model_id is None:
+                row = get_open_capture_session(cur)
+            else:
+                cur.execute(
+                    """SELECT id FROM garment_ai_models
+                       WHERE garment_model_id = %s AND status = 'PREPARACION'
+                         AND parent_ai_model_id IS NOT NULL
+                       ORDER BY id DESC LIMIT 1""",
+                    (int(garment_model_id),),
+                )
+                prep = cur.fetchone()
+                if prep:
+                    augmentation_ai_model_id = int(prep["id"])
+                    cfg["target_images"] = 40
+                    cur.execute(
+                        """SELECT id, garment_model_id, target_ai_model_id,
+                                  status, started_at, created_by, notes
+                           FROM ai_capture_sessions
+                           WHERE target_ai_model_id = %s
+                           ORDER BY (status = 'ABIERTA') DESC, id DESC LIMIT 1""",
+                        (augmentation_ai_model_id,),
+                    )
+                    row = cur.fetchone()
+                else:
+                    row = _latest_capture_session_for_garment(
+                        cur,
+                        garment_model_id,
+                    )
+            if row is None:
+                return _ai_capture_idle_payload(
+                    cur,
+                    cfg,
+                    garment_model_id=garment_model_id,
+                    allowed=allowed,
+                    augmentation_ai_model_id=augmentation_ai_model_id,
+                )
+            session_id = int(row["id"])
+
+        cur.execute(
+            """
+            SELECT id, frame_sequence, coverage, quality_score,
+                   status, reject_reason, captured_at
+            FROM ai_training_images
+            WHERE capture_session_id = %s
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (session_id,),
+        )
+        last = cur.fetchone()
+        last_capture = row_to_json(last) if last else None
+        session_record = get_capture_session(cur, int(session_id))
+        target_ai_model_id = (
+            session_record.get("target_ai_model_id") if session_record else None
+        )
+        if target_ai_model_id is not None:
+            cfg["target_images"] = 40
+        payload = capture_session_status_payload(
+            cur,
+            session_id,
+            config=cfg,
+            last_capture=last_capture,
+        )
+        payload["active"] = (
+            payload["status"] == "ABIERTA"
+            and is_ai_capture_mode_active()
+        )
+        payload["mode"] = ai_capture.get_ai_capture_mode_state()
+        payload["ok"] = True
+        payload.setdefault("session_id", int(session_id))
+        payload["station_busy"] = False
+        payload["station_busy_model_code"] = None
+        payload["normal_augmentation"] = (
+            normal_augmentation_summary(cur, int(target_ai_model_id))
+            if target_ai_model_id is not None else None
+        )
+        payload = _ai_capture_enrich(
+            payload,
+            cur,
+            allowed=allowed,
+            config=cfg,
+        )
+
+        if payload.get("active"):
+            # Si el motor guiado murió, se reaviva: si no, la UI
+            # mostraría un estado de prenda congelado.
+            _ai_guided_ensure_alive()
+
+        return payload
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route("/api/ai/capture/start", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_capture_start():
+    global AI_CAPTURE_WORKER_ENABLED
+
+    body = request.get_json(silent=True) or {}
+    raw_model = body.get("garment_model_id")
+
+    try:
+        garment_model_id = int(raw_model)
+    except (TypeError, ValueError):
+        return jsonify({
+            "ok": False,
+            "error": "garment_model_id inválido.",
+        }), 400
+
+    if garment_model_id <= 0:
+        return jsonify({
+            "ok": False,
+            "error": "garment_model_id debe ser positivo.",
+        }), 400
+
+    model = get_garment_model(garment_model_id)
+
+    if not model:
+        return jsonify({
+            "ok": False,
+            "error": "El modelo de prenda no existe.",
+        }), 404
+
+    if not can_manage_garment_model(model):
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No tiene permisos para preparar la captura "
+                "de este modelo."
+            ),
+        }), 403
+
+    if (
+        model.get("status") != "APROBADO"
+        or int(model.get("active") or 0) != 1
+    ):
+        return jsonify({
+            "ok": False,
+            "error": (
+                "La captura solo puede iniciarse con el modelo "
+                "aprobado y activo."
+            ),
+        }), 409
+
+    try:
+        ensure_ai_capture_can_start()
+    except AIDomainError as error:
+        return jsonify({
+            "ok": False,
+            "error": humanize_capture_error(error),
+        }), 409
+
+    actor_id = session.get("user_id")
+    notes = str(body.get("notes") or "").strip()[:500] or None
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute(
+            """SELECT id, version, parent_ai_model_id, source_dataset_id
+               FROM garment_ai_models
+               WHERE garment_model_id = %s AND status = 'PREPARACION'
+               ORDER BY id DESC LIMIT 1 FOR UPDATE""",
+            (garment_model_id,),
+        )
+        preparation = cur.fetchone()
+        target_ai_model_id = (
+            int(preparation["id"])
+            if preparation and preparation.get("parent_ai_model_id") is not None
+            else None
+        )
+        if target_ai_model_id is not None:
+            notes = (
+                f"FASE 3D · {preparation['version']} · ampliación del patrón NORMAL · SOLO IMÁGENES BUENAS · "
+                f"dataset fuente {preparation['source_dataset_id']}"
+            )
+        opened = start_ai_capture_session(
+            cur,
+            garment_model_id,
+            actor_id,
+            notes=notes,
+            target_ai_model_id=target_ai_model_id,
+        )
+        session_id = int(opened["id"])
+
+        if not opened.get("already_open"):
+            record_ai_event(
+                cur,
+                "CAPTURE_STARTED",
+                actor_id=actor_id,
+                capture_session_id=session_id,
+                payload={
+                    "garment_model_id": garment_model_id,
+                    "target_ai_model_id": target_ai_model_id,
+                    "normal_only": bool(target_ai_model_id),
+                },
+            )
+
+        cur.execute(
+            "SELECT id, code FROM garment_models WHERE id = %s",
+            (garment_model_id,),
+        )
+        garment = cur.fetchone()
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": humanize_capture_error(error),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo iniciar la sesión de captura IA "
+            f"(garment_model_id={garment_model_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo iniciar la captura. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    if garment is None:
+        return jsonify({
+            "ok": False,
+            "error": "El modelo de prenda no existe.",
+        }), 404
+
+    # Arranque manual: NO se inicia solo sobre la cámara real.
+    # Solo se activa el modo y el worker cuando el usuario llama a start.
+    set_ai_capture_mode(
+        True,
+        session_id=session_id,
+        garment_model_id=garment_model_id,
+    )
+    cfg = get_ai_capture_config()
+    if target_ai_model_id:
+        cfg["target_images"] = 40
+    AI_CAPTURE_RUNTIME.update(
+        {
+            "session_id": session_id,
+            "garment_model_id": garment_model_id,
+            "target_ai_model_id": target_ai_model_id,
+            "config": cfg,
+            "known_sha256": set(),
+            "known_dhashes": [],
+            "presence": None,
+            "waiting_for_exit": False,
+            "exit_frames": 0,
+            "last_sequence": -1,
+            "last_persisted_token": None,
+            "last_error": None,
+            "last_result": None,
+        }
+    )
+
+    # Cargar hashes aceptados previos de la sesión (reinicio).
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        hashes = load_session_accepted_hashes(cur, session_id)
+        AI_CAPTURE_RUNTIME["known_sha256"] = set(hashes["sha256"])
+        if target_ai_model_id:
+            base_sha, base_dhash = _seed_normal_augmentation_capture_hashes(
+                cur, int(target_ai_model_id)
+            )
+            AI_CAPTURE_RUNTIME["known_sha256"].update(base_sha)
+            AI_CAPTURE_RUNTIME["known_dhashes"].extend(base_dhash)
+        # dhash no se persiste en Fase 2A: solo sha256 exacto entre reinicios.
+    finally:
+        cur.close()
+        conn.close()
+
+    ensure_camera_capture_worker()
+    if body.get("guided"):
+        # La pantalla de captura guiada arranca su propio motor
+        # con /api/ai/capture/guide/start (1 motor a la vez).
+        started_worker = False
+    else:
+        started_worker = _ensure_ai_capture_worker()
+
+    status = _ai_capture_status_payload(session_id)
+    return jsonify({
+        "ok": True,
+        "message": (
+            "Sesión de captura IA iniciada."
+            if not opened.get("already_open")
+            else "Sesión de captura IA ya estaba activa."
+        ),
+        "worker_started": started_worker,
+        "session": status,
+        "garment_model": {
+            "id": garment_model_id,
+            "code": garment.get("code"),
+        },
+    }), 201 if not opened.get("already_open") else 200
+
+
+@app.route("/api/ai/capture/status")
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_capture_status():
+    session_id = request.args.get("session_id")
+    parsed_id = None
+    if session_id not in (None, ""):
+        try:
+            parsed_id = int(session_id)
+        except ValueError:
+            return jsonify({
+                "ok": False,
+                "error": "session_id inválido.",
+            }), 400
+
+    garment_model_id = request.args.get("garment_model_id")
+    parsed_garment = None
+    if garment_model_id not in (None, ""):
+        try:
+            parsed_garment = int(garment_model_id)
+        except ValueError:
+            return jsonify({
+                "ok": False,
+                "error": "garment_model_id inválido.",
+            }), 400
+
+        if parsed_garment <= 0:
+            return jsonify({
+                "ok": False,
+                "error": "garment_model_id debe ser positivo.",
+            }), 400
+
+    try:
+        payload = _ai_capture_status_payload(
+            parsed_id,
+            garment_model_id=parsed_garment,
+        )
+    except AIDomainError as error:
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+        }), 404
+    except Exception:
+        app.logger.exception(
+            "Error consultando estado de captura IA."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo actualizar el estado de la captura. "
+                "Intente de nuevo."
+            ),
+        }), 500
+
+    return jsonify(payload)
+
+
+@app.route("/api/ai/capture/stop", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_capture_stop():
+    return _ai_capture_finish("stop")
+
+
+@app.route("/api/ai/capture/cancel", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_capture_cancel():
+    return _ai_capture_finish("cancel")
+
+
+def _ai_capture_finish(action):
+    body = request.get_json(silent=True) or {}
+    raw_id = body.get("session_id")
+    session_id = None
+
+    if raw_id not in (None, ""):
+        try:
+            session_id = int(raw_id)
+        except (TypeError, ValueError):
+            return jsonify({
+                "ok": False,
+                "error": "session_id inválido.",
+            }), 400
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+
+        if session_id is None:
+            row = get_open_capture_session(cur)
+            if row is None:
+                conn.rollback()
+                return jsonify({
+                    "ok": True,
+                    "message": (
+                        "No hay sesión de captura activa "
+                        "(idempotente)."
+                    ),
+                    "session": None,
+                })
+            session_id = int(row["id"])
+
+        if action == "stop":
+            result = stop_ai_capture_session(cur, session_id)
+            event_type = "CAPTURE_COMPLETED"
+            message = "Sesión de captura finalizada."
+        else:
+            result = cancel_ai_capture_session(cur, session_id)
+            event_type = "CAPTURE_CANCELLED"
+            message = "Sesión de captura cancelada."
+
+        already = result.get(
+            "already_finished"
+            if action == "stop"
+            else "already_cancelled",
+            False,
+        )
+
+        if not already:
+            record_ai_event(
+                cur,
+                event_type,
+                actor_id=session.get("user_id"),
+                capture_session_id=session_id,
+                payload={
+                    "action": action,
+                },
+            )
+
+        cfg = get_ai_capture_config()
+        finished_session = get_capture_session(cur, session_id)
+        target_ai_model_id = (
+            finished_session.get("target_ai_model_id")
+            if finished_session else None
+        )
+        if target_ai_model_id is not None:
+            cfg["target_images"] = 40
+        status_payload = capture_session_status_payload(
+            cur,
+            session_id,
+            config=cfg,
+        )
+        status_payload["session_id"] = int(session_id)
+        status_payload["active"] = False
+        status_payload["ok"] = True
+        status_payload["mode"] = ai_capture.get_ai_capture_mode_state()
+        status_payload["station_busy"] = False
+        status_payload["station_busy_model_code"] = None
+        status_payload["normal_augmentation"] = (
+            normal_augmentation_summary(cur, int(target_ai_model_id))
+            if target_ai_model_id is not None else None
+        )
+        status_payload = _ai_capture_enrich(
+            status_payload,
+            cur,
+            config=cfg,
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": humanize_capture_error(error),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo cerrar la sesión de captura IA."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo cerrar la sesión de captura. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    # Solo se apaga el modo si la estación quedó sin sesión abierta.
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        still_open = get_open_capture_session(cur)
+    finally:
+        cur.close()
+        conn.close()
+
+    if still_open is None:
+        set_ai_capture_mode(False)
+        _stop_ai_capture_worker()
+        _stop_ai_guided_worker()
+        _ai_guided_reset_state()
+
+    status_payload["mode"] = ai_capture.get_ai_capture_mode_state()
+
+    return jsonify({
+        "ok": True,
+        "message": message,
+        "idempotent": bool(already),
+        "session": status_payload,
+    })
+
+
+def _ai_training_status_payload(garment_model_id, allowed=None):
+    """Estado del entrenamiento listo para JSON (con saneado)."""
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        payload = training_status_payload(
+            cur,
+            garment_model_id,
+            allowed=allowed,
+        )
+    finally:
+        cur.close()
+        conn.close()
+
+    # FASE 3B: enlace directo a la pantalla de validación de la versión.
+    if payload.get("validation_available") and payload.get(
+        "validation_ai_model_id"
+    ):
+        payload["validation_url"] = url_for(
+            "garment_validation_page",
+            model_id=garment_model_id,
+            ai_model_id=payload["validation_ai_model_id"],
+        )
+    else:
+        payload["validation_url"] = None
+
+    return _json_sanitize(payload)
+
+
+def _ai_training_guard(garment_model_id):
+    """Valida modelo + permisos para entrenar. Devuelve (modelo, error)."""
+    model = get_garment_model(garment_model_id)
+
+    if not model:
+        return None, (
+            jsonify({
+                "ok": False,
+                "error": "El modelo de prenda no existe.",
+            }),
+            404,
+        )
+
+    if not can_manage_garment_model(model):
+        return None, (
+            jsonify({
+                "ok": False,
+                "error": (
+                    "No tiene permisos para entrenar este modelo."
+                ),
+            }),
+            403,
+        )
+
+    if (
+        model.get("status") != "APROBADO"
+        or int(model.get("active") or 0) != 1
+    ):
+        return None, (
+            jsonify({
+                "ok": False,
+                "error": (
+                    "El entrenamiento solo puede iniciarse con el "
+                    "modelo aprobado y activo."
+                ),
+            }),
+            409,
+        )
+
+    return model, None
+
+
+def _start_training_request(garment_model_id, *, as_new_version):
+    """Encola un TRAINING (normal o como NUEVA versión). JSON + código."""
+    actor_id = session.get("user_id")
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        created = request_training_job(
+            cur,
+            garment_model_id=garment_model_id,
+            actor_id=actor_id,
+            as_new_version=as_new_version,
+        )
+        job_id = int(created["job"]["id"])
+        payload = training_status_payload(
+            cur,
+            garment_model_id,
+            allowed=True,
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": humanize_training_error(error),
+            "training": _ai_training_status_payload(
+                garment_model_id,
+                allowed=True,
+            ),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo solicitar el entrenamiento IA "
+            f"(garment_model_id={garment_model_id}, "
+            f"as_new_version={as_new_version})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo iniciar el entrenamiento. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    message = (
+        "Entrenamiento de una nueva versión encolado. El sistema lo "
+        "ejecutará en segundo plano."
+        if as_new_version
+        else (
+            "Entrenamiento encolado. El sistema lo ejecutará en "
+            "segundo plano."
+        )
+    )
+
+    retrain = created.get("retrain")
+    retrain_summary = None
+
+    if as_new_version and retrain:
+        # Resumen legible para la UI/auditoría (sin notas internas).
+        retrain_summary = {
+            "version": created["ai_model"].get("version"),
+            "next_version": retrain.get("next_version"),
+            "superseded_versions": retrain.get("historical"),
+            "images_reused": int(created["dataset"]["image_count"]),
+        }
+
+    return jsonify({
+        "ok": True,
+        "message": message,
+        "job_id": job_id,
+        "dataset_id": int(created["dataset"]["id"]),
+        "ai_model_id": int(created["ai_model"]["id"]),
+        "ai_model_version": created["ai_model"].get("version"),
+        "retrain": _json_sanitize(retrain_summary),
+        "training": _json_sanitize(payload),
+    }), 201
+
+
+def _parse_garment_model_id(body):
+    """garment_model_id del cuerpo JSON o (None, respuesta 400)."""
+    raw_model = body.get("garment_model_id")
+
+    try:
+        garment_model_id = int(raw_model)
+    except (TypeError, ValueError):
+        return None, jsonify({
+            "ok": False,
+            "error": "garment_model_id inválido.",
+        }), 400
+
+    if garment_model_id <= 0:
+        return None, jsonify({
+            "ok": False,
+            "error": "garment_model_id debe ser positivo.",
+        }), 400
+
+    return garment_model_id, None
+
+
+@app.route("/api/ai/training/start", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_training_start():
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    model, guard_error = _ai_training_guard(garment_model_id)
+
+    if guard_error is not None:
+        return guard_error
+
+    return _start_training_request(
+        garment_model_id,
+        as_new_version=False,
+    )
+
+
+@app.route("/api/ai/training/retrain", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_training_retrain():
+    """Reentrena como NUEVA versión (FASE 3A.3).
+
+    Nunca reutiliza ni modifica la versión anterior: crea vN+1 y su
+    propio directorio de artefactos. El quality gate corre antes de
+    crear el job (mismo flujo que /start).
+    """
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    model, guard_error = _ai_training_guard(garment_model_id)
+
+    if guard_error is not None:
+        return guard_error
+
+    return _start_training_request(
+        garment_model_id,
+        as_new_version=True,
+    )
+
+
+@app.route("/api/ai/training/cancel", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_training_cancel():
+    body = request.get_json(silent=True) or {}
+    raw_job = body.get("job_id")
+
+    try:
+        job_id = int(raw_job)
+    except (TypeError, ValueError):
+        return jsonify({
+            "ok": False,
+            "error": "job_id inválido.",
+        }), 400
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute(
+            """
+            SELECT j.id, j.status, m.garment_model_id
+            FROM ai_jobs j
+            JOIN garment_ai_models m ON m.id = j.ai_model_id
+            WHERE j.id = %s
+            """,
+            (job_id,),
+        )
+        job = cur.fetchone()
+
+        if job is None:
+            conn.rollback()
+            return jsonify({
+                "ok": False,
+                "error": "El trabajo de entrenamiento no existe.",
+            }), 404
+
+        garment_model_id = int(job["garment_model_id"])
+        model = get_garment_model(garment_model_id)
+
+        if model is None or not can_manage_garment_model(model):
+            conn.rollback()
+            return jsonify({
+                "ok": False,
+                "error": (
+                    "No tiene permisos para cancelar este entrenamiento."
+                ),
+            }), 403
+
+        result = cancel_pending_training_job(
+            cur,
+            job_id=job_id,
+            actor_id=session.get("user_id"),
+        )
+        payload = training_status_payload(
+            cur,
+            garment_model_id,
+            allowed=True,
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": humanize_training_error(error),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            f"No se pudo cancelar el entrenamiento IA (job_id={job_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo cancelar el entrenamiento. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": "Entrenamiento cancelado.",
+        "job_id": int(result["id"]),
+        "training": _json_sanitize(payload),
+    })
+
+
+@app.route("/api/ai/training/status")
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER, ROLE_QUALITY_MANAGER)
+def ai_training_status():
+    raw_model = request.args.get("garment_model_id")
+
+    try:
+        garment_model_id = int(raw_model)
+    except (TypeError, ValueError):
+        return jsonify({
+            "ok": False,
+            "error": "garment_model_id inválido.",
+        }), 400
+
+    if garment_model_id <= 0:
+        return jsonify({
+            "ok": False,
+            "error": "garment_model_id debe ser positivo.",
+        }), 400
+
+    model = get_garment_model(garment_model_id)
+
+    if not model:
+        return jsonify({
+            "ok": False,
+            "error": "El modelo de prenda no existe.",
+        }), 404
+
+    allowed = can_manage_garment_model(model) and model.get(
+        "status"
+    ) == "APROBADO"
+
+    try:
+        payload = _ai_training_status_payload(
+            garment_model_id,
+            allowed=allowed,
+        )
+    except Exception:
+        app.logger.exception(
+            "No se pudo leer el estado del entrenamiento IA "
+            f"(garment_model_id={garment_model_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo consultar el entrenamiento. "
+                "Intente de nuevo."
+            ),
+        }), 500
+
+    return jsonify({
+        "ok": True,
+        "training": payload,
+    })
+
+
+# ============================================================
+# FASE 3B — VALIDACIÓN CONTROLADA DEL MODELO
+#
+# Imágenes NUEVAS, banco propio (validations/) e inferencia
+# aislada por versión: predict(ai_model_id=...) resuelve
+# artefactos -> config -> checkpoint de ESA versión. El checkpoint
+# productivo (PATCHCORE_CKPT) no se lee ni se modifica, y la
+# validación nunca escribe en el dataset de entrenamiento.
+# La activación pertenece a FASE 3C.
+# ============================================================
+
+VALIDATION_IMAGE_KINDS = ("original", "heatmap", "comparison")
+
+
+def _resolve_validation_ai_model(garment_model_id, ai_model_id=None):
+    """Versión a validar: la indicada o la última apta del modelo."""
+    versions = get_garment_ai_versions(garment_model_id)
+
+    if not versions:
+        return None, (
+            "Este modelo todavía no tiene versiones de IA registradas."
+        )
+
+    if ai_model_id is not None:
+        for version in versions:
+            if int(version.get("id")) == int(ai_model_id):
+                if version.get("technically_invalidated"):
+                    return None, (
+                        "Esta versión está marcada NO VALIDADA / NO APTO "
+                        "PARA ACTIVACIÓN: no puede validarse."
+                    )
+                return int(version["id"]), None
+
+        return None, (
+            "La versión solicitada no pertenece a este modelo."
+        )
+
+    for version in versions:
+        if (
+            str(version.get("status") or "").strip().upper()
+            in VALIDATION_MODEL_STATUSES
+            and not version.get("technically_invalidated")
+        ):
+            return int(version["id"]), None
+
+    return None, (
+        "Este modelo todavía no tiene una versión entrenada para validar."
+    )
+
+
+def _validation_api_guard(garment_model_id, ai_model_id=None):
+    """Modelo + permisos + versión. Devuelve (model, ai_model_id, error)."""
+    model = get_garment_model(garment_model_id)
+
+    if not model:
+        return None, None, (jsonify({
+            "ok": False,
+            "error": "El modelo de prenda no existe.",
+        }), 404)
+
+    if not can_manage_garment_model(model):
+        return None, None, (jsonify({
+            "ok": False,
+            "error": "No tiene permisos para validar este modelo.",
+        }), 403)
+
+    if (
+        model.get("status") != "APROBADO"
+        or int(model.get("active") or 0) != 1
+    ):
+        return None, None, (jsonify({
+            "ok": False,
+            "error": (
+                "La validación requiere el modelo aprobado y activo."
+            ),
+        }), 409)
+
+    resolved, error = _resolve_validation_ai_model(
+        garment_model_id,
+        ai_model_id,
+    )
+
+    if error:
+        return None, None, (jsonify({
+            "ok": False,
+            "error": error,
+        }), 404)
+
+    return model, resolved, None
+
+
+def _parse_optional_ai_model_id(body):
+    """ai_model_id opcional del cuerpo JSON o (None, error 400)."""
+    raw = body.get("ai_model_id")
+
+    if raw in (None, ""):
+        return None, None
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None, (jsonify({
+            "ok": False,
+            "error": "ai_model_id inválido.",
+        }), 400)
+
+    if value <= 0:
+        return None, (jsonify({
+            "ok": False,
+            "error": "ai_model_id debe ser positivo.",
+        }), 400)
+
+    return value, None
+
+
+def _validation_image_bytes(body, files):
+    """Imagen NUEVA: archivo, base64 o frame actual de la cámara."""
+    upload = files.get("image") if files else None
+
+    if upload is not None and getattr(upload, "filename", ""):
+        data = upload.read()
+
+        if data:
+            return data, "upload"
+
+    raw = body.get("image_base64")
+
+    if raw:
+        text = str(raw).strip()
+
+        if "," in text and text.lower().startswith("data:"):
+            text = text.split(",", 1)[1]
+
+        try:
+            data = base64.b64decode(text, validate=True)
+        except Exception:
+            raise AIDomainError(
+                "La imagen enviada no es un base64 válido."
+            )
+
+        if data:
+            return data, "upload"
+
+    frame, _, _ = get_latest_camera_frame()
+
+    if frame is None:
+        raise AIDomainError(
+            "No hay un frame de cámara disponible para validar. "
+            "Intente de nuevo en unos segundos."
+        )
+
+    return _ai_capture_encode_jpeg(frame), "frame"
+
+
+@app.route("/modelos-prenda/<int:model_id>/validacion-ia")
+@app.route("/modelos-prenda/<int:model_id>/validacion-ia/<int:ai_model_id>")
+@login_required
+@role_required(
+    ROLE_ADMIN,
+    ROLE_MODEL_MANAGER,
+    ROLE_QUALITY_MANAGER,
+)
+def garment_validation_page(model_id, ai_model_id=None):
+    """Pantalla «Validar modelo» (FASE 3B)."""
+    model = get_garment_model(model_id)
+
+    if not model:
+        flash("El modelo de prenda solicitado no existe.", "error")
+        return redirect(url_for("garment_models_page"))
+
+    role = normalize_role(session.get("role"))
+
+    if (
+        role == ROLE_QUALITY_MANAGER
+        and (
+            model.get("status") != "APROBADO"
+            or int(model.get("active") or 0) != 1
+        )
+    ):
+        flash("No tiene permisos para consultar ese modelo.", "error")
+        return redirect(url_for("garment_models_page"))
+
+    if not can_manage_garment_model(model):
+        flash(
+            "No tiene permisos para validar este modelo.",
+            "error",
+        )
+        return redirect(url_for("garment_models_page"))
+
+    resolved, error = _resolve_validation_ai_model(
+        model_id,
+        ai_model_id,
+    )
+
+    if error:
+        flash(error, "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        state = ai_validation.get_validation_state(cur, resolved)
+    except AIDomainError as error:
+        flash(str(error), "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    except Exception:
+        app.logger.exception(
+            "No se pudo leer el estado de validación "
+            f"(garment_model_id={model_id}, ai_model_id={resolved})."
+        )
+        flash(
+            "No se pudo cargar la validación. Intente de nuevo.",
+            "error",
+        )
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    finally:
+        cur.close()
+        conn.close()
+
+    return render_template(
+        "validation_model.html",
+        model=model,
+        validation=_json_sanitize(state),
+        role=role,
+        can_manage=can_manage_garment_model(model),
+        categories=VALIDATION_CATEGORIES,
+        estados=VALIDATION_ESTADOS,
+        estado_labels=VALIDATION_ESTADO_LABELS,
+        defect_types=VALIDATION_DEFECT_TYPES,
+        defect_type_labels=VALIDATION_DEFECT_TYPE_LABELS,
+    )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/validacion-ia/frame",
+    methods=["GET"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_validation_frame(model_id):
+    """Frame actual de la cámara para la previsualización de validación."""
+    model = get_garment_model(model_id)
+
+    if not model or not can_manage_garment_model(model):
+        return jsonify({
+            "ok": False,
+            "error": "No tiene permisos para ver esta cámara.",
+        }), 403
+
+    frame, _, _ = get_latest_camera_frame()
+
+    if frame is None:
+        return Response(
+            "",
+            status=204,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    try:
+        jpeg = _ai_capture_encode_jpeg(frame)
+    except Exception:
+        app.logger.exception(
+            f"No se pudo codificar el frame de validación ({model_id})."
+        )
+        return Response("", status=204)
+
+    return Response(
+        jpeg,
+        mimetype="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/validacion-ia/caso/"
+    "<int:case_id>/<kind>",
+    methods=["GET"],
+)
+@login_required
+@role_required(
+    ROLE_ADMIN,
+    ROLE_MODEL_MANAGER,
+    ROLE_QUALITY_MANAGER,
+)
+def garment_validation_case_image(model_id, case_id, kind):
+    """Sirve original/heatmap/comparación de un caso de validación."""
+    return _serve_validation_case_image(model_id, case_id, kind)
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/validacion-ia/imagen",
+    methods=["GET"],
+)
+@login_required
+@role_required(
+    ROLE_ADMIN,
+    ROLE_MODEL_MANAGER,
+    ROLE_QUALITY_MANAGER,
+)
+def garment_validation_case_asset(model_id):
+    """Mismo artefacto consultando ?case_id=&kind= (para la UI)."""
+    raw_case = request.args.get("case_id")
+    kind = request.args.get("kind") or "original"
+
+    try:
+        case_id = int(raw_case)
+    except (TypeError, ValueError):
+        return jsonify({
+            "ok": False,
+            "error": "case_id inválido.",
+        }), 400
+
+    return _serve_validation_case_image(model_id, case_id, kind)
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/validacion-ia/prueba-final/imagen",
+    methods=["GET"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER, ROLE_QUALITY_MANAGER)
+def garment_final_test_asset(model_id):
+    case_id = request.args.get("case_id", type=int)
+    kind = request.args.get("kind") or "original"
+    if case_id is None or kind not in VALIDATION_IMAGE_KINDS:
+        return jsonify({"ok": False, "error": "Artefacto FINAL_TEST inválido."}), 400
+    column = {"original": "image_path", "heatmap": "heatmap_path", "comparison": "comparison_path"}[kind]
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"SELECT garment_model_id, {column} AS artifact_path FROM ai_final_test_cases WHERE id=%s",
+            (case_id,),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+    if not row or int(row["garment_model_id"]) != int(model_id) or not row.get("artifact_path"):
+        return jsonify({"ok": False, "error": "Artefacto FINAL_TEST no encontrado."}), 404
+    try:
+        path = resolve_under_root(get_ai_artifacts_root(), row["artifact_path"])
+    except AIDomainError:
+        return jsonify({"ok": False, "error": "Ruta de artefacto FINAL_TEST inválida."}), 404
+    if not path.is_file():
+        return jsonify({"ok": False, "error": "El artefacto FINAL_TEST no existe."}), 404
+    mimetype = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    return send_file(path, mimetype=mimetype, conditional=True)
+
+
+def _serve_validation_case_image(model_id, case_id, kind):
+    if kind not in VALIDATION_IMAGE_KINDS:
+        return jsonify({
+            "ok": False,
+            "error": "Artefacto de validación desconocido.",
+        }), 404
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        cur.execute(
+            """
+            SELECT id, garment_model_id, image_path, heatmap_path,
+                   comparison_path
+            FROM ai_validation_cases
+            WHERE id = %s
+            """,
+            (case_id,),
+        )
+        case = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+    if case is None or int(case["garment_model_id"]) != int(model_id):
+        return jsonify({
+            "ok": False,
+            "error": "El caso de validación no existe.",
+        }), 404
+
+    column = {
+        "original": "image_path",
+        "heatmap": "heatmap_path",
+        "comparison": "comparison_path",
+    }[kind]
+
+    relative = case.get(column)
+
+    if not relative:
+        return jsonify({
+            "ok": False,
+            "error": "Este caso no tiene ese artefacto.",
+        }), 404
+
+    try:
+        path = resolve_under_root(get_ai_artifacts_root(), relative)
+    except AIDomainError:
+        return jsonify({
+            "ok": False,
+            "error": "Artefacto de validación inválido.",
+        }), 404
+
+    if not path.exists():
+        return jsonify({
+            "ok": False,
+            "error": "El artefacto de validación no existe.",
+        }), 404
+
+    mimetype = (
+        "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    )
+
+    return send_file(path, mimetype=mimetype, conditional=True)
+
+
+@app.route("/api/ai/validation/session/start", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_session_start():
+    """Abre la sesión de validación (ENTRENADO -> VALIDACION)."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        session_row = ai_validation.start_validation_session(
+            cur,
+            ai_model_id=resolved,
+            actor_id=actor_id,
+        )
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+            "validation": _ai_validation_state(resolved),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo iniciar la validación "
+            f"(ai_model_id={resolved})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo iniciar la validación. Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": "Validación iniciada. La imagen capturada se usará "
+                   "solo para validar.",
+        "session": _json_sanitize(session_row),
+        "validation": _json_sanitize(state),
+    }), 201
+
+
+def _ai_validation_state(ai_model_id):
+    """Estado de validación para respuestas de error (best effort)."""
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        return _json_sanitize(
+            ai_validation.get_validation_state(cur, ai_model_id)
+        )
+    except Exception:
+        return None
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route("/api/ai/validation/bank/export", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_bank_export():
+    """Actualiza el banco derivado desde los casos persistidos de una versión."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+    _, resolved, guard_error = _validation_api_guard(garment_model_id, raw_ai)
+    if guard_error is not None:
+        return guard_error
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        result = ai_validation.export_validation_bank(cur, ai_model_id=resolved)
+    except AIDomainError as error:
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        app.logger.exception("No se pudo exportar el banco de validación (ai_model_id=%s).", resolved)
+        return jsonify({"ok": False, "error": "No se pudo actualizar el banco de validación."}), 500
+    finally:
+        cur.close()
+        conn.close()
+    return jsonify({"ok": True, "bank": _json_sanitize(result)})
+
+
+@app.route("/api/ai/validation/case", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_case():
+    """Registra un caso de validación con imagen NUEVA + score bruto."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    if int(resolved) == ai_validation.FINAL_TEST_AI_MODEL_ID:
+        return jsonify({
+            "ok": False,
+            "error": "La captura de BLUSA-762 v1 está separada: use exclusivamente el flujo FINAL_TEST.",
+        }), 409
+
+    category = body.get("category")
+    estado_real = body.get("estado_real")
+    tipo_defecto = body.get("tipo_defecto")
+    observation = body.get("observation")
+    actor_id = session.get("user_id")
+
+    try:
+        image_bytes, source = _validation_image_bytes(body, request.files)
+    except AIDomainError as error:
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+        }), 409
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        case = ai_validation.register_validation_case(
+            cur,
+            ai_model_id=resolved,
+            category=category,
+            estado_real=estado_real,
+            tipo_defecto=tipo_defecto,
+            image_bytes=image_bytes,
+            observation=observation,
+            actor_id=actor_id,
+            preprocess=True,
+        )
+        case["source"] = source
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+            "validation": _ai_validation_state(resolved),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo registrar el caso de validación "
+            f"(ai_model_id={resolved}, category={category})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo registrar el caso de validación. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": (
+            "Caso de validación registrado. "
+            "Imagen de validación — no se utilizará para entrenamiento."
+        ),
+        "case": _json_sanitize(case),
+        "validation": _json_sanitize(state),
+    }), 201
+
+
+@app.route("/api/ai/validation/final-test/start", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_final_test_start():
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+    _, resolved, guard_error = _validation_api_guard(garment_model_id, raw_ai)
+    if guard_error is not None:
+        return guard_error
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        result = ai_validation.start_final_test(
+            cur,
+            ai_model_id=resolved,
+            actor_id=session.get("user_id"),
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo iniciar FINAL_TEST de ai_model_id=%s.", resolved)
+        return jsonify({"ok": False, "error": "No se pudo iniciar la prueba final."}), 500
+    finally:
+        cur.close()
+        conn.close()
+    return jsonify({"ok": True, "final_test": _json_sanitize(result)}), 201
+
+
+@app.route("/api/ai/validation/final-test/case", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_final_test_case():
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+    _, resolved, guard_error = _validation_api_guard(garment_model_id, raw_ai)
+    if guard_error is not None:
+        return guard_error
+    frame, _, _ = get_latest_camera_frame()
+    if frame is None:
+        return jsonify({"ok": False, "error": "No hay un frame de cámara disponible."}), 409
+    try:
+        image_bytes = _ai_capture_encode_jpeg(frame)
+    except Exception:
+        app.logger.exception("No se pudo codificar el frame FINAL_TEST.")
+        return jsonify({"ok": False, "error": "No se pudo capturar el frame de cámara."}), 409
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        case = ai_validation.register_final_test_case(
+            cur,
+            ai_model_id=resolved,
+            image_bytes=image_bytes,
+            category=body.get("category"),
+            actor_id=session.get("user_id"),
+        )
+        state = ai_validation.get_final_test_state(cur, ai_model_id=resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo registrar caso FINAL_TEST de ai_model_id=%s.", resolved)
+        return jsonify({"ok": False, "error": "No se pudo registrar la captura final."}), 500
+    finally:
+        cur.close()
+        conn.close()
+    return jsonify({"ok": True, "case": _json_sanitize(case), "final_test": _json_sanitize(state)}), 201
+
+
+@app.route("/api/ai/validation/final-test/evaluate", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_final_test_evaluate():
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+    _, resolved, guard_error = _validation_api_guard(garment_model_id, raw_ai)
+    if guard_error is not None:
+        return guard_error
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        metrics = ai_validation.evaluate_final_test(
+            cur, ai_model_id=resolved, actor_id=session.get("user_id")
+        )
+        state = ai_validation.get_final_test_state(cur, ai_model_id=resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo evaluar FINAL_TEST de ai_model_id=%s.", resolved)
+        return jsonify({"ok": False, "error": "No se pudo evaluar la prueba final."}), 500
+    finally:
+        cur.close()
+        conn.close()
+    return jsonify({"ok": True, "metrics": _json_sanitize(metrics), "final_test": _json_sanitize(state), "active": 0}), 200
+
+
+@app.route("/api/ai/validation/threshold/freeze", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_threshold_freeze():
+    """Confirma de forma explícita el umbral definitivo de una versión."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+    _, resolved, guard_error = _validation_api_guard(garment_model_id, raw_ai)
+    if guard_error is not None:
+        return guard_error
+    if int(resolved) == ai_validation.FINAL_TEST_AI_MODEL_ID:
+        return jsonify({
+            "ok": False,
+            "error": "Para BLUSA-762 v1 el threshold 47.32 de FINAL_TEST es fijo por cohorte y no se congela en el modelo.",
+        }), 409
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        result = ai_validation.freeze_validation_threshold(
+            cur,
+            ai_model_id=resolved,
+            threshold=body.get("threshold_final"),
+            actor_id=session.get("user_id"),
+            provenance=body.get("provenance"),
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo congelar el threshold de ai_model_id=%s.", resolved)
+        return jsonify({"ok": False, "error": "No se pudo congelar el threshold definitivo."}), 500
+    finally:
+        cur.close()
+        conn.close()
+    return jsonify({"ok": True, "threshold": _json_sanitize(result)})
+
+
+@app.route("/api/ai/validation/evaluate", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_evaluate():
+    """«Evaluar validación»: métricas + thresholds candidatos.
+
+    No cambia el estado del modelo (ni lo activa).
+    """
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    if int(resolved) == ai_validation.FINAL_TEST_AI_MODEL_ID:
+        return jsonify({
+            "ok": False,
+            "error": "La recalibración está bloqueada para BLUSA-762 v1; FINAL_TEST sólo aplica threshold fijo 47.32.",
+        }), 409
+
+    thresholds = body.get("thresholds")
+
+    if thresholds is not None and not isinstance(thresholds, list):
+        return jsonify({
+            "ok": False,
+            "error": "thresholds debe ser una lista numérica.",
+        }), 400
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        result = ai_validation.evaluate_validation(
+            cur,
+            ai_model_id=resolved,
+            actor_id=actor_id,
+            thresholds=thresholds,
+        )
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            f"No se pudo evaluar la validación (ai_model_id={resolved})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo evaluar la validación. Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": (
+            "Validación evaluada. El umbral mostrado es un candidato: "
+            "la activación es una acción posterior."
+        ),
+        "result": _json_sanitize(result),
+        "validation": _json_sanitize(state),
+    })
+
+
+@app.route("/api/ai/validation/complete", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def ai_validation_complete():
+    """Cierra la validación (VALIDACION -> VALIDADO). Nunca ACTIVO."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        result = ai_validation.complete_validation(
+            cur,
+            ai_model_id=resolved,
+            actor_id=actor_id,
+        )
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+            "validation": _ai_validation_state(resolved),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            f"No se pudo cerrar la validación (ai_model_id={resolved})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo cerrar la validación. Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": (
+            "Validación completada. La versión quedó VALIDADA; "
+            "la activación es una acción posterior (FASE 3C)."
+        ),
+        "result": _json_sanitize(result),
+        "validation": _json_sanitize(state),
+    })
+
+
+def _parse_required_case_id(body):
+    """case_id obligatorio del cuerpo JSON o (None, error 400)."""
+    raw = body.get("case_id")
+
+    if raw in (None, ""):
+        return None, (jsonify({
+            "ok": False,
+            "error": "case_id es obligatorio.",
+        }), 400)
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None, (jsonify({
+            "ok": False,
+            "error": "case_id inválido.",
+        }), 400)
+
+    if value <= 0:
+        return None, (jsonify({
+            "ok": False,
+            "error": "case_id debe ser positivo.",
+        }), 400)
+
+    return value, None
+
+
+@app.route("/api/ai/validation/case/update", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_case_update():
+    """Corrige la clasificación real (ground truth) de un caso.
+
+    Solo cambia la etiqueta humana: la imagen, el score y los
+    artefactos no se tocan y no se vuelve a inferir. La edición
+    invalida las métricas de la sesión.
+    """
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    case_id, case_error = _parse_required_case_id(body)
+
+    if case_error is not None:
+        return case_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    try:
+        category_key = resolve_validation_category(
+            category=body.get("category"),
+            estado_real=body.get("estado_real"),
+            tipo_defecto=body.get("tipo_defecto"),
+        )
+    except AIDomainError as error:
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+        }), 400
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        result = ai_validation.update_validation_case_category(
+            cur,
+            case_id=case_id,
+            ai_model_id=resolved,
+            category=category_key,
+            actor_id=actor_id,
+        )
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+            "validation": _ai_validation_state(resolved),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo editar la clasificación real "
+            f"(ai_model_id={resolved}, case_id={case_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo editar la clasificación real. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": result.get("message"),
+        "result": _json_sanitize(result),
+        "validation": _json_sanitize(state),
+    })
+
+
+@app.route("/api/ai/validation/case/delete", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_case_delete():
+    """Elimina un caso mal registrado (error operativo).
+
+    No toca el entrenamiento, la versión ni los demás casos; la
+    operación queda registrada en el historial de auditoría.
+    """
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+
+    if parse_error is not None:
+        return parse_error
+
+    case_id, case_error = _parse_required_case_id(body)
+
+    if case_error is not None:
+        return case_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+
+    if ai_error is not None:
+        return ai_error
+
+    model, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+
+    if guard_error is not None:
+        return guard_error
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+        result = ai_validation.delete_validation_case(
+            cur,
+            case_id=case_id,
+            ai_model_id=resolved,
+            actor_id=actor_id,
+        )
+        state = ai_validation.get_validation_state(cur, resolved)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": str(error),
+            "validation": _ai_validation_state(resolved),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo eliminar el caso de validación "
+            f"(ai_model_id={resolved}, case_id={case_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo eliminar el caso de validación. "
+                "Intente de nuevo."
+            ),
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": result.get("message"),
+        "result": _json_sanitize(result),
+        "validation": _json_sanitize(state),
+    })
+
+
+# ============================================================
+# FASE 2C — pantalla de captura guiada (video + posicionamiento)
+# ============================================================
+
+
+def _ascii_label(value):
+    """cv2.putText no dibuja acentos: se translitera sin romper nada."""
+    import unicodedata
+
+    text = str(value or "")
+    return (
+        unicodedata.normalize("NFKD", text)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
+
+
+def draw_guided_overlay(frame, guide):
+    """
+    Overlay de posicionamiento sobre el video en vivo.
+
+    El color NUNCA es la única señal: siempre acompaña a texto de
+    estado, ícono de check/cruces y una línea gruesa de esquinas.
+    """
+    if cv2 is None or frame is None:
+        return frame
+
+    output = frame.copy()
+
+    try:
+        x1, y1, x2, y2 = get_roi_bounds(output)
+    except Exception:
+        return output
+
+    height = output.shape[0]
+
+    guide = guide or {}
+    state = guide.get("state")
+    color = GUIDED_STATE_COLORS.get(state, (150, 150, 150))
+    # El visto aparece solo cuando la operadora YA puede capturar
+    # (o cuando la captura está en curso/terminada).
+    valid = bool(guide.get("ready")) or state in (
+        "CAPTURANDO",
+        "CAPTURADA",
+    )
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    # --- área objetivo ---
+    cv2.rectangle(output, (x1, y1), (x2, y2), color, 3)
+
+    # --- esquinas marcadoras (forma, además del color) ---
+    corner = 30
+    thick = 7
+    cv2.line(output, (x1, y1), (x1 + corner, y1), (255, 255, 255), thick)
+    cv2.line(output, (x1, y1), (x1, y1 + corner), (255, 255, 255), thick)
+    cv2.line(output, (x2, y1), (x2 - corner, y1), (255, 255, 255), thick)
+    cv2.line(output, (x2, y1), (x2, y1 + corner), (255, 255, 255), thick)
+    cv2.line(output, (x1, y2), (x1 + corner, y2), (255, 255, 255), thick)
+    cv2.line(output, (x1, y2), (x1, y2 - corner), (255, 255, 255), thick)
+    cv2.line(output, (x2, y2), (x2 - corner, y2), (255, 255, 255), thick)
+    cv2.line(output, (x2, y2), (x2, y2 - corner), (255, 255, 255), thick)
+
+    # --- silueta detectada ---
+    bbox = guide.get("bbox")
+    if bbox:
+        cv2.rectangle(
+            output,
+            (int(bbox[0]), int(bbox[1])),
+            (int(bbox[2]), int(bbox[3])),
+            color,
+            2,
+        )
+        cv2.putText(
+            output,
+            "PRENDA",
+            (int(bbox[0]), max(22, int(bbox[1]) - 8)),
+            font,
+            0.6,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+
+    # --- banner de estado + ícono ---
+    label = _ascii_label(
+        guide.get("state_label") or "PREPARANDO"
+    )
+    banner_height = 46
+    banner_top = max(0, y1 - banner_height - 10)
+    banner_right = min(output.shape[1] - 1, x1 + 380)
+    cv2.rectangle(
+        output,
+        (x1, banner_top),
+        (banner_right, banner_top + banner_height),
+        color,
+        -1,
+    )
+    cv2.putText(
+        output,
+        label,
+        (x1 + 14, banner_top + 33),
+        font,
+        0.85,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+    icon_x = banner_right - 44
+    icon_y = banner_top + 23
+    if valid:
+        cv2.line(output, (icon_x - 14, icon_y), (icon_x - 4, icon_y + 10), (255, 255, 255), 4)
+        cv2.line(output, (icon_x - 4, icon_y + 10), (icon_x + 14, icon_y - 12), (255, 255, 255), 4)
+    else:
+        cv2.line(output, (icon_x - 12, icon_y - 12), (icon_x + 12, icon_y + 12), (255, 255, 255), 4)
+        cv2.line(output, (icon_x + 12, icon_y - 12), (icon_x - 12, icon_y + 12), (255, 255, 255), 4)
+
+    # --- mensaje para la usuaria ---
+    message = _ascii_label(guide.get("message"))
+    if message:
+        box_height = 46
+        box_top = y2 + 8
+        if box_top + box_height > height:
+            box_top = max(0, height - box_height - 4)
+        box_right = min(output.shape[1] - 1, x1 + 560)
+        cv2.rectangle(
+            output,
+            (x1, box_top),
+            (box_right, box_top + box_height),
+            (20, 20, 20),
+            -1,
+        )
+        cv2.putText(
+            output,
+            message.upper()[:64],
+            (x1 + 14, box_top + 32),
+            font,
+            0.7,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    return output
+
+
+def generate_guided_video_feed(garment_model_id):
+    """Stream MJPEG de la pantalla guiada, con overlay de posición."""
+    while True:
+        ensure_camera_capture_worker()
+
+        frame, timestamp, sequence = get_latest_camera_frame()
+
+        if frame is None:
+            frame_to_send = make_camera_error_frame(
+                "RECONECTANDO CAMARA"
+            )
+        else:
+            log_camera_latency(
+                source="ai_guided_video",
+                sequence=sequence,
+                timestamp_monotonic=timestamp,
+            )
+            guide = _ai_guided_payload(garment_model_id)
+            frame_to_send = draw_guided_overlay(frame, guide)
+
+        jpg = encode_jpeg(frame_to_send)
+
+        if jpg is None:
+            jpg = generate_placeholder_frame("ERROR DE VIDEO")
+
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n"
+            + jpg
+            + b"\r\n"
+        )
+
+        time.sleep(0.08)
+
+
+def _guarded_model_or_none(model_id):
+    """Validación común de la pantalla guiada. Devuelve (modelo, respuesta)."""
+    model = get_garment_model(model_id)
+
+    if not model:
+        flash("El modelo de prenda solicitado no existe.", "error")
+        return None, redirect(url_for("garment_models_page"))
+
+    if not can_manage_garment_model(model):
+        flash(
+            "No tiene permisos para preparar la captura de este modelo.",
+            "error",
+        )
+        return None, redirect(url_for("garment_models_page"))
+
+    if (
+        model.get("status") != "APROBADO"
+        or int(model.get("active") or 0) != 1
+    ):
+        flash(
+            "La captura solo puede iniciarse con el modelo "
+            "aprobado y activo.",
+            "error",
+        )
+        return None, redirect(
+            url_for("garment_model_detail", model_id=model_id)
+        )
+
+    return model, None
+
+
+@app.route("/modelos-prenda/<int:model_id>/captura-ia")
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def guided_capture_page(model_id):
+    model, blocked = _guarded_model_or_none(model_id)
+    if blocked is not None:
+        return blocked
+
+    try:
+        payload = _ai_capture_status_payload(
+            garment_model_id=model_id,
+            allowed=True,
+        )
+    except Exception:
+        app.logger.exception(
+            "No se pudo leer el estado de la captura guiada "
+            f"(garment_model_id={model_id})."
+        )
+        payload = None
+
+    return render_template(
+        "guided_capture.html",
+        model=model,
+        ai_capture=_json_sanitize(payload) if payload else None,
+    )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/captura-ia/video",
+    methods=["GET"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def guided_capture_video(model_id):
+    model = get_garment_model(model_id)
+
+    if not model or not can_manage_garment_model(model):
+        return jsonify({
+            "ok": False,
+            "error": "No tiene permisos para ver esta cámara.",
+        }), 403
+
+    return Response(
+        generate_guided_video_feed(model_id),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.route("/api/ai/capture/guide/start", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_capture_guide_start():
+    body = request.get_json(silent=True) or {}
+    raw_model = body.get("garment_model_id")
+
+    try:
+        garment_model_id = int(raw_model)
+    except (TypeError, ValueError):
+        return jsonify({
+            "ok": False,
+            "error": "garment_model_id inválido.",
+        }), 400
+
+    if garment_model_id <= 0:
+        return jsonify({
+            "ok": False,
+            "error": "garment_model_id debe ser positivo.",
+        }), 400
+
+    model = get_garment_model(garment_model_id)
+
+    if not model:
+        return jsonify({
+            "ok": False,
+            "error": "El modelo de prenda no existe.",
+        }), 404
+
+    if not can_manage_garment_model(model):
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No tiene permisos para preparar la captura "
+                "de este modelo."
+            ),
+        }), 403
+
+    if (
+        model.get("status") != "APROBADO"
+        or int(model.get("active") or 0) != 1
+    ):
+        return jsonify({
+            "ok": False,
+            "error": (
+                "La captura solo puede iniciarse con el modelo "
+                "aprobado y activo."
+            ),
+        }), 409
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        row = get_open_capture_session(cur)
+        has_prep = _has_preparation_version(cur, garment_model_id)
+    finally:
+        cur.close()
+        conn.close()
+
+    if row is None or int(row["garment_model_id"]) != int(garment_model_id):
+        return jsonify({
+            "ok": False,
+            "error": (
+                "Primero inicie la captura de este modelo "
+                "desde su ficha."
+            ),
+        }), 409
+
+    if not has_prep:
+        return jsonify({
+            "ok": False,
+            "error": (
+                "Este modelo aún no tiene una sesión de preparación."
+            ),
+        }), 409
+
+    session_id = int(row["id"])
+
+    try:
+        _ai_guided_prepare_runtime(session_id, garment_model_id)
+    except AIDomainError as error:
+        return jsonify({
+            "ok": False,
+            "error": humanize_capture_error(error),
+        }), 409
+    except Exception:
+        app.logger.exception(
+            "No se pudo preparar la estación guiada "
+            f"(garment_model_id={garment_model_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": (
+                "No se pudo iniciar la captura guiada. "
+                "Intente de nuevo."
+            ),
+        }), 500
+
+    ensure_camera_capture_worker()
+    started = _ensure_ai_guided_worker()
+
+    status = _ai_capture_status_payload(
+        session_id=session_id,
+        garment_model_id=garment_model_id,
+        allowed=True,
+    )
+    status = _json_sanitize(status)
+
+    return jsonify({
+        "ok": True,
+        "worker_started": bool(started),
+        "message": "Estación de captura lista.",
+        "guide": status.get("guide"),
+        "session": status,
+    })
+
+
+@app.route("/api/ai/capture/guide/reset", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_capture_guide_reset():
+    """Vuelve a empezar el paso actual (por ejemplo, si la prenda se movió)."""
+    if not is_ai_capture_mode_active():
+        return jsonify({
+            "ok": False,
+            "error": "No hay una captura activa.",
+        }), 409
+
+    _ai_guided_reset_state()
+
+    return jsonify({
+        "ok": True,
+        "message": "Posición reiniciada.",
+        "guide": _ai_guided_payload(
+            AI_GUIDED_RUNTIME.get("garment_model_id")
+        ),
+    })
+
+
+def _ai_capture_request_model():
+    """
+    Body común de los endpoints manuales de la pantalla guiada.
+
+    Devuelve (garment_model_id, model, body, error_response).
+    """
+    body = request.get_json(silent=True) or {}
+    raw_model = body.get("garment_model_id")
+
+    try:
+        garment_model_id = int(raw_model)
+    except (TypeError, ValueError):
+        return None, None, body, (
+            jsonify({"ok": False, "error": "garment_model_id inválido."}),
+            400,
+        )
+
+    if garment_model_id <= 0:
+        return None, None, body, (
+            jsonify({
+                "ok": False,
+                "error": "garment_model_id debe ser positivo.",
+            }),
+            400,
+        )
+
+    model = get_garment_model(garment_model_id)
+
+    if not model:
+        return None, None, body, (
+            jsonify({"ok": False, "error": "El modelo de prenda no existe."}),
+            404,
+        )
+
+    if not can_manage_garment_model(model):
+        return None, None, body, (
+            jsonify({
+                "ok": False,
+                "error": (
+                    "No tiene permisos para preparar la captura "
+                    "de este modelo."
+                ),
+            }),
+            403,
+        )
+
+    if (
+        model.get("status") != "APROBADO"
+        or int(model.get("active") or 0) != 1
+    ):
+        return None, None, body, (
+            jsonify({
+                "ok": False,
+                "error": (
+                    "La captura solo puede iniciarse con el modelo "
+                    "aprobado y activo."
+                ),
+            }),
+            409,
+        )
+
+    return garment_model_id, model, body, None
+
+
+def _ai_open_session_for_model(garment_model_id):
+    """Sesión ABIERTA del modelo en la estación (o None)."""
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        row = get_open_capture_session(cur)
+    finally:
+        cur.close()
+        conn.close()
+
+    if row is None:
+        return None
+    if int(row["garment_model_id"]) != int(garment_model_id):
+        return None
+    return row
+
+
+@app.route("/api/ai/capture/guide/manual", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_capture_guide_manual():
+    """
+    Botón "CAPTURAR IMAGEN": guarda la captura actual.
+
+    Solo responde si la posición es válida ("Lista para capturar");
+    en cualquier otro caso devuelve un mensaje accionable.
+    """
+    garment_model_id, _model, _body, error = _ai_capture_request_model()
+    if error is not None:
+        return error
+
+    if not is_ai_capture_mode_active():
+        return jsonify({
+            "ok": False,
+            "error": (
+                "Primero inicie la preparación de este modelo "
+                "desde su ficha."
+            ),
+        }), 409
+
+    if _ai_open_session_for_model(garment_model_id) is None:
+        return jsonify({
+            "ok": False,
+            "error": (
+                "La sesión de preparación no está activa. "
+                "Vuelva a iniciarla desde la ficha del modelo."
+            ),
+        }), 409
+
+    payload, status_code = _ai_guided_manual_capture(garment_model_id)
+    return jsonify(_json_sanitize(payload)), status_code
+
+
+# Decisiones de revisión de la última captura (confirmación manual).
+#
+# REPETIR: en el flujo activo (pending_token) NO persiste la imagen y
+# no cuenta como válida ni como descartada (los contadores no cambian).
+# Solo la ruta legacy (image_id, sobre una imagen ya guardada) la marca
+# RECHAZADA/MANUAL_REPEAT para que deje de contar como válida.
+GUIDED_REVIEW_DECISIONS = {
+    "accept": ("ACEPTADA", None),
+    "repeat": ("RECHAZADA", "MANUAL_REPEAT"),
+    "discard": ("RECHAZADA", "MANUAL_DISCARD"),
+}
+
+
+@app.route("/api/ai/capture/guide/review", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_capture_guide_review():
+    """
+    Marca la última captura como Aceptada / Repetir / Descartada.
+
+    Los contadores de la sesión son derivados de la BD, así que se
+    actualizan solos al cambiar el estado de la imagen.
+    """
+    garment_model_id, _model, body, error = _ai_capture_request_model()
+    if error is not None:
+        return error
+
+    decision = str(body.get("decision") or "").strip().lower()
+    if decision == "accepted":
+        decision = "accept"
+
+    if decision not in GUIDED_REVIEW_DECISIONS:
+        return jsonify({
+            "ok": False,
+            "error": "Decisión de revisión no reconocida.",
+        }), 400
+
+    if not is_ai_capture_mode_active():
+        return jsonify({
+            "ok": False,
+            "error": (
+                "La sesión de preparación ya no está activa. "
+                "No se puede revisar esta imagen."
+            ),
+        }), 409
+
+    session_row = _ai_open_session_for_model(garment_model_id)
+    if session_row is None:
+        return jsonify({
+            "ok": False,
+            "error": (
+                "La sesión de preparación ya no está activa. "
+                "No se puede revisar esta imagen."
+            ),
+        }), 409
+
+    session_id = int(session_row["id"])
+    target_ai_model_id = session_row.get("target_ai_model_id")
+    if target_ai_model_id is not None:
+        target_model = next(
+            (item for item in get_garment_ai_versions(garment_model_id)
+             if int(item.get("id") or 0) == int(target_ai_model_id)),
+            None,
+        )
+        if target_model and str(target_model.get("version") or "").lower() == "v2":
+            try:
+                validate_normal_v2_capture_confirmation(
+                    version="v2",
+                    decision=decision,
+                    human_category=body.get("human_category"),
+                )
+            except AIDomainError as error:
+                return jsonify({
+                    "ok": False,
+                    "error": str(error),
+                }), 409
+
+    pending_token = str(body.get("pending_token") or "").strip()
+    if pending_token:
+        pending = AI_GUIDED_RUNTIME.get("pending_capture")
+        if not pending or pending.get("token") != pending_token:
+            return jsonify({
+                "ok": False,
+                "error": "La vista previa expiró. Capture otra imagen.",
+            }), 409
+
+        if decision == "repeat":
+            reset_for_next_manual_capture()
+            return jsonify({
+                "ok": True,
+                "decision": "repeat",
+                "session": _json_sanitize(
+                    _ai_capture_status_payload(
+                        garment_model_id=garment_model_id,
+                        allowed=True,
+                    )
+                ),
+            })
+
+        candidate = pending["candidate"]
+        metrics = dict(pending["decision"])
+        metrics["accepted"] = decision == "accept"
+        metrics["reject_reason"] = (
+            None if decision == "accept" else "MANUAL_DISCARD"
+        )
+        metrics["quality_score"] = metrics.get("quality_score", 0.0)
+        cfg = AI_CAPTURE_RUNTIME["config"] or get_ai_capture_config()
+        jpeg_bytes = (
+            pending.get("jpeg_bytes")
+            if metrics["accepted"] or cfg.get("keep_rejected")
+            else None
+        )
+        record = _ai_capture_persist(metrics, jpeg_bytes, candidate)
+        if record.get("skipped"):
+            return jsonify({
+                "ok": False,
+                "error": "La imagen ya existe en la preparación y no se guardó otra vez.",
+            }), 409
+
+        # Auditoría conserva que la decisión humana aceptó una toma con
+        # advertencias, y las métricas usadas por la guía asistencial.
+        conn = db()
+        cur = conn.cursor(dictionary=True)
+        try:
+            conn.start_transaction()
+            record_ai_event(
+                cur,
+                "CAPTURE_IMAGE_REVIEWED",
+                actor_id=session.get("user_id"),
+                capture_session_id=session_id,
+                payload={
+                    "decision": decision,
+                    "image_id": (record.get("record") or {}).get("id"),
+                    "warnings": pending.get("warnings") or [],
+                    "frame_sequence": candidate.best_sequence,
+                    "frame_age_ms": pending.get("frame_age_ms"),
+                    "roi": pending.get("roi"),
+                    "bbox": pending.get("bbox"),
+                    "coverage": metrics.get("coverage"),
+                    "sharpness": metrics.get("sharpness"),
+                    "segmentation": pending.get("segmentation"),
+                },
+            )
+            conn.commit()
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            app.logger.exception("No se pudo registrar la revisión humana.")
+        finally:
+            cur.close()
+            conn.close()
+
+        reset_for_next_manual_capture()
+        if decision == "discard":
+            status = _ai_capture_status_payload(
+                garment_model_id=garment_model_id,
+                allowed=True,
+            )
+            return jsonify({
+                "ok": True,
+                "decision": decision,
+                "image_id": (record.get("record") or {}).get("id"),
+                "session": _json_sanitize(status),
+            })
+
+        status = _ai_capture_status_payload(
+            garment_model_id=garment_model_id,
+            allowed=True,
+        )
+        return jsonify({
+            "ok": True,
+            "decision": decision,
+            "image_id": (record.get("record") or {}).get("id"),
+            "preview_url": url_for(
+                "guided_capture_image",
+                model_id=garment_model_id,
+                image_id=(record.get("record") or {}).get("id"),
+            ),
+            "session": _json_sanitize(status),
+        })
+
+    raw_image = body.get("image_id")
+    try:
+        image_id = int(raw_image)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "image_id inválido."}), 400
+    if image_id <= 0:
+        return jsonify({"ok": False, "error": "image_id debe ser positivo."}), 400
+
+    new_status, new_reason = GUIDED_REVIEW_DECISIONS[decision]
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute(
+            """
+            SELECT id, capture_session_id, status, reject_reason, sha256
+            FROM ai_training_images
+            WHERE id = %s AND garment_model_id = %s
+            FOR UPDATE
+            """,
+            (image_id, garment_model_id),
+        )
+        image = cur.fetchone()
+
+        if image is None:
+            conn.rollback()
+            return jsonify({
+                "ok": False,
+                "error": "La imagen ya no existe en esta sesión.",
+            }), 404
+
+        if (
+            image["capture_session_id"] is None
+            or int(image["capture_session_id"]) != session_id
+        ):
+            conn.rollback()
+            return jsonify({
+                "ok": False,
+                "error": (
+                    "La imagen no pertenece a la sesión activa "
+                    "de preparación."
+                ),
+            }), 409
+
+        cur.execute(
+            """
+            UPDATE ai_training_images
+            SET status = %s, reject_reason = %s
+            WHERE id = %s
+            """,
+            (new_status, new_reason, image_id),
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({
+            "ok": False,
+            "error": humanize_capture_error(error),
+        }), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo revisar la captura "
+            f"(image_id={image_id})."
+        )
+        return jsonify({
+            "ok": False,
+            "error": "No se pudo guardar la revisión. Intente de nuevo.",
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    # Los hashes aceptados mandan para detectar duplicados: se
+    # recargan desde la verdad primaria (la tabla).
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        hashes = load_session_accepted_hashes(cur, session_id)
+        AI_CAPTURE_RUNTIME["known_sha256"] = set(hashes["sha256"])
+    finally:
+        cur.close()
+        conn.close()
+
+    status = _ai_capture_status_payload(
+        garment_model_id=garment_model_id,
+        allowed=True,
+    )
+
+    return jsonify({
+        "ok": True,
+        "decision": decision,
+        "image_id": image_id,
+        "status": new_status,
+        "preview_url": url_for(
+            "guided_capture_image",
+            model_id=garment_model_id,
+            image_id=image_id,
+        ),
+        "guide": _ai_guided_payload(garment_model_id),
+        "session": _json_sanitize(status),
+    })
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/captura-ia/imagen/<int:image_id>",
+    methods=["GET"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def guided_capture_image(model_id, image_id):
+    """Vista previa de una captura de la sesión (para revisarla)."""
+    model = get_garment_model(model_id)
+
+    if not model or not can_manage_garment_model(model):
+        return jsonify({
+            "ok": False,
+            "error": "No tiene permisos para ver esta imagen.",
+        }), 403
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT image_path
+            FROM ai_training_images
+            WHERE id = %s AND garment_model_id = %s
+            """,
+            (image_id, model_id),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+    if row is None:
+        return jsonify({
+            "ok": False,
+            "error": "La imagen ya no existe.",
+        }), 404
+
+    try:
+        path = resolve_under_root(
+            get_ai_artifacts_root(),
+            row["image_path"],
+        )
+    except AIDomainError:
+        return jsonify({
+            "ok": False,
+            "error": "Ruta de imagen no válida.",
+        }), 404
+
+    if not path.is_file():
+        return jsonify({
+            "ok": False,
+            "error": "La imagen no está disponible en este momento.",
+        }), 404
+
+    return send_file(path, mimetype="image/jpeg", conditional=True)
+
+
+def _ai_guided_close(model_id, action):
+    model, blocked = _guarded_model_or_none(model_id)
+    if blocked is not None:
+        return blocked
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        row = get_open_capture_session(cur)
+        counts = None
+        if row is not None and int(row["garment_model_id"]) == int(
+            model_id
+        ):
+            counts = count_session_images(cur, int(row["id"]))
+    finally:
+        cur.close()
+        conn.close()
+
+    if row is None or int(row["garment_model_id"]) != int(model_id):
+        flash("No hay una captura activa de este modelo.", "message")
+        return redirect(
+            url_for("garment_model_detail", model_id=model_id)
+        )
+
+    cfg = get_ai_capture_config()
+    counts = counts or {}
+    accepted = int(counts.get("accepted_images") or 0)
+    rejected = int(counts.get("rejected_images") or 0)
+
+    # Finalizar requiere el mínimo configurable; no basta una sola toma.
+    min_images = int(cfg["min_images"])
+    if action == "stop" and accepted < min_images:
+        missing = min_images - accepted
+        flash(
+            f"Faltan {missing} imágenes para alcanzar el mínimo de "
+            f"{min_images} imágenes válidas antes de finalizar.",
+            "error",
+        )
+        return redirect(
+            url_for("guided_capture_page", model_id=model_id)
+        )
+
+    # _ai_capture_finish trabaja sobre la sesión abierta; aquí ya se
+    # verificó que es la de este modelo.
+    result = _ai_capture_finish(action)
+    if isinstance(result, tuple):
+        response, status_code = result
+    else:
+        response, status_code = result, 200
+
+    try:
+        payload = json.loads(response.get_data(as_text=True))
+    except Exception:
+        payload = {}
+
+    _stop_ai_guided_worker()
+    _ai_guided_reset_state()
+
+    if not payload.get("ok"):
+        flash(
+            payload.get("error")
+            or "No se pudo cerrar la captura. Intente de nuevo.",
+            "error",
+        )
+        return redirect(
+            url_for("garment_model_detail", model_id=model_id)
+        )
+
+    if action == "stop":
+        session_payload = payload.get("session") or {}
+        accepted = int(session_payload.get("accepted_count") or 0)
+        rejected = int(session_payload.get("rejected_count") or 0)
+        min_images = int(
+            session_payload.get("min_count") or cfg["min_images"]
+        )
+        missing = max(0, min_images - accepted)
+        target = int(session_payload.get("target_count") or cfg["target_images"])
+        state_label = (
+            session_payload.get("ui_state_label") or "COMPLETADA"
+        )
+        training = (
+            "Objetivo recomendado alcanzado."
+            if accepted >= target
+            else "Se alcanzó el mínimo. Se recomiendan "
+            f"{target} imágenes."
+            if missing == 0
+            else (
+                "No listo para entrenamiento: faltan "
+                f"{missing} imágenes para alcanzar el mínimo de "
+                f"{min_images}."
+            )
+        )
+        flash(
+            f"Captura completada. {accepted} imágenes normales. "
+            f"{rejected} descartadas. Sesión: {state_label}. "
+            f"{training}",
+            "success",
+        )
+    else:
+        flash("Sesión de captura cancelada.", "message")
+
+    return redirect(
+        url_for("garment_model_detail", model_id=model_id)
+    )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/captura-ia/finalizar",
+    methods=["POST"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def guided_capture_finish(model_id):
+    return _ai_guided_close(model_id, "stop")
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/captura-ia/cancelar",
+    methods=["POST"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def guided_capture_cancel(model_id):
+    return _ai_guided_close(model_id, "cancel")
 
 
 if __name__ == "__main__":
     init_db()
-    # app.run(debug=True, host="127.0.0.1", port=5000)
-    app.run(debug=True, host="0.0.0.0", port=5000, threaded=True, use_reloader=False)
+    # Exactamente un lector RTSP continuo (no uno por request).
+    ensure_camera_capture_worker()
+
+    debug_mode = os.getenv("FLASK_DEBUG", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    app_port = int(os.getenv("APP_PORT", "5000"))
+
+    app.run(
+        debug=debug_mode,
+        host="0.0.0.0",
+        port=app_port,
+        threaded=True,
+        use_reloader=False,
+    )

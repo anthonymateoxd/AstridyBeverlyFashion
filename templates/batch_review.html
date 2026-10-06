@@ -182,6 +182,7 @@
   padding:24px;
   background:#eef8f0;
   border-left:4px solid #23834d;
+  margin-bottom:20px;
 }
 
 .review-complete h2{
@@ -205,6 +206,105 @@
 
 .review-final-button.accept{
   background:#16804c;
+}
+
+.review-list-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-end;
+  gap:16px;
+  margin:8px 0 14px;
+  flex-wrap:wrap;
+}
+
+.review-list-header h2{
+  margin:0;
+}
+
+.review-list-header p{
+  margin:4px 0 0;
+  color:#746a60;
+}
+
+.review-page-info{
+  color:#746a60;
+  font-size:13px;
+}
+
+.review-pager{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  margin-top:16px;
+  flex-wrap:wrap;
+}
+
+.review-pager a,
+.review-pager span.disabled{
+  display:inline-block;
+  padding:9px 14px;
+  border:1px solid #d7cec3;
+  background:#fff;
+  color:#111;
+  text-decoration:none;
+  font-weight:700;
+  font-size:12px;
+  letter-spacing:.5px;
+  text-transform:uppercase;
+  border-radius:4px;
+}
+
+.review-pager span.disabled{
+  opacity:.45;
+  cursor:not-allowed;
+}
+
+.review-state{
+  display:inline-block;
+  margin-bottom:10px;
+  padding:6px 10px;
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.7px;
+  text-transform:uppercase;
+  border-radius:3px;
+}
+
+.review-state.ok{
+  background:#eaf6ee;
+  color:#176238;
+  border:1px solid #b7e0c5;
+}
+
+.review-state.pending{
+  background:#fff3d8;
+  color:#7a5410;
+  border:1px solid #f0d48a;
+}
+
+.review-state.confirmed{
+  background:#fff0f0;
+  color:#7f1d1d;
+  border:1px solid #efb8b8;
+}
+
+.review-state.discarded{
+  background:#eef2f7;
+  color:#3d4a5c;
+  border:1px solid #c9d2de;
+}
+
+.review-meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px 14px;
+  margin-bottom:10px;
+  color:#746a60;
+  font-size:13px;
+}
+
+.review-result-line{
+  margin-bottom:12px;
 }
 
 .back-link{
@@ -405,150 +505,11 @@
     </h2>
 
     <p>
-      Solo se muestran las prendas
-      que necesitan verificaci&oacute;n.
+      Las alertas pendientes se muestran con controles
+      dentro de la lista completa de prendas.
     </p>
 
   </div>
-
-
-  <section class="review-list">
-
-    {% for alert in alerts %}
-
-      <article
-        class="review-card"
-        id="alert-{{ alert['id'] }}"
-      >
-
-        <div class="review-card-grid">
-
-          <div class="review-image">
-
-            {% if alert['image_result'] %}
-
-              <img
-                src="{{
-                  url_for(
-                    'static',
-                    filename=alert['image_result']
-                  )
-                }}"
-                alt="Alerta detectada"
-              />
-
-            {% elif alert['image_original'] %}
-
-              <img
-                src="{{
-                  url_for(
-                    'static',
-                    filename=alert['image_original']
-                  )
-                }}"
-                alt="Captura de la prenda"
-              />
-
-            {% endif %}
-
-          </div>
-
-
-          <div>
-
-            <div class="review-number">
-              Blusa #{{ alert['batch_position'] }}
-            </div>
-
-
-            <div class="review-data">
-
-              <div class="review-label">
-                Alerta
-              </div>
-
-              <div>
-                {{ alert['defect_type'] }}
-              </div>
-
-
-              <div class="review-label">
-                Zona
-              </div>
-
-              <div>
-                {{
-                  alert['zone']
-                  or 'No definida'
-                }}
-              </div>
-
-            </div>
-
-
-            <form
-              method="post"
-              action="{{
-                url_for(
-                  'review_batch_alert',
-                  batch_id=batch['id'],
-                  inspection_id=alert['id'],
-                  decision='confirmar'
-                )
-              }}"
-            >
-
-              <label class="review-note-label">
-                Motivo / observaci&oacute;n
-              </label>
-
-              <textarea
-                class="review-note-input"
-                name="review_notes"
-                minlength="5"
-                maxlength="500"
-                required
-                placeholder="Motivo breve de la decisi&oacute;n..."
-              ></textarea>
-
-
-              <div class="review-actions">
-
-                <button
-                  class="review-button confirm-defect"
-                  type="submit"
-                >
-                  Confirmar defecto
-                </button>
-
-                <button
-                  class="review-button discard-alert"
-                  type="submit"
-                  formaction="{{
-                    url_for(
-                      'review_batch_alert',
-                      batch_id=batch['id'],
-                      inspection_id=alert['id'],
-                      decision='descartar'
-                    )
-                  }}"
-                >
-                  Descartar alerta
-                </button>
-
-              </div>
-
-            </form>
-
-          </div>
-
-        </div>
-
-      </article>
-
-    {% endfor %}
-
-  </section>
 
 
 {% else %}
@@ -595,6 +556,312 @@
   </section>
 
 {% endif %}
+
+
+<section class="review-list-section">
+
+  <div class="review-list-header">
+
+    <div>
+      <h2>Prendas inspeccionadas</h2>
+      <p>
+        Todas las prendas del lote, sin importar el resultado.
+      </p>
+    </div>
+
+    {% if garments['total'] > 0 %}
+      <div class="review-page-info">
+        {{ garments['start_index'] }}
+        &ndash;
+        {{ garments['end_index'] }}
+        de
+        {{ garments['total'] }}
+      </div>
+    {% endif %}
+
+  </div>
+
+  {% if garments['total'] == 0 %}
+
+    <section class="review-complete">
+      <p>
+        Este lote a&uacute;n no tiene prendas inspeccionadas.
+      </p>
+    </section>
+
+  {% else %}
+
+    <section class="review-list">
+
+      {% for item in garments['items'] %}
+
+        {% set is_pending_alert = (
+             item['ai_decision'] == 'ANOMALIA'
+             and (
+               item['review_status'] is none
+               or item['review_status'] == 'PENDIENTE'
+             )
+           )
+        %}
+        {% set is_confirmed = (
+             item['review_status'] == 'DEFECTO_CONFIRMADO'
+           )
+        %}
+        {% set is_discarded = (
+             item['review_status'] == 'ALERTA_DESCARTADA'
+           )
+        %}
+        {% set is_normal = (
+             item['ai_decision'] != 'ANOMALIA'
+             and not is_confirmed
+             and not is_discarded
+           )
+        %}
+
+        <article
+          class="review-card"
+          id="garment-{{ item['id'] }}"
+        >
+
+          <div class="review-card-grid">
+
+            <div class="review-image">
+
+              {% if item['image_original'] %}
+
+                <img
+                  src="{{
+                    url_for(
+                      'static',
+                      filename=item['image_original']
+                    )
+                  }}"
+                  alt="{{
+                    'Captura prenda ' ~ item['batch_position']
+                  }}"
+                  loading="lazy"
+                />
+
+              {% elif item['image_result'] %}
+
+                <img
+                  src="{{
+                    url_for(
+                      'static',
+                      filename=item['image_result']
+                    )
+                  }}"
+                  alt="{{
+                    'Resultado prenda ' ~ item['batch_position']
+                  }}"
+                  loading="lazy"
+                />
+
+              {% endif %}
+
+            </div>
+
+
+            <div>
+
+              {% if is_confirmed %}
+                <span class="review-state confirmed">
+                  Confirmada
+                </span>
+              {% elif is_discarded %}
+                <span class="review-state discarded">
+                  Descartada
+                </span>
+              {% elif is_pending_alert %}
+                <span class="review-state pending">
+                  Alerta
+                </span>
+              {% else %}
+                <span class="review-state ok">
+                  Sin alerta
+                </span>
+              {% endif %}
+
+              <div class="review-number">
+                Blusa
+                #{{ item['batch_position'] if item['batch_position'] is not none else '—' }}
+              </div>
+
+              <div class="review-meta">
+                {% if item['code'] %}
+                  <span><strong>C&oacute;digo:</strong> {{ item['code'] }}</span>
+                {% endif %}
+                {% if item['created_at'] %}
+                  <span><strong>Hora:</strong> {{ item['created_at'] }}</span>
+                {% endif %}
+              </div>
+
+              <div class="review-result-line">
+
+                {% if is_normal %}
+                  <strong>Sin anomal&iacute;as detectadas</strong>
+                {% elif is_pending_alert %}
+                  <strong>Alerta pendiente de revisi&oacute;n</strong>
+                {% elif is_confirmed %}
+                  <strong>Defecto confirmado</strong>
+                {% elif is_discarded %}
+                  <strong>Alerta descartada</strong>
+                {% else %}
+                  <strong>{{ item['status'] or '—' }}</strong>
+                {% endif %}
+
+              </div>
+
+              <div class="review-data">
+
+                <div class="review-label">
+                  Resultado
+                </div>
+
+                <div>
+                  {{ item['status'] or '—' }}
+                </div>
+
+
+                <div class="review-label">
+                  Detecci&oacute;n
+                </div>
+
+                <div>
+                  {{ item['defect_type'] or 'Sin defecto' }}
+                </div>
+
+
+                <div class="review-label">
+                  Zona
+                </div>
+
+                <div>
+                  {{ item['zone'] or 'No definida' }}
+                </div>
+
+              </div>
+
+
+              {% if is_pending_alert %}
+
+                <form
+                  method="post"
+                  action="{{
+                    url_for(
+                      'review_batch_alert',
+                      batch_id=batch['id'],
+                      inspection_id=item['id'],
+                      decision='confirmar'
+                    )
+                  }}"
+                >
+
+                  <label class="review-note-label">
+                    Motivo / observaci&oacute;n
+                  </label>
+
+                  <textarea
+                    class="review-note-input"
+                    name="review_notes"
+                    minlength="5"
+                    maxlength="500"
+                    required
+                    placeholder="Motivo breve de la decisi&oacute;n..."
+                  ></textarea>
+
+
+                  <div class="review-actions">
+
+                    <button
+                      class="review-button confirm-defect"
+                      type="submit"
+                    >
+                      Confirmar defecto
+                    </button>
+
+                    <button
+                      class="review-button discard-alert"
+                      type="submit"
+                      formaction="{{
+                        url_for(
+                          'review_batch_alert',
+                          batch_id=batch['id'],
+                          inspection_id=item['id'],
+                          decision='descartar'
+                        )
+                      }}"
+                    >
+                      Descartar alerta
+                    </button>
+
+                  </div>
+
+                </form>
+
+              {% endif %}
+
+            </div>
+
+          </div>
+
+        </article>
+
+      {% endfor %}
+
+    </section>
+
+
+    {% if garments['max_page'] > 1 %}
+
+      <nav class="review-pager" aria-label="Paginaci&oacute;n de prendas">
+
+        {% if garments['has_prev'] %}
+          <a
+            href="{{
+              url_for(
+                'batch_review',
+                batch_id=batch['id'],
+                garment_page=garments['page'] - 1
+              )
+            }}"
+          >
+            Anterior
+          </a>
+        {% else %}
+          <span class="disabled">Anterior</span>
+        {% endif %}
+
+        <span class="review-page-info">
+          P&aacute;gina
+          {{ garments['page'] }}
+          de
+          {{ garments['max_page'] }}
+        </span>
+
+        {% if garments['has_next'] %}
+          <a
+            href="{{
+              url_for(
+                'batch_review',
+                batch_id=batch['id'],
+                garment_page=garments['page'] + 1
+              )
+            }}"
+          >
+            Siguiente
+          </a>
+        {% else %}
+          <span class="disabled">Siguiente</span>
+        {% endif %}
+
+      </nav>
+
+    {% endif %}
+
+  {% endif %}
+
+</section>
 
 
 <a

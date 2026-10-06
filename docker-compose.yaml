@@ -9,11 +9,15 @@ services:
       MYSQL_USER: '${MYSQL_USER}'
       MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
     ports:
-      - '3306:3306'
+      - '127.0.0.1:3306:3306'
     volumes:
       - mysql_data:/var/lib/mysql
       - ./mysql-init:/docker-entrypoint-initdb.d
-    command: --default-authentication-plugin=mysql_native_password
+    # log_bin_trust_function_creators: permite crear los triggers de
+    # inmutabilidad de datasets (ai_dataset_images) con binary logging.
+    command: >-
+      --default-authentication-plugin=mysql_native_password
+      --log-bin-trust-function-creators=1
     healthcheck:
       test:
         ['CMD-SHELL', 'mysqladmin ping -h localhost -uroot -p"$${MYSQL_ROOT_PASSWORD}"']
@@ -57,11 +61,62 @@ services:
       PATCHCORE_PIXEL_THRESHOLD: '${PATCHCORE_PIXEL_THRESHOLD}'
       PATCHCORE_MAX_BOX_RATIO: '${PATCHCORE_MAX_BOX_RATIO}'
 
+      AI_ARTIFACTS_ROOT: '${AI_ARTIFACTS_ROOT:-/app/ai_artifacts}'
+      AI_CAPTURE_MIN_COVERAGE: '${AI_CAPTURE_MIN_COVERAGE:-0.48}'
+      AI_CAPTURE_MIN_SHARPNESS: '${AI_CAPTURE_MIN_SHARPNESS:-40.0}'
+      AI_CAPTURE_TARGET_IMAGES: '${AI_CAPTURE_TARGET_IMAGES:-40}'
+      AI_CAPTURE_DUPLICATE_THRESHOLD: '${AI_CAPTURE_DUPLICATE_THRESHOLD:-6}'
+      AI_CAPTURE_KEEP_REJECTED: '${AI_CAPTURE_KEEP_REJECTED:-false}'
+      AI_CAPTURE_JPEG_QUALITY: '${AI_CAPTURE_JPEG_QUALITY:-92}'
+
     volumes:
       - ./static/captures:/app/static/captures
       - ./static/results:/app/static/results
       - ./models:/app/models
       - ./patchcore_results:/app/patchcore_results:ro
+      - ./ai_artifacts:/app/ai_artifacts
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # FASE 3A: worker asíncrono de entrenamiento PatchCore.
+  # Proceso separado de la app: nunca entrena dentro de una petición
+  # HTTP y jamás recibe PATCHCORE_CKPT (inferencia productiva intacta).
+  ai-worker:
+    build: .
+    container_name: astrid_ai_worker
+    restart: unless-stopped
+    command: python ai_worker.py
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: '3306'
+      MYSQL_USER: '${MYSQL_USER}'
+      MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
+      MYSQL_DATABASE: '${MYSQL_DATABASE}'
+
+      ROI_X1: '${ROI_X1}'
+      ROI_Y1: '${ROI_Y1}'
+      ROI_X2: '${ROI_X2}'
+      ROI_Y2: '${ROI_Y2}'
+
+      AI_ARTIFACTS_ROOT: '${AI_ARTIFACTS_ROOT:-/app/ai_artifacts}'
+      AI_WORKER_POLL_SECONDS: '${AI_WORKER_POLL_SECONDS:-3}'
+      AI_WORKER_ORPHAN_SECONDS: '${AI_WORKER_ORPHAN_SECONDS:-900}'
+      AI_WORKER_HEARTBEAT_SECONDS: '${AI_WORKER_HEARTBEAT_SECONDS:-15}'
+      AI_WORKER_ID: '${AI_WORKER_ID:-worker-1}'
+
+      # Entrenamiento: input_size=256 = tamaño que la inferencia
+      # productiva aplica hoy (Resize 256). Cambiar solo con análisis.
+      PATCHCORE_INPUT_SIZE: '${PATCHCORE_INPUT_SIZE:-256}'
+      PATCHCORE_BACKBONE: '${PATCHCORE_BACKBONE:-wide_resnet50_2}'
+      PATCHCORE_CORESET_RATIO: '${PATCHCORE_CORESET_RATIO:-0.05}'
+      PATCHCORE_NUM_NEIGHBORS: '${PATCHCORE_NUM_NEIGHBORS:-9}'
+      PATCHCORE_SEED: '${PATCHCORE_SEED:-42}'
+      PATCHCORE_BATCH_SIZE: '${PATCHCORE_BATCH_SIZE:-4}'
+
+    volumes:
+      - ./ai_artifacts:/app/ai_artifacts
 
     depends_on:
       mysql:

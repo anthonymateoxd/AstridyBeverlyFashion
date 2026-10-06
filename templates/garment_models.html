@@ -1,88 +1,677 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
 
 <style>
-.gm-head{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:24px}
-.gm-button{display:inline-block;background:#111;color:#fff;padding:12px 16px;text-decoration:none;border:0;cursor:pointer;font-weight:700}
-.gm-card{background:#fff;border:1px solid #e6ded2;border-radius:10px;padding:22px;margin-bottom:14px}
-.gm-top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}
-.gm-code{font-size:13px;letter-spacing:1px;color:#776c61}
-.gm-name{font-size:22px;font-weight:700;margin:4px 0 10px}
-.gm-meta{display:flex;gap:22px;flex-wrap:wrap}
-.gm-badge{display:inline-block;padding:6px 10px;border-radius:20px;font-size:12px;font-weight:700}
-.gm-ok{background:#e5f4e9;color:#23683a}
-.gm-warn{background:#fff2d8;color:#8b6115}
-.gm-bad{background:#f6e2e2;color:#922f2f}
-.gm-neutral{background:#eeeae4;color:#5e574f}
-.gm-link{color:#111;font-weight:700}
+:root{
+  --models-navy:#10224a;
+  --models-blue:#1186d8;
+  --models-pink:#ef2d7d;
+  --models-yellow:#ffd21f;
+  --models-green:#11985e;
+  --models-ink:#172033;
+  --models-muted:#68758a;
+  --models-line:#e6ebf1;
+  --models-soft:#f6f8fb;
+  --models-card:#ffffff;
+}
+
+/* Mismo lenguaje visual del dashboard. Solo se aplica en esta pantalla. */
+body.app-body{
+  background:#f7f9fc;
+  font-family:Inter,Segoe UI,Arial,sans-serif;
+  color:var(--models-ink);
+}
+
+.sidebar{
+  width:220px;
+  padding:22px 18px;
+  border-right:1px solid #edf0f4;
+  box-shadow:none;
+}
+.brand{
+  margin:0 0 24px;
+  padding:0 6px 18px;
+  border-bottom:1px solid #eef1f5;
+}
+.brand img{width:155px;height:98px}
+.sidebar-role{
+  padding:0 14px 12px !important;
+  color:#5d6778;
+  opacity:1 !important;
+  font-size:13px !important;
+  font-weight:600;
+}
+.sidebar nav a{
+  position:relative;
+  display:flex;
+  align-items:center;
+  min-height:44px;
+  margin:4px 0;
+  padding:0 14px;
+  border-radius:8px;
+  color:#243858;
+  font-size:14px;
+  font-weight:600;
+  transition:background .16s ease,color .16s ease;
+}
+.sidebar nav a::before{
+  content:"";
+  width:4px;
+  height:0;
+  position:absolute;
+  left:-18px;
+  top:50%;
+  transform:translateY(-50%);
+  border-radius:0 4px 4px 0;
+  background:var(--models-yellow);
+  transition:height .16s ease;
+}
+.sidebar nav a:hover{color:var(--models-navy);background:#f5f7fa}
+.sidebar nav a.active{color:var(--models-navy);background:#fff8d9}
+.sidebar nav a.active::before{height:44px}
+
+.main{
+  margin-left:220px;
+  width:calc(100% - 220px);
+  padding:26px 32px 36px;
+}
+
+.models-shell{max-width:1480px;margin:0 auto}
+
+.models-topbar{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:24px;
+  margin-bottom:30px;
+}
+.models-greeting h1{
+  margin:0;
+  color:var(--models-navy);
+  font-size:34px;
+  line-height:1.08;
+  font-weight:800;
+  letter-spacing:-.8px;
+}
+.models-greeting p{
+  margin:7px 0 0;
+  color:#71809a;
+  font-size:17px;
+}
+.models-user-meta{
+  display:flex;
+  align-items:center;
+  gap:18px;
+  min-width:max-content;
+}
+.models-date{
+  padding-right:18px;
+  border-right:1px solid #dde3eb;
+  text-align:right;
+  color:#33445f;
+  font-size:13px;
+  line-height:1.45;
+}
+.models-date strong{display:block;color:var(--models-navy);font-size:14px}
+.models-avatar{
+  width:46px;
+  height:46px;
+  display:grid;
+  place-items:center;
+  border-radius:50%;
+  background:#edf2f8;
+  color:var(--models-navy);
+  font-weight:800;
+  font-size:18px;
+}
+.models-user-name{color:var(--models-navy);font-size:14px;font-weight:800}
+
+.models-page-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:20px;
+  margin-bottom:22px;
+}
+.models-page-copy{
+  display:flex;
+  align-items:center;
+  gap:16px;
+  min-width:0;
+}
+.models-page-icon{
+  width:56px;
+  height:56px;
+  flex:0 0 56px;
+  display:grid;
+  place-items:center;
+  border-radius:50%;
+  background:#fde8f1;
+  color:var(--models-pink);
+}
+.models-page-icon svg{
+  width:30px;
+  height:30px;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:2;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.models-page-head h2{
+  margin:0;
+  color:var(--models-navy);
+  font-size:36px;
+  line-height:1.05;
+  font-weight:800;
+  letter-spacing:-.7px;
+}
+.models-page-head p{
+  margin:8px 0 0;
+  color:#71809a;
+  font-size:16px;
+}
+.models-primary-btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:9px;
+  min-height:54px;
+  padding:0 22px;
+  border-radius:8px;
+  background:var(--models-navy);
+  color:#fff;
+  text-decoration:none;
+  font-size:14px;
+  font-weight:800;
+  box-shadow:0 8px 20px rgba(16,34,74,.12);
+}
+.models-primary-btn:hover{background:#152c5d;color:#fff}
+.models-primary-btn svg{width:19px;height:19px;stroke:currentColor;stroke-width:2;fill:none}
+
+.models-toolbar{
+  display:grid;
+  grid-template-columns:minmax(280px,1.3fr) minmax(170px,.55fr) minmax(170px,.55fr) auto;
+  gap:14px;
+  align-items:center;
+  padding:20px;
+  margin-bottom:22px;
+  background:var(--models-card);
+  border:1px solid var(--models-line);
+  border-radius:14px;
+  box-shadow:0 8px 24px rgba(29,48,76,.045);
+}
+.models-control{
+  position:relative;
+  min-width:0;
+}
+.models-control svg{
+  width:20px;
+  height:20px;
+  position:absolute;
+  left:15px;
+  top:50%;
+  transform:translateY(-50%);
+  color:#51647f;
+  pointer-events:none;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:2;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.models-control input,
+.models-control select{
+  width:100%;
+  height:50px;
+  margin:0;
+  padding:0 42px;
+  border:1px solid #cfd8e4;
+  border-radius:8px;
+  background:#fff;
+  color:var(--models-navy);
+  font-family:inherit;
+  font-size:14px;
+  outline:none;
+}
+.models-control input:focus,
+.models-control select:focus{
+  border-color:#9eb5cf;
+  box-shadow:0 0 0 3px rgba(17,134,216,.08);
+}
+.models-control select{appearance:auto}
+.models-count{
+  color:#5f7089;
+  font-size:14px;
+  text-align:right;
+  white-space:nowrap;
+}
+
+.models-list{display:grid;gap:18px}
+.model-card{
+  display:grid;
+  grid-template-columns:170px minmax(0,1fr) auto;
+  gap:28px;
+  align-items:center;
+  min-height:210px;
+  padding:22px 22px 22px 24px;
+  background:#fff;
+  border:1px solid var(--models-line);
+  border-radius:14px;
+  box-shadow:0 8px 24px rgba(29,48,76,.045);
+}
+.model-card[hidden]{display:none}
+.model-visual{
+  height:164px;
+  border-radius:14px;
+  background:linear-gradient(145deg,#fbf5f5,#f2f4f8);
+  border:1px solid #edf0f4;
+  display:grid;
+  place-items:center;
+  overflow:hidden;
+  position:relative;
+}
+.model-shirt{
+  width:98px;
+  height:98px;
+  color:#df9cae;
+  opacity:.96;
+}
+.model-shirt svg{
+  width:100%;
+  height:100%;
+  fill:#f1c8d1;
+  stroke:#dca2af;
+  stroke-width:1.3;
+}
+.model-body{min-width:0}
+.model-code{
+  margin:0 0 6px;
+  color:#9aa7b9;
+  font-size:12px;
+  font-weight:800;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+}
+.model-name{
+  margin:0;
+  color:var(--models-navy);
+  font-size:28px;
+  line-height:1.15;
+  font-weight:800;
+  letter-spacing:-.35px;
+}
+.model-meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:18px 26px;
+  margin-top:18px;
+  color:#53647c;
+  font-size:14px;
+}
+.model-meta-item{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+}
+.model-meta-item svg{
+  width:19px;
+  height:19px;
+  color:#20385d;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:1.8;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.model-meta-item strong{color:var(--models-navy)}
+.model-ai-row{margin-top:18px}
+.model-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  min-height:32px;
+  padding:0 12px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:800;
+  white-space:nowrap;
+}
+.model-badge svg{
+  width:17px;
+  height:17px;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:2;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.model-badge.ok{background:#e6f6ee;color:#0b7c48}
+.model-badge.warn{background:#fff3d9;color:#9a6700}
+.model-badge.bad{background:#fde8e8;color:#ad3030}
+.model-badge.neutral{background:#eef1f5;color:#5f6f84}
+
+.model-side{
+  align-self:stretch;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:18px;
+  padding:2px 0;
+}
+.model-actions{display:flex;align-items:center;gap:10px}
+.model-view-btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  min-height:44px;
+  padding:0 16px;
+  border:1px solid #cfd8e4;
+  border-radius:8px;
+  color:var(--models-navy);
+  background:#fff;
+  text-decoration:none;
+  font-size:13px;
+  font-weight:800;
+}
+.model-view-btn:hover{background:#f7f9fc;color:var(--models-navy)}
+.model-view-btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2}
+
+.models-empty{
+  display:none;
+  padding:48px 24px;
+  text-align:center;
+  background:#fff;
+  border:1px solid var(--models-line);
+  border-radius:14px;
+  color:#75839a;
+}
+.models-empty.visible{display:block}
+.models-empty strong{display:block;margin-bottom:8px;color:var(--models-navy);font-size:20px}
+
+.models-footer{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:18px;
+  padding:22px 6px 4px;
+  color:#7b8799;
+  font-size:11px;
+}
+.models-footer strong{color:#394861}
+.brand-stripes{display:flex;align-items:center}
+.brand-stripes i{display:block;width:28px;height:3px}
+.brand-stripes i:nth-child(1){background:var(--models-yellow)}
+.brand-stripes i:nth-child(2){background:var(--models-pink)}
+.brand-stripes i:nth-child(3){background:var(--models-blue)}
+
+@media(max-width:1100px){
+  .models-toolbar{grid-template-columns:1fr 1fr}
+  .models-count{text-align:left}
+  .model-card{grid-template-columns:140px minmax(0,1fr)}
+  .model-side{grid-column:1/-1;flex-direction:row;align-items:center}
+}
+@media(max-width:900px){
+  .models-topbar{flex-direction:column}
+  .models-user-meta{width:100%;justify-content:flex-end}
+  .models-page-head{align-items:flex-start}
+}
+@media(max-width:760px){
+  .main{margin-left:0;width:100%;padding:76px 18px 28px}
+  .models-greeting h1{font-size:28px}
+  .models-user-meta{justify-content:flex-start;flex-wrap:wrap}
+  .models-date{text-align:left}
+  .models-page-head{flex-direction:column}
+  .models-page-head h2{font-size:30px}
+  .models-toolbar{grid-template-columns:1fr}
+  .model-card{grid-template-columns:1fr;gap:18px}
+  .model-visual{height:180px}
+  .model-side{grid-column:auto;align-items:stretch;flex-direction:column}
+  .model-actions{width:100%}
+  .model-view-btn{width:100%}
+}
+@media(max-width:520px){
+  .models-user-meta{display:none}
+  .models-page-copy{align-items:flex-start}
+  .models-page-icon{width:48px;height:48px;flex-basis:48px}
+  .models-page-head h2{font-size:27px}
+  .model-name{font-size:24px}
+  .model-meta{gap:12px 18px}
+}
 </style>
 
-<div class="gm-head">
-  <div>
-    <h1>Modelos de prenda</h1>
-    <p>Cat&aacute;logo de modelos de blusa disponibles para el control de calidad.</p>
-  </div>
+<div class="models-shell">
+  <header class="models-topbar">
+    <div class="models-greeting">
+      <h1>¡Hola, {{ session.get('username', 'Administrador') }}!</h1>
+      <p>Sistema de control de calidad</p>
+    </div>
 
-  {% if role in ['ADMIN', 'MODEL_MANAGER'] %}
-  <a class="gm-button" href="{{ url_for('garment_model_create') }}">
-    + Nuevo modelo
-  </a>
-  {% endif %}
-</div>
+    <div class="models-user-meta">
+      <div class="models-date">
+        <strong id="modelsCurrentDate">&mdash;</strong>
+        <span id="modelsCurrentTime">&mdash;</span>
+      </div>
+      <div class="models-avatar">{{ session.get('username', 'A')[:1]|upper }}</div>
+      <div class="models-user-name">
+        {% if role == 'ADMIN' %}Administrador{% elif role == 'MODEL_MANAGER' %}Encargado de modelos{% else %}Gestor de calidad{% endif %}
+      </div>
+    </div>
+  </header>
 
-{% for model in models %}
-<article class="gm-card">
-  <div class="gm-top">
-    <div>
-      <div class="gm-code">{{ model.code }}</div>
-      <div class="gm-name">{{ model.name }}</div>
-
-      <div class="gm-meta">
-        <span>Color: <strong>{{ model.color }}</strong></span>
-        <span>Talla: <strong>{{ model.size }}</strong></span>
-        <span>Vista: <strong>{{ model.inspection_side }}</strong></span>
-        <span>Creado por: <strong>{{ model.creator_name }}</strong></span>
+  <section class="models-page-head">
+    <div class="models-page-copy">
+      <div class="models-page-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M8 4 4.5 6 3 10l3 1.5V20h12v-8.5L21 10l-1.5-4L16 4c-1 1.2-2.3 1.8-4 1.8S9 5.2 8 4Z"/></svg>
+      </div>
+      <div>
+        <h2>Modelos de prenda</h2>
+        <p>Catálogo de modelos disponibles para el control de calidad.</p>
       </div>
     </div>
 
-    <div>
-      {% if model.status == 'APROBADO' %}
-        <span class="gm-badge gm-ok">APROBADO</span>
-      {% elif model.status == 'PENDIENTE' %}
-        <span class="gm-badge gm-warn">PENDIENTE</span>
-      {% elif model.status == 'RECHAZADO' %}
-        <span class="gm-badge gm-bad">RECHAZADO</span>
-      {% else %}
-        <span class="gm-badge gm-neutral">{{ model.status }}</span>
-      {% endif %}
+    {% if role in ['ADMIN', 'MODEL_MANAGER'] %}
+    <a class="models-primary-btn" href="{{ url_for('garment_model_create') }}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      Nuevo modelo
+    </a>
+    {% endif %}
+  </section>
+
+  <section class="models-toolbar" aria-label="Filtros del catálogo">
+    <div class="models-control">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="modelSearch" type="search" placeholder="Buscar por código o nombre" autocomplete="off">
     </div>
+
+    <div class="models-control">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6 7v5l-4 2v-7L4 5Z"/></svg>
+      <select id="modelStatusFilter" aria-label="Filtrar por estado">
+        <option value="">Estado</option>
+        <option value="APROBADO">Aprobado</option>
+        <option value="PENDIENTE">Pendiente</option>
+        <option value="RECHAZADO">Rechazado</option>
+      </select>
+    </div>
+
+    <div class="models-control">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 13 13 20 4 11V4h7l9 9Z"/><circle cx="8.5" cy="8.5" r="1"/></svg>
+      <select id="modelViewFilter" aria-label="Filtrar por vista">
+        <option value="">Vista</option>
+        {% set sides = namespace(values=[]) %}
+        {% for model in models %}
+          {% if model.inspection_side and model.inspection_side not in sides.values %}
+            {% set sides.values = sides.values + [model.inspection_side] %}
+            <option value="{{ model.inspection_side|e }}">{{ model.inspection_side }}</option>
+          {% endif %}
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="models-count">
+      <span id="modelsVisibleCount">{{ models|length }}</span> modelos registrados
+    </div>
+  </section>
+
+  <section class="models-list" id="modelsList">
+    {% for model in models %}
+    <article
+      class="model-card"
+      data-model-card
+      data-search="{{ ((model.code or '') ~ ' ' ~ (model.name or ''))|lower|e }}"
+      data-status="{{ (model.status or '')|e }}"
+      data-view="{{ (model.inspection_side or '')|e }}"
+    >
+      <div class="model-visual" aria-hidden="true">
+        <div class="model-shirt">
+          <svg viewBox="0 0 120 120">
+            <path d="M42 23c5 5 11 8 18 8s13-3 18-8l18 10 10 24-17 8-5-10v42H36V55l-5 10-17-8 10-24 18-10Z"/>
+            <path d="M49 25c2 5 6 8 11 8s9-3 11-8" fill="none"/>
+          </svg>
+        </div>
+      </div>
+
+      <div class="model-body">
+        <p class="model-code">{{ model.code }}</p>
+        <h3 class="model-name">{{ model.name }}</h3>
+
+        <div class="model-meta">
+          <span class="model-meta-item">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M8 12h.01M12 8h.01M16 12h.01M12 16h.01"/></svg>
+            Color: <strong>{{ model.color }}</strong>
+          </span>
+          <span class="model-meta-item">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16 12-12 4 4L8 20H4v-4Z"/><path d="m13 7 4 4M10 10l2 2M7 13l2 2"/></svg>
+            Talla: <strong>{{ model.size }}</strong>
+          </span>
+          <span class="model-meta-item">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+            Vista: <strong>{{ model.inspection_side }}</strong>
+          </span>
+          <span class="model-meta-item">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.5 3-7 8-7s8 2.5 8 7"/></svg>
+            Creado por: <strong>{{ model.creator_name }}</strong>
+          </span>
+        </div>
+
+        <div class="model-ai-row">
+          {% if model.ai_ready %}
+            <span class="model-badge ok">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>
+              IA {{ model.ai_version }} · Lista para inspección
+            </span>
+          {% else %}
+            <span class="model-badge warn">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg>
+              Preparación de IA pendiente
+            </span>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="model-side">
+        {% if model.status == 'APROBADO' %}
+          <span class="model-badge ok">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 12 3 3 7-7"/></svg>
+            Aprobado
+          </span>
+        {% elif model.status == 'PENDIENTE' %}
+          <span class="model-badge warn">Pendiente</span>
+        {% elif model.status == 'RECHAZADO' %}
+          <span class="model-badge bad">Rechazado</span>
+        {% else %}
+          <span class="model-badge neutral">{{ model.status }}</span>
+        {% endif %}
+
+        <div class="model-actions">
+          <a class="model-view-btn" href="{{ url_for('garment_model_detail', model_id=model.id) }}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+            Ver modelo
+          </a>
+        </div>
+      </div>
+    </article>
+    {% else %}
+    <div class="models-empty visible">
+      <strong>No hay modelos disponibles.</strong>
+      Cuando existan modelos registrados aparecerán en este catálogo.
+    </div>
+    {% endfor %}
+  </section>
+
+  <div class="models-empty" id="modelsFilterEmpty">
+    <strong>No se encontraron modelos.</strong>
+    Cambie los filtros o el texto de búsqueda para volver a mostrar resultados.
   </div>
 
-  <p>
-    {% if model.ai_ready %}
-      <span class="gm-badge gm-ok">
-        IA {{ model.ai_version }} &middot; Lista para inspecci&oacute;n
-      </span>
-    {% else %}
-      <span class="gm-badge gm-warn">
-        Preparaci&oacute;n de IA pendiente
-      </span>
-    {% endif %}
-  </p>
-
-  <a
-    class="gm-link"
-    href="{{ url_for('garment_model_detail', model_id=model.id) }}"
-  >
-    Ver modelo
-  </a>
-</article>
-
-{% else %}
-<div class="gm-card">
-  No hay modelos disponibles.
+  <footer class="models-footer">
+    <div><strong>Astrid & Beverly Fashion</strong> &nbsp;|&nbsp; Sistema de control de calidad</div>
+    <div class="brand-stripes" aria-hidden="true"><i></i><i></i><i></i></div>
+  </footer>
 </div>
-{% endfor %}
+
+<script>
+(() => {
+  const dateEl = document.getElementById("modelsCurrentDate");
+  const timeEl = document.getElementById("modelsCurrentTime");
+  const search = document.getElementById("modelSearch");
+  const statusFilter = document.getElementById("modelStatusFilter");
+  const viewFilter = document.getElementById("modelViewFilter");
+  const countEl = document.getElementById("modelsVisibleCount");
+  const emptyEl = document.getElementById("modelsFilterEmpty");
+  const cards = Array.from(document.querySelectorAll("[data-model-card]"));
+
+  const updateClock = () => {
+    const now = new Date();
+    if (dateEl) {
+      dateEl.textContent = new Intl.DateTimeFormat("es-GT", {
+        weekday: "long",
+        day: "2-digit",
+        month: "long",
+        year: "numeric",
+        timeZone: "America/Guatemala"
+      }).format(now);
+    }
+    if (timeEl) {
+      timeEl.textContent = new Intl.DateTimeFormat("es-GT", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+        timeZone: "America/Guatemala"
+      }).format(now);
+    }
+  };
+
+  const applyFilters = () => {
+    const query = (search?.value || "").trim().toLowerCase();
+    const status = statusFilter?.value || "";
+    const view = viewFilter?.value || "";
+    let visible = 0;
+
+    cards.forEach((card) => {
+      const matchesSearch = !query || (card.dataset.search || "").includes(query);
+      const matchesStatus = !status || card.dataset.status === status;
+      const matchesView = !view || card.dataset.view === view;
+      const show = matchesSearch && matchesStatus && matchesView;
+      card.hidden = !show;
+      if (show) visible += 1;
+    });
+
+    if (countEl) countEl.textContent = visible;
+    if (emptyEl) emptyEl.classList.toggle("visible", cards.length > 0 && visible === 0);
+  };
+
+  updateClock();
+  window.setInterval(updateClock, 1000);
+
+  [search, statusFilter, viewFilter].forEach((control) => {
+    if (!control) return;
+    control.addEventListener(control.tagName === "INPUT" ? "input" : "change", applyFilters);
+  });
+})();
+</script>
 
 {% endblock %}
-
