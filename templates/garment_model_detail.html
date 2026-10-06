@@ -1102,6 +1102,10 @@
         <span class="detail-badge detail-badge-history">
           Versión {{ ai_training.historical_version }} histórica · no apta para validación
         </span>
+      {% elif ai_versions and ai_versions[0].status == 'VALIDADO' %}
+        <span class="detail-badge detail-badge-success">
+          VALIDADO · PENDIENTE DE PRUEBA FINAL
+        </span>
       {% elif ai_training and ai_training.ui_status == 'ENTRENADO' %}
         <span class="detail-badge detail-badge-warning">
           PENDIENTE DE VALIDACIÓN
@@ -1396,7 +1400,9 @@
             <span class="detail-badge detail-badge-warning">En preparación</span>
           {% elif ai.status == 'ENTRENANDO' %}
             <span class="detail-badge detail-badge-warning">En entrenamiento</span>
-          {% elif ai.status in ['ENTRENADO', 'VALIDACION', 'VALIDADO'] %}
+          {% elif ai.status == 'VALIDADO' %}
+            <span class="detail-badge detail-badge-success">Validado · pendiente de prueba final</span>
+          {% elif ai.status in ['ENTRENADO', 'VALIDACION'] %}
             <span class="detail-badge detail-badge-warning">Pendiente de validación</span>
           {% else %}
             <span class="detail-badge detail-badge-neutral">{{ ai.status }}</span>
@@ -1419,6 +1425,8 @@
                 En proceso
               {% elif ai.status == 'VALIDACION' %}
                 En proceso
+              {% elif ai.status == 'VALIDADO' %}
+                Validado · listo para prueba final
               {% else %}
                 {{ ai.status }}
               {% endif %}
@@ -2355,9 +2363,11 @@
 
     if (state.ui_status === "ENTRENADO") {
       if (state.validation_available && state.validation_url) {
+        const validationLabel = state.model_status === "VALIDADO" ? "Ir a prueba final" : "Continuar a validación";
+        const validationHref = state.model_status === "VALIDADO" ? `${state.validation_url}#finalTestPanel` : state.validation_url;
         actions.push(`
-          <a class="detail-button primary" href="${esc(state.validation_url)}">
-            Continuar a validación
+          <a class="detail-button primary" href="${esc(validationHref)}">
+            ${esc(validationLabel)}
           </a>
         `);
       } else {
@@ -2428,8 +2438,8 @@
     } else if (state.ui_status === "ENTRENADO") {
       html.push(
         `<div class="ai-summary">
-          <strong>Entrenamiento completado</strong>
-          <span>La versión quedó registrada y está pendiente de validación antes de usarse en inspección.</span>
+          <strong>${state.model_status === "VALIDADO" ? "Validación completada" : "Entrenamiento completado"}</strong>
+          <span>${state.model_status === "VALIDADO" ? "La versión está validada y lista para ejecutar la prueba final independiente." : "La versión quedó registrada y está pendiente de validación antes de usarse en inspección."}</span>
         </div>`
       );
     } else if (state.ui_status === "FALLIDO") {

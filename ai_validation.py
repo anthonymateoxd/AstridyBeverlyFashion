@@ -549,7 +549,7 @@ def _original_extension(image_bytes: bytes) -> str:
 def _fetch_validation_model(cur, ai_model_id) -> dict:
     cur.execute(
         """
-        SELECT id, garment_model_id, version, status, notes, active,
+        SELECT id, garment_model_id, version, status, notes, active, dataset_id,
                threshold_final, threshold_frozen_at, threshold_frozen_by,
                threshold_provenance
         FROM garment_ai_models
@@ -1256,6 +1256,92 @@ def export_validation_bank(cur, *, ai_model_id, artifacts_root=None) -> dict:
     return {"path": str(bank), "manifest_path": str(bank / "manifest.json"), "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(), "counts": manifest["counts"], "source_validation_sessions": sessions, "training_images": len(training_rows), "validation_unique_hashes": len(by_hash), "validation_duplicate_hashes": len(duplicates), "cases": len(manifest_cases)}
 
 
+def verify_validation_bank_snapshot(cur, *, ai_model_id, cases=None, session=None, metrics=None) -> dict:
+    """Read-only integrity check for the evaluated calibration bank."""
+    model = _fetch_validation_model(cur, ai_model_id)
+    rows = [dict(row) for row in (cases if cases is not None else list_validation_cases(cur, ai_model_id))]
+    evaluated_session = dict(session or {})
+    evaluated_metrics = dict(metrics or {})
+    if not rows:
+        raise AIDomainError("El banco de validación no contiene casos.")
+    if any(row.get("anomaly_score") is None for row in rows):
+        raise AIDomainError("El banco de validación contiene casos sin score.")
+    hashes = [str(row.get("image_sha256") or "").lower() for row in rows]
+    if any(len(digest) != 64 for digest in hashes) or len(set(hashes)) != len(hashes):
+        raise AIDomainError("El banco de validación tiene hashes vacíos o duplicados.")
+
+    candidate = evaluated_session.get("threshold_candidate")
+    if candidate is None or evaluated_metrics.get("best_threshold") is None:
+        raise AIDomainError("La sesión EVALUADA no tiene threshold candidato verificable.")
+    if round(float(candidate), 2) != round(float(evaluated_metrics["best_threshold"]), 2):
+        raise AIDomainError("El candidato guardado no coincide con las métricas EVALUADAS.")
+    candidate_metrics = evaluated_metrics.get("threshold_candidate_metrics") or {}
+    if round(float(candidate_metrics.get("threshold") or -1), 2) != round(float(candidate), 2):
+        raise AIDomainError("Las métricas del candidato no corresponden al threshold de la sesión.")
+    expected_count = int(evaluated_metrics.get("calibration_case_count") or evaluated_metrics.get("total") or -1)
+    if expected_count != len(rows) or int(evaluated_metrics.get("scored") or -1) != len(rows):
+        raise AIDomainError("El banco actual no coincide con el conjunto EVALUADO.")
+
+    dataset_id = model.get("dataset_id")
+    if dataset_id is None:
+        raise AIDomainError("La versión no tiene dataset de training para validar la separación del banco.")
+    cur.execute("SELECT sha256 FROM ai_dataset_images di JOIN ai_training_images ti ON ti.id=di.image_id WHERE di.dataset_id=%s", (int(dataset_id),))
+    training_hashes = {str(row["sha256"]).lower() for row in cur.fetchall()}
+    if training_hashes.intersection(hashes):
+        raise AIDomainError("El banco de validación comparte hashes con training.")
+
+    root = get_ai_artifacts_root().expanduser().resolve()
+    for row in rows:
+        source = resolve_under_root(root, row["image_path"])
+        if not source.is_file() or sha256_file(source).lower() != str(row["image_sha256"]).lower():
+            raise AIDomainError(f"El original de validación del caso {row['id']} falta o no verifica su hash.")
+
+    bank_rel = f"garment_{int(model['garment_model_id'])}/validation_datasets/ai_model_{int(model['id'])}_{str(model['version']).lower()}"
+    bank = resolve_under_root(root, bank_rel)
+    manifest_path = bank / "manifest.json"
+    snapshot_hash = None
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise AIDomainError("El manifest del banco de validación no se puede leer.") from error
+        manifest_cases = manifest.get("cases") or []
+        by_id = {int(item.get("case_id") or 0): item for item in manifest_cases}
+        if (
+            manifest.get("dataset_type") != "VALIDATION"
+            or int(manifest.get("ai_model_id") or 0) != int(ai_model_id)
+            or len(by_id) != len(rows)
+            or set(by_id) != {int(row["id"]) for row in rows}
+            or int((manifest.get("counts") or {}).get("total") or 0) != len(rows)
+        ):
+            raise AIDomainError("El manifest exportado no coincide con los casos actuales del banco.")
+        for row in rows:
+            item = by_id[int(row["id"])]
+            if (
+                str(item.get("original_sha256") or "").lower() != str(row["image_sha256"]).lower()
+                or str(item.get("category_current") or "").upper() != str(row.get("category") or "").upper()
+                or round(float(item.get("anomaly_score") or -1), 4) != round(float(row.get("anomaly_score") or -1), 4)
+            ):
+                raise AIDomainError("El manifest del banco contiene etiqueta, score o hash distinto al caso vigente.")
+            copied = resolve_under_root(bank, item.get("original_relative_path") or "")
+            if not copied.is_file() or sha256_file(copied).lower() != str(row["image_sha256"]).lower():
+                raise AIDomainError("La copia original del banco no verifica su hash.")
+        logical = dict(manifest)
+        logical.pop("exported_at", None)
+        snapshot_hash = logical.pop("snapshot_sha256", None)
+        digest = hashlib.sha256(json.dumps(logical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        if snapshot_hash != digest:
+            raise AIDomainError("El snapshot del banco no verifica integridad.")
+
+    return {
+        "valid": True,
+        "case_count": len(rows),
+        "threshold_candidate": round(float(candidate), 2),
+        "manifest_verified": manifest_path.is_file(),
+        "snapshot_sha256": snapshot_hash,
+    }
+
+
 def get_validation_state(cur, ai_model_id) -> dict:
     """Estado completo de la validación para la UI."""
     model = _fetch_validation_model(cur, ai_model_id)
@@ -1281,30 +1367,16 @@ def get_validation_state(cur, ai_model_id) -> dict:
     counts = count_cases_by_category(cases)
     invalidated = is_technically_invalidated(model.get("notes"))
     status = str(model["status"] or "").strip().upper()
-    final_test = (
-        get_final_test_state(cur, ai_model_id=ai_model_id)
-        if int(ai_model_id) == FINAL_TEST_AI_MODEL_ID else None
-    )
-    if final_test is not None:
-        final_test["can_start"] = False
-        final_test["start_block_reason"] = None
-        try:
-            bundle = load_model_bundle(cur, ai_model_id)
-            final_test["can_start"] = bool(
-                not final_test["started"]
-                and status in (AI_MODEL_STATUS_ENTRENADO, AI_MODEL_STATUS_VALIDACION)
-                and not int(model.get("active") or 0)
-                and model.get("threshold_final") is None
-                and str(bundle.get("preprocessing_profile") or "").upper()
-                == FINAL_TEST_PREPROCESSING
-                and not invalidated
-            )
-            if not final_test["can_start"]:
-                final_test["start_block_reason"] = (
-                    "v1 debe estar inactiva, sin threshold congelado, apta para validación y con perfil FULL_ROI."
-                )
-        except AIDomainError as error:
-            final_test["start_block_reason"] = str(error)
+    final_test = None
+    if (
+        int(ai_model_id) == FINAL_TEST_AI_MODEL_ID
+        or (
+            status == AI_MODEL_STATUS_VALIDADO
+            and not int(model.get("active") or 0)
+            and model.get("threshold_final") is not None
+        )
+    ):
+        final_test = get_final_test_state(cur, ai_model_id=ai_model_id)
 
     metrics = None
     if session and session.get("metrics_json"):
@@ -1312,6 +1384,33 @@ def get_validation_state(cur, ai_model_id) -> dict:
             metrics = json.loads(session["metrics_json"])
         except (TypeError, ValueError):
             metrics = None
+
+    validation_bank = {
+        "valid": False,
+        "case_count": 0,
+        "threshold_candidate": None,
+        "manifest_verified": False,
+        "error": None,
+    }
+    if (
+        session
+        and str(session.get("status") or "").upper() in (
+            VALIDATION_SESSION_STATUS_EVALUADA,
+            VALIDATION_SESSION_STATUS_CERRADA,
+        )
+        and session.get("threshold_candidate") is not None
+        and metrics is not None
+    ):
+        try:
+            validation_bank.update(verify_validation_bank_snapshot(
+                cur,
+                ai_model_id=ai_model_id,
+                cases=cases,
+                session=session,
+                metrics=metrics,
+            ))
+        except AIDomainError as error:
+            validation_bank["error"] = str(error)
 
     # Fuente única de verdad: cada caso serializado con su estado
     # binario derivado (tabla, miniaturas y edición usan esto).
@@ -1339,6 +1438,17 @@ def get_validation_state(cur, ai_model_id) -> dict:
         "threshold_frozen_at": model.get("threshold_frozen_at"),
         "threshold_frozen_by": model.get("threshold_frozen_by"),
         "threshold_provenance": model.get("threshold_provenance"),
+        "validation_bank": validation_bank,
+        "can_freeze_threshold": bool(
+            not invalidated
+            and status == AI_MODEL_STATUS_VALIDACION
+            and not int(model.get("active") or 0)
+            and model.get("threshold_final") is None
+            and session is not None
+            and str(session.get("status") or "").upper() == VALIDATION_SESSION_STATUS_EVALUADA
+            and session.get("threshold_candidate") is not None
+            and validation_bank["valid"]
+        ),
         "counts": counts,
         "counts_estado": count_cases_by_estado(cases),
         "counts_defects": count_defect_cases(cases),
@@ -1371,7 +1481,7 @@ def get_validation_state(cur, ai_model_id) -> dict:
             != VALIDATION_SESSION_STATUS_CERRADA
         ),
         "notice": VALIDATION_IMAGE_NOTICE,
-        "pending_calibration": True,
+        "pending_calibration": model.get("threshold_final") is None,
         "final_test": final_test,
     }
 
@@ -1698,36 +1808,128 @@ def compute_validation_metrics(
     return metrics
 
 
-def start_final_test(cur, *, ai_model_id, actor_id=None) -> dict:
-    """Open the isolated, initially empty FINAL_TEST cohort."""
+def _final_test_contract(cur, *, ai_model_id, verify_bank=False) -> dict:
+    """Resolve the immutable FINAL_TEST contract for one AI version.
+
+    New versions must be VALIDADO, inactive and have a frozen definitive
+    threshold. BLUSA-762 v1 keeps its historical 47.32/FULL_ROI contract so
+    existing thesis evidence remains readable and reproducible.
+    """
     model = _fetch_validation_model(cur, ai_model_id)
-    if (
-        int(model.get("id") or 0) != FINAL_TEST_AI_MODEL_ID
-        or int(model.get("garment_model_id") or 0) != FINAL_TEST_GARMENT_MODEL_ID
-        or str(model.get("version") or "").upper() != "V1"
-    ):
-        raise AIDomainError("La cohorte FINAL_TEST está habilitada únicamente para BLUSA-762 v1.")
-    if int(model.get("active") or 0):
-        raise AIDomainError("FINAL_TEST no puede iniciarse con v1 activa.")
-    if str(model.get("status") or "").upper() not in (
-        AI_MODEL_STATUS_ENTRENADO,
-        AI_MODEL_STATUS_VALIDACION,
-    ):
-        raise AIDomainError("v1 debe estar ENTRENADO o en VALIDACION para FINAL_TEST.")
+    status = str(model.get("status") or "").strip().upper()
+    invalidated = is_technically_invalidated(model.get("notes"))
+    legacy = (
+        int(model.get("id") or 0) == FINAL_TEST_AI_MODEL_ID
+        and int(model.get("garment_model_id") or 0) == FINAL_TEST_GARMENT_MODEL_ID
+    )
 
-    bundle = load_model_bundle(cur, ai_model_id)
-    if str(bundle.get("preprocessing_profile") or "").upper() != FINAL_TEST_PREPROCESSING:
-        raise AIDomainError("El perfil del checkpoint v1 no es FULL_ROI; FINAL_TEST se bloquea.")
-    if bundle.get("threshold_final") is not None:
-        raise AIDomainError("FINAL_TEST independiente requiere mantener el threshold del modelo sin congelar.")
+    if legacy and model.get("threshold_final") is None:
+        threshold_fixed = FINAL_TEST_THRESHOLD
+        preprocessing_profile = FINAL_TEST_PREPROCESSING
+        can_start = (
+            not int(model.get("active") or 0)
+            and not invalidated
+            and status in (
+                AI_MODEL_STATUS_ENTRENADO,
+                AI_MODEL_STATUS_VALIDACION,
+                AI_MODEL_STATUS_VALIDADO,
+            )
+        )
+        reason = None if can_start else (
+            "BLUSA-762 v1 debe permanecer inactiva y apta para evaluación final."
+        )
+        return {
+            "model": model,
+            "legacy": True,
+            "threshold_fixed": float(threshold_fixed),
+            "preprocessing_profile": preprocessing_profile,
+            "can_start": bool(can_start),
+            "start_block_reason": reason,
+        }
 
+    threshold = model.get("threshold_final")
+    threshold_fixed = float(threshold) if threshold is not None else None
+    preprocessing_profile = None
+    reason = None
+
+    try:
+        bundle = load_model_bundle(cur, ai_model_id)
+        preprocessing_profile = str(
+            bundle.get("preprocessing_profile") or ""
+        ).strip().upper() or None
+    except AIDomainError as error:
+        reason = str(error)
+
+    if reason is None and int(model.get("active") or 0):
+        reason = "FINAL_TEST debe ejecutarse antes de activar la versión."
+    elif reason is None and invalidated:
+        reason = "La versión está invalidada técnicamente y no puede ejecutar FINAL_TEST."
+    elif reason is None and status != AI_MODEL_STATUS_VALIDADO:
+        reason = "La versión debe estar VALIDADA antes de iniciar FINAL_TEST."
+    elif reason is None and threshold_fixed is None:
+        reason = "La versión necesita un threshold definitivo antes de FINAL_TEST."
+    elif reason is None and model.get("threshold_frozen_at") is None:
+        reason = "El threshold definitivo debe estar CONGELADO antes de FINAL_TEST."
+    elif reason is None and not preprocessing_profile:
+        reason = "El checkpoint no declara un perfil de preprocesamiento verificable."
+
+    if reason is None and verify_bank:
+        cur.execute(
+            """SELECT id, status, threshold_candidate, metrics_json,
+                      created_at, evaluated_at, closed_at
+               FROM ai_validation_sessions
+               WHERE ai_model_id = %s
+               ORDER BY id DESC LIMIT 1""",
+            (int(ai_model_id),),
+        )
+        session = cur.fetchone()
+        session = dict(session) if session else None
+        if not session or str(session.get("status") or "").upper() != VALIDATION_SESSION_STATUS_CERRADA:
+            reason = "La sesión de validación debe estar CERRADA antes de FINAL_TEST."
+        elif session.get("threshold_candidate") is None or not session.get("metrics_json"):
+            reason = "La validación cerrada no conserva candidato y métricas verificables."
+        elif round(float(session["threshold_candidate"]), 2) != round(float(threshold_fixed), 2):
+            reason = "El threshold congelado no coincide con el candidato de la validación cerrada."
+        else:
+            try:
+                metrics = json.loads(session.get("metrics_json") or "{}")
+                verify_validation_bank_snapshot(
+                    cur,
+                    ai_model_id=ai_model_id,
+                    cases=list_validation_cases(cur, ai_model_id),
+                    session=session,
+                    metrics=metrics,
+                )
+            except (AIDomainError, TypeError, ValueError) as error:
+                reason = f"El banco de validación no supera la verificación previa a FINAL_TEST: {error}"
+
+    return {
+        "model": model,
+        "legacy": False,
+        "threshold_fixed": threshold_fixed,
+        "preprocessing_profile": preprocessing_profile,
+        "can_start": reason is None,
+        "start_block_reason": reason,
+    }
+
+
+def start_final_test(cur, *, ai_model_id, actor_id=None) -> dict:
+    """Open an isolated, initially empty FINAL_TEST cohort for one version."""
     cur.execute(
         "SELECT id FROM ai_final_test_sessions WHERE ai_model_id = %s LIMIT 1",
         (int(ai_model_id),),
     )
-    existing = cur.fetchone()
-    if existing:
+    if cur.fetchone():
         return get_final_test_state(cur, ai_model_id=ai_model_id)
+
+    contract = _final_test_contract(cur, ai_model_id=ai_model_id, verify_bank=True)
+    if not contract["can_start"]:
+        raise AIDomainError(contract["start_block_reason"] or "FINAL_TEST no disponible.")
+
+    model = contract["model"]
+    threshold_fixed = float(contract["threshold_fixed"])
+    preprocessing_profile = str(contract["preprocessing_profile"])
+    garment_model_id = int(model["garment_model_id"])
 
     cur.execute(
         """INSERT INTO ai_final_test_sessions
@@ -1735,10 +1937,10 @@ def start_final_test(cur, *, ai_model_id, actor_id=None) -> dict:
             preprocessing_profile, status, created_by)
            VALUES (%s, %s, 'FINAL_TEST', %s, %s, 'ABIERTA', %s)""",
         (
-            FINAL_TEST_GARMENT_MODEL_ID,
-            FINAL_TEST_AI_MODEL_ID,
-            FINAL_TEST_THRESHOLD,
-            FINAL_TEST_PREPROCESSING,
+            garment_model_id,
+            int(ai_model_id),
+            threshold_fixed,
+            preprocessing_profile,
             actor_id,
         ),
     )
@@ -1747,14 +1949,15 @@ def start_final_test(cur, *, ai_model_id, actor_id=None) -> dict:
         cur,
         "FINAL_TEST_STARTED",
         actor_id=actor_id,
-        ai_model_id=FINAL_TEST_AI_MODEL_ID,
+        ai_model_id=int(ai_model_id),
         payload={
             "final_test_session_id": session_id,
-            "garment_model_id": FINAL_TEST_GARMENT_MODEL_ID,
-            "threshold_fixed": FINAL_TEST_THRESHOLD,
-            "preprocessing_profile": FINAL_TEST_PREPROCESSING,
+            "garment_model_id": garment_model_id,
+            "threshold_fixed": threshold_fixed,
+            "preprocessing_profile": preprocessing_profile,
             "cohort": "FINAL_TEST",
             "initial_case_count": 0,
+            "legacy_contract": bool(contract.get("legacy")),
         },
     )
     return get_final_test_state(cur, ai_model_id=ai_model_id)
@@ -1769,7 +1972,10 @@ def get_final_test_state(cur, *, ai_model_id=FINAL_TEST_AI_MODEL_ID) -> dict:
         (int(ai_model_id),),
     )
     session_row = cur.fetchone()
-    if not session_row:
+
+    # Preserve the historical BLUSA-762 contract even in lightweight unit
+    # cursors that do not expose garment_ai_models.
+    if not session_row and int(ai_model_id) == FINAL_TEST_AI_MODEL_ID:
         return {
             "cohort": "FINAL_TEST",
             "started": False,
@@ -1781,14 +1987,56 @@ def get_final_test_state(cur, *, ai_model_id=FINAL_TEST_AI_MODEL_ID) -> dict:
             "preprocessing_profile": FINAL_TEST_PREPROCESSING,
             "metrics": None,
             "ready_to_evaluate": False,
+            "can_start": False,
+            "start_block_reason": None,
         }
+
+    if int(ai_model_id) == FINAL_TEST_AI_MODEL_ID:
+        contract = {
+            "model": {
+                "id": FINAL_TEST_AI_MODEL_ID,
+                "garment_model_id": FINAL_TEST_GARMENT_MODEL_ID,
+            },
+            "threshold_fixed": FINAL_TEST_THRESHOLD,
+            "preprocessing_profile": FINAL_TEST_PREPROCESSING,
+            "can_start": False,
+            "start_block_reason": None,
+        }
+    else:
+        contract = _final_test_contract(cur, ai_model_id=ai_model_id, verify_bank=False)
+    model = contract["model"]
+    expected_threshold = contract.get("threshold_fixed")
+    expected_profile = contract.get("preprocessing_profile")
+
+    if not session_row:
+        return {
+            "cohort": "FINAL_TEST",
+            "started": False,
+            "status": "INACTIVA",
+            "status_label": "PENDIENTE DE PRUEBA FINAL" if contract["can_start"] else "INACTIVA",
+            "cases": [],
+            "counts": {"BUENA": 0, "MANCHA": 0, "total": 0},
+            "threshold_fixed": expected_threshold,
+            "preprocessing_profile": expected_profile,
+            "metrics": None,
+            "ready_to_evaluate": False,
+            "can_start": bool(contract["can_start"]),
+            "start_block_reason": contract.get("start_block_reason"),
+            "garment_model_id": int(model["garment_model_id"]),
+            "ai_model_id": int(model["id"]),
+        }
+
     session_row = dict(session_row)
     integrity_ok = (
-        round(float(session_row.get("threshold_fixed") or 0), 2)
-        == FINAL_TEST_THRESHOLD
+        expected_threshold is not None
+        and round(float(session_row.get("threshold_fixed") or 0), 2)
+        == round(float(expected_threshold), 2)
+        and bool(expected_profile)
         and str(session_row.get("preprocessing_profile") or "").upper()
-        == FINAL_TEST_PREPROCESSING
+        == str(expected_profile).upper()
         and str(session_row.get("cohort") or "").upper() == "FINAL_TEST"
+        and int(session_row.get("ai_model_id") or 0) == int(ai_model_id)
+        and int(session_row.get("garment_model_id") or 0) == int(model["garment_model_id"])
     )
     cur.execute(
         """SELECT id, category, image_path, image_sha256, anomaly_score,
@@ -1823,19 +2071,23 @@ def get_final_test_state(cur, *, ai_model_id=FINAL_TEST_AI_MODEL_ID) -> dict:
         "metrics": metrics,
         "ready_to_evaluate": good == FINAL_TEST_TARGET_PER_CLASS
         and stains == FINAL_TEST_TARGET_PER_CLASS,
+        "can_start": False,
+        "start_block_reason": None,
     }
 
 
 def register_final_test_case(
-    cur, *, image_bytes, category, actor_id=None, inspector_factory=None
+    cur, *, ai_model_id=FINAL_TEST_AI_MODEL_ID, image_bytes, category,
+    actor_id=None, inspector_factory=None
 ) -> dict:
-    """Infer and persist one camera-captured new item in FINAL_TEST only."""
+    """Infer and persist one camera-captured item in an isolated FINAL_TEST."""
     category_key = str(category or "").strip().upper()
     if category_key not in ("NORMAL", "MANCHA"):
         raise AIDomainError("La prueba final solo admite BUENA o DEFECTUOSA → MANCHA.")
     if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
         raise AIDomainError("No se recibió un frame de cámara válido.")
-    state = get_final_test_state(cur)
+
+    state = get_final_test_state(cur, ai_model_id=ai_model_id)
     if not state.get("started") or state.get("status") != "ABIERTA":
         raise AIDomainError("Inicie una cohorte FINAL_TEST abierta antes de capturar.")
     if not state.get("integrity_ok"):
@@ -1858,31 +2110,35 @@ def register_final_test_case(
     if cur.fetchone():
         raise AIDomainError("Imagen duplicada dentro de FINAL_TEST.")
 
+    threshold_fixed = float(state["threshold_fixed"])
+    preprocessing_profile = str(state["preprocessing_profile"])
+    garment_model_id = int(state["garment_model_id"])
+    session_id = int(state["id"])
+
     handle, temp_name = tempfile.mkstemp(prefix="astrid_final_test_", suffix=_original_extension(bytes(image_bytes)))
     temp_path = Path(temp_name)
     try:
         with os.fdopen(handle, "wb") as temp_file:
             temp_file.write(bytes(image_bytes))
         prediction = predict_with_ai_model(
-            FINAL_TEST_AI_MODEL_ID,
+            int(ai_model_id),
             str(temp_path),
             cur=cur,
             inspector_factory=inspector_factory,
             preprocess=True,
-            preprocessing_profile=FINAL_TEST_PREPROCESSING,
+            preprocessing_profile=preprocessing_profile,
         )
     finally:
         temp_path.unlink(missing_ok=True)
     score = prediction.get("score_percent")
     if score is None:
         raise AIDomainError("La inferencia FINAL_TEST no produjo score.")
-    anomaly = float(score) >= FINAL_TEST_THRESHOLD
+    anomaly = float(score) >= threshold_fixed
     predicted_category = "MANCHA" if anomaly else "NORMAL"
     correct = predicted_category == category_key
-    session_id = int(state["id"])
     case_dir = (
-        f"garment_{FINAL_TEST_GARMENT_MODEL_ID}/final_test/"
-        f"session_{session_id}/case_{digest[:16]}"
+        f"garment_{garment_model_id}/final_test/"
+        f"ai_model_{int(ai_model_id)}/session_{session_id}/case_{digest[:16]}"
     )
     original_rel = f"{case_dir}/original{_original_extension(bytes(image_bytes))}"
     heatmap_rel = f"{case_dir}/heatmap.png" if prediction.get("anomaly_map") is not None else None
@@ -1894,9 +2150,9 @@ def register_final_test_case(
             prediction, correct, heatmap_path, comparison_path, created_by)
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (
-            session_id, FINAL_TEST_AI_MODEL_ID, FINAL_TEST_GARMENT_MODEL_ID,
+            session_id, int(ai_model_id), garment_model_id,
             category_key, original_rel, digest, float(score),
-            FINAL_TEST_THRESHOLD, predicted_category, int(correct),
+            threshold_fixed, predicted_category, int(correct),
             heatmap_rel, comparison_rel, actor_id,
         ),
     )
@@ -1916,15 +2172,14 @@ def register_final_test_case(
             if comparison_png:
                 atomic_write_bytes(resolve_under_root(root, comparison_rel), comparison_png)
         except Exception:
-            app_log = "[FINAL_TEST] No se pudo generar heatmap/comparación."
-            print(app_log)
+            print("[FINAL_TEST] No se pudo generar heatmap/comparación.")
             heatmap_rel = comparison_rel = None
             cur.execute("UPDATE ai_final_test_cases SET heatmap_path=NULL, comparison_path=NULL WHERE id=%s", (case_id,))
     record_ai_event(
         cur,
         "FINAL_TEST_CASE_REGISTERED",
         actor_id=actor_id,
-        ai_model_id=FINAL_TEST_AI_MODEL_ID,
+        ai_model_id=int(ai_model_id),
         payload={
             "final_test_session_id": session_id,
             "final_test_case_id": case_id,
@@ -1932,8 +2187,8 @@ def register_final_test_case(
             "score": float(score),
             "prediction": predicted_category,
             "correct": bool(correct),
-            "threshold_fixed": FINAL_TEST_THRESHOLD,
-            "preprocessing_profile": FINAL_TEST_PREPROCESSING,
+            "threshold_fixed": threshold_fixed,
+            "preprocessing_profile": preprocessing_profile,
             "image_sha256": digest,
         },
     )
@@ -1941,7 +2196,7 @@ def register_final_test_case(
         "id": case_id,
         "category": category_key,
         "anomaly_score": float(score),
-        "threshold_used": FINAL_TEST_THRESHOLD,
+        "threshold_used": threshold_fixed,
         "prediction": predicted_category,
         "correct": bool(correct),
         "image_sha256": digest,
@@ -1952,18 +2207,19 @@ def register_final_test_case(
     }
 
 
-def evaluate_final_test(cur, *, actor_id=None) -> dict:
-    """Calculate metrics only over this session; never search thresholds."""
-    state = get_final_test_state(cur)
+def evaluate_final_test(cur, *, ai_model_id=FINAL_TEST_AI_MODEL_ID, actor_id=None) -> dict:
+    """Calculate metrics only over this final cohort; never search thresholds."""
+    state = get_final_test_state(cur, ai_model_id=ai_model_id)
     if not state.get("integrity_ok"):
         raise AIDomainError(state.get("integrity_error") or "Configuración FINAL_TEST inválida.")
     if not state.get("ready_to_evaluate"):
         raise AIDomainError("La evaluación requiere exactamente 10 BUENAS y 10 MANCHAS nuevas.")
+    threshold_fixed = float(state["threshold_fixed"])
     cases = state["cases"]
-    metrics = binary_metrics(cases, FINAL_TEST_THRESHOLD)
+    metrics = binary_metrics(cases, threshold_fixed)
     metrics.update({
         "cohort": "FINAL_TEST",
-        "threshold_fixed": FINAL_TEST_THRESHOLD,
+        "threshold_fixed": threshold_fixed,
         "candidate_thresholds": [],
         "recalibration_performed": False,
         "confusion_matrix": [[metrics["tn"], metrics["fp"]], [metrics["fn"], metrics["tp"]]],
@@ -1978,7 +2234,7 @@ def evaluate_final_test(cur, *, actor_id=None) -> dict:
         cur,
         "FINAL_TEST_EVALUATED",
         actor_id=actor_id,
-        ai_model_id=FINAL_TEST_AI_MODEL_ID,
+        ai_model_id=int(ai_model_id),
         payload={"final_test_session_id": int(state["id"]), "metrics": metrics, "activated": False},
     )
     return metrics
@@ -2172,7 +2428,7 @@ def freeze_validation_threshold(
             "already_frozen": True,
         }
     cur.execute(
-        """SELECT id, status, threshold_candidate FROM ai_validation_sessions
+        """SELECT id, status, threshold_candidate, metrics_json FROM ai_validation_sessions
            WHERE ai_model_id = %s ORDER BY id DESC LIMIT 1""",
         (int(ai_model_id),),
     )
@@ -2185,7 +2441,25 @@ def freeze_validation_threshold(
         raise AIDomainError(
             "Evalúe la sesión vigente antes de congelar el threshold definitivo."
         )
-    candidate = session.get("threshold_candidate") if session else None
+    if session.get("threshold_candidate") is None:
+        raise AIDomainError("No existe un threshold candidato para congelar.")
+    candidate = round(float(session["threshold_candidate"]), 2)
+    if value != candidate:
+        raise AIDomainError(
+            f"Solo puede congelarse el threshold candidato EVALUADO ({candidate:.2f}); no se permite editarlo."
+        )
+    try:
+        evaluated_metrics = json.loads(session.get("metrics_json") or "{}")
+    except (TypeError, ValueError) as error:
+        raise AIDomainError("Las métricas de la sesión EVALUADA no se pueden verificar.") from error
+    cases = list_validation_cases(cur, ai_model_id)
+    bank_check = verify_validation_bank_snapshot(
+        cur,
+        ai_model_id=ai_model_id,
+        cases=cases,
+        session=session,
+        metrics=evaluated_metrics,
+    )
     cur.execute(
         """UPDATE garment_ai_models
            SET threshold_final = %s, threshold_frozen_at = NOW(),
@@ -2205,6 +2479,8 @@ def freeze_validation_threshold(
             ),
             "source": "ADMIN_CONFIRMED",
             "provenance": note,
+            "bank_case_count": bank_check["case_count"],
+            "bank_snapshot_sha256": bank_check.get("snapshot_sha256"),
         },
     )
     return {

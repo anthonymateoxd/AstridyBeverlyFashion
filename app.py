@@ -19745,15 +19745,19 @@ def ai_validation_final_test_start():
     garment_model_id, parse_error = _parse_garment_model_id(body)
     if parse_error is not None:
         return parse_error
-    if int(garment_model_id) != ai_validation.FINAL_TEST_GARMENT_MODEL_ID:
-        return jsonify({"ok": False, "error": "FINAL_TEST sólo está configurado para BLUSA-762 v1."}), 409
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+    _, resolved, guard_error = _validation_api_guard(garment_model_id, raw_ai)
+    if guard_error is not None:
+        return guard_error
     conn = db()
     cur = conn.cursor(dictionary=True)
     try:
         conn.start_transaction()
         result = ai_validation.start_final_test(
             cur,
-            ai_model_id=ai_validation.FINAL_TEST_AI_MODEL_ID,
+            ai_model_id=resolved,
             actor_id=session.get("user_id"),
         )
         conn.commit()
@@ -19764,7 +19768,7 @@ def ai_validation_final_test_start():
     except Exception:
         if conn.in_transaction:
             conn.rollback()
-        app.logger.exception("No se pudo iniciar FINAL_TEST de BLUSA-762 v1.")
+        app.logger.exception("No se pudo iniciar FINAL_TEST de ai_model_id=%s.", resolved)
         return jsonify({"ok": False, "error": "No se pudo iniciar la prueba final."}), 500
     finally:
         cur.close()
@@ -19780,8 +19784,12 @@ def ai_validation_final_test_case():
     garment_model_id, parse_error = _parse_garment_model_id(body)
     if parse_error is not None:
         return parse_error
-    if int(garment_model_id) != ai_validation.FINAL_TEST_GARMENT_MODEL_ID:
-        return jsonify({"ok": False, "error": "FINAL_TEST sólo está configurado para BLUSA-762 v1."}), 409
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+    _, resolved, guard_error = _validation_api_guard(garment_model_id, raw_ai)
+    if guard_error is not None:
+        return guard_error
     frame, _, _ = get_latest_camera_frame()
     if frame is None:
         return jsonify({"ok": False, "error": "No hay un frame de cámara disponible."}), 409
@@ -19796,11 +19804,12 @@ def ai_validation_final_test_case():
         conn.start_transaction()
         case = ai_validation.register_final_test_case(
             cur,
+            ai_model_id=resolved,
             image_bytes=image_bytes,
             category=body.get("category"),
             actor_id=session.get("user_id"),
         )
-        state = ai_validation.get_final_test_state(cur)
+        state = ai_validation.get_final_test_state(cur, ai_model_id=resolved)
         conn.commit()
     except AIDomainError as error:
         if conn.in_transaction:
@@ -19809,7 +19818,7 @@ def ai_validation_final_test_case():
     except Exception:
         if conn.in_transaction:
             conn.rollback()
-        app.logger.exception("No se pudo registrar caso FINAL_TEST.")
+        app.logger.exception("No se pudo registrar caso FINAL_TEST de ai_model_id=%s.", resolved)
         return jsonify({"ok": False, "error": "No se pudo registrar la captura final."}), 500
     finally:
         cur.close()
@@ -19825,14 +19834,20 @@ def ai_validation_final_test_evaluate():
     garment_model_id, parse_error = _parse_garment_model_id(body)
     if parse_error is not None:
         return parse_error
-    if int(garment_model_id) != ai_validation.FINAL_TEST_GARMENT_MODEL_ID:
-        return jsonify({"ok": False, "error": "FINAL_TEST sólo está configurado para BLUSA-762 v1."}), 409
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+    _, resolved, guard_error = _validation_api_guard(garment_model_id, raw_ai)
+    if guard_error is not None:
+        return guard_error
     conn = db()
     cur = conn.cursor(dictionary=True)
     try:
         conn.start_transaction()
-        metrics = ai_validation.evaluate_final_test(cur, actor_id=session.get("user_id"))
-        state = ai_validation.get_final_test_state(cur)
+        metrics = ai_validation.evaluate_final_test(
+            cur, ai_model_id=resolved, actor_id=session.get("user_id")
+        )
+        state = ai_validation.get_final_test_state(cur, ai_model_id=resolved)
         conn.commit()
     except AIDomainError as error:
         if conn.in_transaction:
@@ -19841,7 +19856,7 @@ def ai_validation_final_test_evaluate():
     except Exception:
         if conn.in_transaction:
             conn.rollback()
-        app.logger.exception("No se pudo evaluar FINAL_TEST.")
+        app.logger.exception("No se pudo evaluar FINAL_TEST de ai_model_id=%s.", resolved)
         return jsonify({"ok": False, "error": "No se pudo evaluar la prueba final."}), 500
     finally:
         cur.close()

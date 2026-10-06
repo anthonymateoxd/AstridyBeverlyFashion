@@ -781,8 +781,11 @@ class _TrainingDbCase(unittest.TestCase):
             sess.clear()
             sess["user_id"] = self.user_ids[username]
 
-    def _freeze_threshold(self, model_id, ai_model_id, value=50.0,
+    def _freeze_threshold(self, model_id, ai_model_id, value=None,
                           username=None):
+        if value is None:
+            session_row = self._session_row(ai_model_id)
+            value = float(session_row["threshold_candidate"])
         self._login(username or self.ADMIN_USERNAME)
         return self.client.post(
             "/api/ai/validation/threshold/freeze",
