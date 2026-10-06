@@ -567,7 +567,7 @@
         {% for case in validation.final_test.cases %}
         <tr>
           <td>{{ 'BUENA' if case.category == 'NORMAL' else 'DEFECTUOSA → MANCHA' }}</td>
-          <td>{{ '%.2f'|format(case.anomaly_score) }}</td>
+          <td>{{ '%.2f'|format(case.anomaly_score|float) }}</td>
           <td>{{ 'DEFECTUOSA' if case.prediction == 'MANCHA' else 'BUENA' }}</td>
           <td>{{ 'CORRECTO' if case.correct else 'INCORRECTO' }}</td>
           <td>{{ case.created_at }}</td>

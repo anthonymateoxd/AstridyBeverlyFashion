@@ -2047,6 +2047,14 @@ def get_final_test_state(cur, *, ai_model_id=FINAL_TEST_AI_MODEL_ID) -> dict:
         (int(session_row["id"]),),
     )
     cases = [dict(row) for row in cur.fetchall()]
+    # MySQL DECIMAL puede llegar como str/Decimal según el cursor. Normalizamos
+    # aquí para que la UI y el JSON reciban siempre números reales.
+    for case in cases:
+        if case.get("anomaly_score") is not None:
+            case["anomaly_score"] = float(case["anomaly_score"])
+        if case.get("threshold_used") is not None:
+            case["threshold_used"] = float(case["threshold_used"])
+        case["correct"] = bool(case.get("correct"))
     good = sum(str(row["category"]).upper() == "NORMAL" for row in cases)
     stains = sum(str(row["category"]).upper() == "MANCHA" for row in cases)
     metrics = None
