@@ -52,7 +52,9 @@ from ai_domain import (
     record_ai_event,
     register_training_image,
     prepare_normal_augmentation_version,
+    prepare_normal_v2_version,
     normal_augmentation_summary,
+    validate_normal_v2_capture_confirmation,
     resolve_capture_ui_state,
     resolve_under_root,
     sha256_bytes,
@@ -15802,6 +15804,55 @@ def garment_model_detail(model_id):
     )
 
     ai_versions = get_garment_ai_versions(model_id)
+    source_v1 = next(
+        (item for item in ai_versions if str(item.get("version")).lower() == "v1"),
+        None,
+    )
+    existing_normal_v2 = next(
+        (
+            item for item in ai_versions
+            if source_v1
+            and int(item.get("parent_ai_model_id") or 0) == int(source_v1["id"])
+            and str(item.get("version")).lower() == "v2"
+        ),
+        None,
+    )
+    source_v1_dataset_count = 0
+    if source_v1 and source_v1.get("dataset_id"):
+        dataset_row = fetch_one(
+            "SELECT image_count FROM ai_datasets WHERE id=%s",
+            (int(source_v1["dataset_id"]),),
+        )
+        source_v1_dataset_count = int((dataset_row or {}).get("image_count") or 0)
+    normal_v2_can_prepare = bool(
+        int(model_id) == 1082
+        and model.get("code") == "BLUSA-762"
+        and source_v1
+        and str(source_v1.get("status") or "").upper() == "VALIDACION"
+        and int(source_v1.get("active") or 0) == 0
+        and source_v1.get("threshold_final") is None
+        and source_v1_dataset_count == 27
+        and existing_normal_v2 is None
+        and not any(
+            str(item.get("version") or "").lower() != "v1"
+            for item in ai_versions
+        )
+        and not any(
+            item.get("status") in {"PREPARACION", "ENTRENANDO"}
+            and not item.get("technically_invalidated")
+            for item in ai_versions
+        )
+    )
+    normal_v2 = None
+    if existing_normal_v2:
+        conn = db()
+        cur = conn.cursor(dictionary=True)
+        try:
+            normal_v2 = normal_augmentation_summary(cur, int(existing_normal_v2["id"]))
+        finally:
+            cur.close()
+            conn.close()
+
     source_v2 = next(
         (item for item in ai_versions if str(item.get("version")).lower() == "v2"),
         None,
@@ -15928,6 +15979,8 @@ def garment_model_detail(model_id):
         ai_training=ai_training_state,
         normal_augmentation=normal_augmentation,
         normal_augmentation_can_prepare=normal_augmentation_can_prepare,
+        normal_v2_can_prepare=normal_v2_can_prepare,
+        normal_v2=normal_v2,
     )
 
 
@@ -16276,6 +16329,61 @@ def garment_ai_prepare(model_id):
             model_id=model_id,
         )
     )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/ia/preparar-v2-normal",
+    methods=["POST"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_ai_prepare_v2_normal(model_id):
+    garment = get_garment_model(model_id)
+    if not garment or not can_manage_garment_model(garment):
+        flash("No tiene permisos para preparar una versión IA.", "error")
+        return redirect(url_for("garment_models_page"))
+    if int(model_id) != 1082 or garment.get("code") != "BLUSA-762":
+        flash("La ampliación normal v2 de esta fase está definida para BLUSA-762.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute(
+            "SELECT id FROM garment_ai_models WHERE garment_model_id=%s AND version='v1' ORDER BY id DESC LIMIT 1",
+            (int(model_id),),
+        )
+        source = cur.fetchone()
+        if not source:
+            raise AIDomainError("No existe BLUSA-762 v1 como fuente de training.")
+        result = prepare_normal_v2_version(
+            cur,
+            garment_model_id=1082,
+            parent_ai_model_id=int(source["id"]),
+            actor_id=session.get("user_id"),
+            artifacts_root=get_ai_artifacts_root(),
+            min_new_images=30,
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        flash(str(error), "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo preparar v2 normal (garment_model_id=%s).", model_id)
+        flash("No se pudo preparar BLUSA-762 v2.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    finally:
+        cur.close()
+        conn.close()
+    flash(
+        "v2 preparada INACTIVA: 27 imágenes normales heredadas, mínimo 30 nuevas; no se creó job ni checkpoint.",
+        "success",
+    )
+    return redirect(url_for("garment_model_detail", model_id=model_id))
 
 
 @app.route(
@@ -16887,6 +16995,19 @@ def _ai_capture_persist(decision, jpeg_bytes, candidate):
                         "skipped": True,
                         "reason": "DUPLICATE_VALIDATION_SHA256",
                     }
+                cur.execute(
+                    """SELECT id FROM ai_final_test_cases
+                       WHERE garment_model_id=%s AND image_sha256=%s LIMIT 1""",
+                    (int(garment_model_id), sha),
+                )
+                if cur.fetchone():
+                    conn.rollback()
+                    if keep_file and rel_path:
+                        resolve_under_root(get_ai_artifacts_root(), rel_path).unlink(missing_ok=True)
+                    return {
+                        "skipped": True,
+                        "reason": "DUPLICATE_FINAL_TEST_SHA256",
+                    }
 
         status = "ACEPTADA" if accepted else "RECHAZADA"
         record = register_training_image(
@@ -17371,7 +17492,7 @@ def _ai_guided_prepare_runtime(session_id, garment_model_id):
         capture_row.get("target_ai_model_id") if capture_row else None
     )
     if target_ai_model_id:
-        capture_cfg["target_images"] = 30
+        capture_cfg["target_images"] = 40
     runtime_cfg = {**capture_cfg, **cfg}
     AI_CAPTURE_RUNTIME.update(
         {
@@ -17821,7 +17942,7 @@ def _ai_capture_recover_mode_from_db():
     )
     cfg = get_ai_capture_config()
     if row.get("target_ai_model_id"):
-        cfg["target_images"] = 30
+        cfg["target_images"] = 40
     target_ai_model_id = row.get("target_ai_model_id")
     AI_CAPTURE_RUNTIME.update(
         {
@@ -17940,7 +18061,7 @@ def _ai_capture_idle_payload(
         if augmentation_ai_model_id is not None else None
     )
     if augmentation:
-        cfg["target_images"] = 30
+        cfg["target_images"] = 40
 
     station_row = get_open_capture_session(cur)
     station_busy = bool(
@@ -18105,7 +18226,7 @@ def _ai_capture_status_payload(
                 prep = cur.fetchone()
                 if prep:
                     augmentation_ai_model_id = int(prep["id"])
-                    cfg["target_images"] = 30
+                    cfg["target_images"] = 40
                     cur.execute(
                         """SELECT id, garment_model_id, target_ai_model_id,
                                   status, started_at, created_by, notes
@@ -18148,7 +18269,7 @@ def _ai_capture_status_payload(
             session_record.get("target_ai_model_id") if session_record else None
         )
         if target_ai_model_id is not None:
-            cfg["target_images"] = 30
+            cfg["target_images"] = 40
         payload = capture_session_status_payload(
             cur,
             session_id,
@@ -18268,7 +18389,7 @@ def ai_capture_start():
         )
         if target_ai_model_id is not None:
             notes = (
-                f"FASE 3C.2 · {preparation['version']} · SOLO IMÁGENES BUENAS · "
+                f"FASE 3D · {preparation['version']} · ampliación del patrón NORMAL · SOLO IMÁGENES BUENAS · "
                 f"dataset fuente {preparation['source_dataset_id']}"
             )
         opened = start_ai_capture_session(
@@ -18339,7 +18460,7 @@ def ai_capture_start():
     )
     cfg = get_ai_capture_config()
     if target_ai_model_id:
-        cfg["target_images"] = 30
+        cfg["target_images"] = 40
     AI_CAPTURE_RUNTIME.update(
         {
             "session_id": session_id,
@@ -18538,7 +18659,7 @@ def _ai_capture_finish(action):
             if finished_session else None
         )
         if target_ai_model_id is not None:
-            cfg["target_images"] = 30
+            cfg["target_images"] = 40
         status_payload = capture_session_status_payload(
             cur,
             session_id,
@@ -19298,6 +19419,41 @@ def garment_validation_case_asset(model_id):
     return _serve_validation_case_image(model_id, case_id, kind)
 
 
+@app.route(
+    "/modelos-prenda/<int:model_id>/validacion-ia/prueba-final/imagen",
+    methods=["GET"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER, ROLE_QUALITY_MANAGER)
+def garment_final_test_asset(model_id):
+    case_id = request.args.get("case_id", type=int)
+    kind = request.args.get("kind") or "original"
+    if case_id is None or kind not in VALIDATION_IMAGE_KINDS:
+        return jsonify({"ok": False, "error": "Artefacto FINAL_TEST inválido."}), 400
+    column = {"original": "image_path", "heatmap": "heatmap_path", "comparison": "comparison_path"}[kind]
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"SELECT garment_model_id, {column} AS artifact_path FROM ai_final_test_cases WHERE id=%s",
+            (case_id,),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+    if not row or int(row["garment_model_id"]) != int(model_id) or not row.get("artifact_path"):
+        return jsonify({"ok": False, "error": "Artefacto FINAL_TEST no encontrado."}), 404
+    try:
+        path = resolve_under_root(get_ai_artifacts_root(), row["artifact_path"])
+    except AIDomainError:
+        return jsonify({"ok": False, "error": "Ruta de artefacto FINAL_TEST inválida."}), 404
+    if not path.is_file():
+        return jsonify({"ok": False, "error": "El artefacto FINAL_TEST no existe."}), 404
+    mimetype = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    return send_file(path, mimetype=mimetype, conditional=True)
+
+
 def _serve_validation_case_image(model_id, case_id, kind):
     if kind not in VALIDATION_IMAGE_KINDS:
         return jsonify({
@@ -19505,6 +19661,12 @@ def ai_validation_case():
     if guard_error is not None:
         return guard_error
 
+    if int(resolved) == ai_validation.FINAL_TEST_AI_MODEL_ID:
+        return jsonify({
+            "ok": False,
+            "error": "La captura de BLUSA-762 v1 está separada: use exclusivamente el flujo FINAL_TEST.",
+        }), 409
+
     category = body.get("category")
     estado_real = body.get("estado_real")
     tipo_defecto = body.get("tipo_defecto")
@@ -19575,6 +19737,118 @@ def ai_validation_case():
     }), 201
 
 
+@app.route("/api/ai/validation/final-test/start", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_final_test_start():
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+    if int(garment_model_id) != ai_validation.FINAL_TEST_GARMENT_MODEL_ID:
+        return jsonify({"ok": False, "error": "FINAL_TEST sólo está configurado para BLUSA-762 v1."}), 409
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        result = ai_validation.start_final_test(
+            cur,
+            ai_model_id=ai_validation.FINAL_TEST_AI_MODEL_ID,
+            actor_id=session.get("user_id"),
+        )
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo iniciar FINAL_TEST de BLUSA-762 v1.")
+        return jsonify({"ok": False, "error": "No se pudo iniciar la prueba final."}), 500
+    finally:
+        cur.close()
+        conn.close()
+    return jsonify({"ok": True, "final_test": _json_sanitize(result)}), 201
+
+
+@app.route("/api/ai/validation/final-test/case", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_final_test_case():
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+    if int(garment_model_id) != ai_validation.FINAL_TEST_GARMENT_MODEL_ID:
+        return jsonify({"ok": False, "error": "FINAL_TEST sólo está configurado para BLUSA-762 v1."}), 409
+    frame, _, _ = get_latest_camera_frame()
+    if frame is None:
+        return jsonify({"ok": False, "error": "No hay un frame de cámara disponible."}), 409
+    try:
+        image_bytes = _ai_capture_encode_jpeg(frame)
+    except Exception:
+        app.logger.exception("No se pudo codificar el frame FINAL_TEST.")
+        return jsonify({"ok": False, "error": "No se pudo capturar el frame de cámara."}), 409
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        case = ai_validation.register_final_test_case(
+            cur,
+            image_bytes=image_bytes,
+            category=body.get("category"),
+            actor_id=session.get("user_id"),
+        )
+        state = ai_validation.get_final_test_state(cur)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo registrar caso FINAL_TEST.")
+        return jsonify({"ok": False, "error": "No se pudo registrar la captura final."}), 500
+    finally:
+        cur.close()
+        conn.close()
+    return jsonify({"ok": True, "case": _json_sanitize(case), "final_test": _json_sanitize(state)}), 201
+
+
+@app.route("/api/ai/validation/final-test/evaluate", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def ai_validation_final_test_evaluate():
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+    if int(garment_model_id) != ai_validation.FINAL_TEST_GARMENT_MODEL_ID:
+        return jsonify({"ok": False, "error": "FINAL_TEST sólo está configurado para BLUSA-762 v1."}), 409
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        metrics = ai_validation.evaluate_final_test(cur, actor_id=session.get("user_id"))
+        state = ai_validation.get_final_test_state(cur)
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo evaluar FINAL_TEST.")
+        return jsonify({"ok": False, "error": "No se pudo evaluar la prueba final."}), 500
+    finally:
+        cur.close()
+        conn.close()
+    return jsonify({"ok": True, "metrics": _json_sanitize(metrics), "final_test": _json_sanitize(state), "active": 0}), 200
+
+
 @app.route("/api/ai/validation/threshold/freeze", methods=["POST"])
 @login_required
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
@@ -19590,6 +19864,11 @@ def ai_validation_threshold_freeze():
     _, resolved, guard_error = _validation_api_guard(garment_model_id, raw_ai)
     if guard_error is not None:
         return guard_error
+    if int(resolved) == ai_validation.FINAL_TEST_AI_MODEL_ID:
+        return jsonify({
+            "ok": False,
+            "error": "Para BLUSA-762 v1 el threshold 47.32 de FINAL_TEST es fijo por cohorte y no se congela en el modelo.",
+        }), 409
     conn = db()
     cur = conn.cursor(dictionary=True)
     try:
@@ -19642,6 +19921,12 @@ def ai_validation_evaluate():
 
     if guard_error is not None:
         return guard_error
+
+    if int(resolved) == ai_validation.FINAL_TEST_AI_MODEL_ID:
+        return jsonify({
+            "ok": False,
+            "error": "La recalibración está bloqueada para BLUSA-762 v1; FINAL_TEST sólo aplica threshold fijo 47.32.",
+        }), 409
 
     thresholds = body.get("thresholds")
 
@@ -20547,6 +20832,25 @@ def ai_capture_guide_review():
         }), 409
 
     session_id = int(session_row["id"])
+    target_ai_model_id = session_row.get("target_ai_model_id")
+    if target_ai_model_id is not None:
+        target_model = next(
+            (item for item in get_garment_ai_versions(garment_model_id)
+             if int(item.get("id") or 0) == int(target_ai_model_id)),
+            None,
+        )
+        if target_model and str(target_model.get("version") or "").lower() == "v2":
+            try:
+                validate_normal_v2_capture_confirmation(
+                    version="v2",
+                    decision=decision,
+                    human_category=body.get("human_category"),
+                )
+            except AIDomainError as error:
+                return jsonify({
+                    "ok": False,
+                    "error": str(error),
+                }), 409
 
     pending_token = str(body.get("pending_token") or "").strip()
     if pending_token:

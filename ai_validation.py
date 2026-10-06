@@ -233,6 +233,12 @@ def load_model_bundle(cur, ai_model_id) -> dict:
     if input_size <= 0:
         input_size = 256
 
+    training_config = config.get("config") if isinstance(config, dict) else None
+    preprocessing_profile = (
+        training_config.get("validation_preprocessing_profile")
+        if isinstance(training_config, dict) else None
+    )
+
     return {
         "ai_model_id": int(row["id"]),
         "garment_model_id": int(row["garment_model_id"]),
@@ -244,6 +250,7 @@ def load_model_bundle(cur, ai_model_id) -> dict:
         "checkpoint_hash": row.get("checkpoint_hash"),
         "input_size": input_size,
         "config": config,
+        "preprocessing_profile": str(preprocessing_profile or "PER_IMAGE").upper(),
         "active": int(row.get("active") or 0),
         "threshold_final": (
             float(row["threshold_final"])
@@ -301,7 +308,7 @@ def _roi_bounds(frame):
     return x1, y1, x2, y2
 
 
-def build_validation_input(image_path) -> Path:
+def build_validation_input(image_path, *, preprocessing_profile="PER_IMAGE") -> Path:
     """Preprocesamiento idéntico a producción (máscara -> ROI -> blanco).
 
     Devuelve un PNG temporal; el llamador lo elimina.
@@ -325,13 +332,20 @@ def build_validation_input(image_path) -> Path:
 
     bounds = _roi_bounds(image)
 
-    try:
-        mask = patchcore_preprocess.create_garment_mask(image, bounds)
-    except Exception:
-        # Misma tolerancia que producción: si la silueta no se puede
-        # describir, build_patchcore_regions cae al ROI completo.
-        print("[VALIDACION] Sin silueta utilizable: se usará el ROI completo.")
+    profile = str(preprocessing_profile or "PER_IMAGE").strip().upper()
+    if profile == "FULL_ROI":
+        # Política versionada a partir del preprocesamiento que alimentó
+        # el checkpoint. Evita que cambios de cobertura de la máscara entre
+        # cohortes cambien de forma abrupta el fondo visto por PatchCore.
         mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        print("[VALIDACION] preprocessing_profile=FULL_ROI; ROI rectangular.")
+    else:
+        try:
+            mask = patchcore_preprocess.create_garment_mask(image, bounds)
+        except Exception:
+            # Mismo fallback geométrico compartido con training.
+            print("[VALIDACION] Sin silueta utilizable: se usará el ROI completo.")
+            mask = np.zeros(image.shape[:2], dtype=np.uint8)
 
     _, _, patchcore_input = patchcore_preprocess.build_patchcore_regions(
         image,
@@ -362,6 +376,7 @@ def predict_with_ai_model(
     cur=None,
     inspector_factory=None,
     preprocess=True,
+    preprocessing_profile=None,
 ) -> dict:
     """predict(ai_model_id=vN, image) sobre los artefactos de esa versión.
 
@@ -382,7 +397,13 @@ def predict_with_ai_model(
         target = str(image_path)
 
         if preprocess:
-            temp_input = build_validation_input(target)
+            temp_input = build_validation_input(
+                target,
+                preprocessing_profile=(
+                    preprocessing_profile
+                    or bundle.get("preprocessing_profile")
+                ),
+            )
             target = str(temp_input)
 
         inspector = get_model_inspector(
@@ -409,6 +430,9 @@ def predict_with_ai_model(
             "is_anomaly": bool(prediction.get("is_anomaly")),
             "anomaly_map": anomaly_map,
             "source": "ai_model_artifacts",
+            "preprocessing_profile": (
+                str(preprocessing_profile or bundle.get("preprocessing_profile") or "PER_IMAGE").upper()
+            ),
         }
     finally:
         if temp_input is not None:
@@ -1109,15 +1133,23 @@ def export_validation_bank(cur, *, ai_model_id, artifacts_root=None) -> dict:
         training_manifest = json.loads(manifest_source.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise AIDomainError("Manifest del dataset de training ilegible.") from error
-    if (
-        int(training_manifest.get("image_count") or 0) != len(training_rows)
-        or str(training_manifest.get("manifest_hash") or "").lower()
-        != str(dataset["manifest_hash"]).lower()
-        or compute_manifest_hash([
+    content_hash = compute_manifest_hash([
             {"id": item.get("image_id"), "sha256": item.get("sha256")}
             for item in training_manifest.get("images", [])
-        ]) != str(dataset["manifest_hash"]).lower()
-    ):
+        ])
+    if training_manifest.get("content_hash") is not None:
+        manifest_valid = (
+            hashlib.sha256(manifest_source.read_bytes()).hexdigest()
+            == str(dataset["manifest_hash"]).lower()
+            and content_hash == str(training_manifest.get("content_hash")).lower()
+        )
+    else:
+        manifest_valid = (
+            str(training_manifest.get("manifest_hash") or "").lower()
+            == str(dataset["manifest_hash"]).lower()
+            and content_hash == str(dataset["manifest_hash"]).lower()
+        )
+    if int(training_manifest.get("image_count") or 0) != len(training_rows) or not manifest_valid:
         raise AIDomainError("El contenido del manifest de training no coincide con su snapshot registrado.")
 
     bank_rel = f"garment_{int(model['garment_model_id'])}/validation_datasets/ai_model_{int(model['id'])}_{str(model['version']).lower()}"
@@ -1247,6 +1279,32 @@ def get_validation_state(cur, ai_model_id) -> dict:
 
     cases = list_validation_cases(cur, ai_model_id)
     counts = count_cases_by_category(cases)
+    invalidated = is_technically_invalidated(model.get("notes"))
+    status = str(model["status"] or "").strip().upper()
+    final_test = (
+        get_final_test_state(cur, ai_model_id=ai_model_id)
+        if int(ai_model_id) == FINAL_TEST_AI_MODEL_ID else None
+    )
+    if final_test is not None:
+        final_test["can_start"] = False
+        final_test["start_block_reason"] = None
+        try:
+            bundle = load_model_bundle(cur, ai_model_id)
+            final_test["can_start"] = bool(
+                not final_test["started"]
+                and status in (AI_MODEL_STATUS_ENTRENADO, AI_MODEL_STATUS_VALIDACION)
+                and not int(model.get("active") or 0)
+                and model.get("threshold_final") is None
+                and str(bundle.get("preprocessing_profile") or "").upper()
+                == FINAL_TEST_PREPROCESSING
+                and not invalidated
+            )
+            if not final_test["can_start"]:
+                final_test["start_block_reason"] = (
+                    "v1 debe estar inactiva, sin threshold congelado, apta para validación y con perfil FULL_ROI."
+                )
+        except AIDomainError as error:
+            final_test["start_block_reason"] = str(error)
 
     metrics = None
     if session and session.get("metrics_json"):
@@ -1254,9 +1312,6 @@ def get_validation_state(cur, ai_model_id) -> dict:
             metrics = json.loads(session["metrics_json"])
         except (TypeError, ValueError):
             metrics = None
-
-    invalidated = is_technically_invalidated(model.get("notes"))
-    status = str(model["status"] or "").strip().upper()
 
     # Fuente única de verdad: cada caso serializado con su estado
     # binario derivado (tabla, miniaturas y edición usan esto).
@@ -1317,6 +1372,7 @@ def get_validation_state(cur, ai_model_id) -> dict:
         ),
         "notice": VALIDATION_IMAGE_NOTICE,
         "pending_calibration": True,
+        "final_test": final_test,
     }
 
 
@@ -1325,6 +1381,13 @@ def get_validation_state(cur, ai_model_id) -> dict:
 # ============================================================
 
 DEFAULT_THRESHOLD_GRID = tuple(range(5, 100, 5))
+
+# FASE 3C.5 — these values are intentionally not caller-configurable.
+FINAL_TEST_GARMENT_MODEL_ID = 1082
+FINAL_TEST_AI_MODEL_ID = 1649
+FINAL_TEST_THRESHOLD = 47.32
+FINAL_TEST_PREPROCESSING = "FULL_ROI"
+FINAL_TEST_TARGET_PER_CLASS = 10
 
 
 def _numeric_score(value):
@@ -1632,6 +1695,292 @@ def compute_validation_metrics(
 
     metrics["defects"] = compute_defect_breakdown(rows, reference)
 
+    return metrics
+
+
+def start_final_test(cur, *, ai_model_id, actor_id=None) -> dict:
+    """Open the isolated, initially empty FINAL_TEST cohort."""
+    model = _fetch_validation_model(cur, ai_model_id)
+    if (
+        int(model.get("id") or 0) != FINAL_TEST_AI_MODEL_ID
+        or int(model.get("garment_model_id") or 0) != FINAL_TEST_GARMENT_MODEL_ID
+        or str(model.get("version") or "").upper() != "V1"
+    ):
+        raise AIDomainError("La cohorte FINAL_TEST está habilitada únicamente para BLUSA-762 v1.")
+    if int(model.get("active") or 0):
+        raise AIDomainError("FINAL_TEST no puede iniciarse con v1 activa.")
+    if str(model.get("status") or "").upper() not in (
+        AI_MODEL_STATUS_ENTRENADO,
+        AI_MODEL_STATUS_VALIDACION,
+    ):
+        raise AIDomainError("v1 debe estar ENTRENADO o en VALIDACION para FINAL_TEST.")
+
+    bundle = load_model_bundle(cur, ai_model_id)
+    if str(bundle.get("preprocessing_profile") or "").upper() != FINAL_TEST_PREPROCESSING:
+        raise AIDomainError("El perfil del checkpoint v1 no es FULL_ROI; FINAL_TEST se bloquea.")
+    if bundle.get("threshold_final") is not None:
+        raise AIDomainError("FINAL_TEST independiente requiere mantener el threshold del modelo sin congelar.")
+
+    cur.execute(
+        "SELECT id FROM ai_final_test_sessions WHERE ai_model_id = %s LIMIT 1",
+        (int(ai_model_id),),
+    )
+    existing = cur.fetchone()
+    if existing:
+        return get_final_test_state(cur, ai_model_id=ai_model_id)
+
+    cur.execute(
+        """INSERT INTO ai_final_test_sessions
+           (garment_model_id, ai_model_id, cohort, threshold_fixed,
+            preprocessing_profile, status, created_by)
+           VALUES (%s, %s, 'FINAL_TEST', %s, %s, 'ABIERTA', %s)""",
+        (
+            FINAL_TEST_GARMENT_MODEL_ID,
+            FINAL_TEST_AI_MODEL_ID,
+            FINAL_TEST_THRESHOLD,
+            FINAL_TEST_PREPROCESSING,
+            actor_id,
+        ),
+    )
+    session_id = int(cur.lastrowid)
+    record_ai_event(
+        cur,
+        "FINAL_TEST_STARTED",
+        actor_id=actor_id,
+        ai_model_id=FINAL_TEST_AI_MODEL_ID,
+        payload={
+            "final_test_session_id": session_id,
+            "garment_model_id": FINAL_TEST_GARMENT_MODEL_ID,
+            "threshold_fixed": FINAL_TEST_THRESHOLD,
+            "preprocessing_profile": FINAL_TEST_PREPROCESSING,
+            "cohort": "FINAL_TEST",
+            "initial_case_count": 0,
+        },
+    )
+    return get_final_test_state(cur, ai_model_id=ai_model_id)
+
+
+def get_final_test_state(cur, *, ai_model_id=FINAL_TEST_AI_MODEL_ID) -> dict:
+    cur.execute(
+        """SELECT id, garment_model_id, ai_model_id, cohort,
+                  threshold_fixed, preprocessing_profile, status,
+                  metrics_json, created_by, created_at, evaluated_at
+           FROM ai_final_test_sessions WHERE ai_model_id = %s LIMIT 1""",
+        (int(ai_model_id),),
+    )
+    session_row = cur.fetchone()
+    if not session_row:
+        return {
+            "cohort": "FINAL_TEST",
+            "started": False,
+            "status": "INACTIVA",
+            "status_label": "INACTIVA",
+            "cases": [],
+            "counts": {"BUENA": 0, "MANCHA": 0, "total": 0},
+            "threshold_fixed": FINAL_TEST_THRESHOLD,
+            "preprocessing_profile": FINAL_TEST_PREPROCESSING,
+            "metrics": None,
+            "ready_to_evaluate": False,
+        }
+    session_row = dict(session_row)
+    integrity_ok = (
+        round(float(session_row.get("threshold_fixed") or 0), 2)
+        == FINAL_TEST_THRESHOLD
+        and str(session_row.get("preprocessing_profile") or "").upper()
+        == FINAL_TEST_PREPROCESSING
+        and str(session_row.get("cohort") or "").upper() == "FINAL_TEST"
+    )
+    cur.execute(
+        """SELECT id, category, image_path, image_sha256, anomaly_score,
+                  threshold_used, prediction, correct, heatmap_path,
+                  comparison_path, created_at
+           FROM ai_final_test_cases WHERE final_test_session_id = %s
+           ORDER BY id ASC""",
+        (int(session_row["id"]),),
+    )
+    cases = [dict(row) for row in cur.fetchall()]
+    good = sum(str(row["category"]).upper() == "NORMAL" for row in cases)
+    stains = sum(str(row["category"]).upper() == "MANCHA" for row in cases)
+    metrics = None
+    if session_row.get("metrics_json"):
+        try:
+            metrics = json.loads(session_row["metrics_json"])
+        except (TypeError, ValueError):
+            metrics = None
+    return {
+        **session_row,
+        "started": True,
+        "integrity_ok": integrity_ok,
+        "integrity_error": None if integrity_ok else "Configuración FINAL_TEST alterada; captura y evaluación bloqueadas.",
+        "status_label": {
+            "ABIERTA": "EN CURSO",
+            "EVALUADA": "EVALUADA",
+        }.get(str(session_row.get("status") or "").upper(), "INACTIVA"),
+        "cases": cases,
+        "counts": {"BUENA": good, "MANCHA": stains, "total": len(cases)},
+        "threshold_fixed": float(session_row["threshold_fixed"]),
+        "preprocessing_profile": session_row["preprocessing_profile"],
+        "metrics": metrics,
+        "ready_to_evaluate": good == FINAL_TEST_TARGET_PER_CLASS
+        and stains == FINAL_TEST_TARGET_PER_CLASS,
+    }
+
+
+def register_final_test_case(
+    cur, *, image_bytes, category, actor_id=None, inspector_factory=None
+) -> dict:
+    """Infer and persist one camera-captured new item in FINAL_TEST only."""
+    category_key = str(category or "").strip().upper()
+    if category_key not in ("NORMAL", "MANCHA"):
+        raise AIDomainError("La prueba final solo admite BUENA o DEFECTUOSA → MANCHA.")
+    if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
+        raise AIDomainError("No se recibió un frame de cámara válido.")
+    state = get_final_test_state(cur)
+    if not state.get("started") or state.get("status") != "ABIERTA":
+        raise AIDomainError("Inicie una cohorte FINAL_TEST abierta antes de capturar.")
+    if not state.get("integrity_ok"):
+        raise AIDomainError(state.get("integrity_error") or "Configuración FINAL_TEST inválida.")
+    if state["counts"]["total"] >= 2 * FINAL_TEST_TARGET_PER_CLASS:
+        raise AIDomainError("La cohorte FINAL_TEST ya alcanzó 20 imágenes.")
+    if state["counts"]["BUENA"] >= FINAL_TEST_TARGET_PER_CLASS and category_key == "NORMAL":
+        raise AIDomainError("La cuota de 10 BUENAS de FINAL_TEST ya está completa.")
+    if state["counts"]["MANCHA"] >= FINAL_TEST_TARGET_PER_CLASS and category_key == "MANCHA":
+        raise AIDomainError("La cuota de 10 MANCHAS de FINAL_TEST ya está completa.")
+
+    digest = sha256_bytes(bytes(image_bytes))
+    cur.execute("SELECT id FROM ai_training_images WHERE LOWER(sha256) = %s LIMIT 1", (digest,))
+    if cur.fetchone():
+        raise AIDomainError("Imagen rechazada: el hash ya existe en TRAINING.")
+    cur.execute("SELECT id FROM ai_validation_cases WHERE LOWER(image_sha256) = %s LIMIT 1", (digest,))
+    if cur.fetchone():
+        raise AIDomainError("Imagen rechazada: el hash ya existe en VALIDATION/calibración.")
+    cur.execute("SELECT id FROM ai_final_test_cases WHERE image_sha256 = %s LIMIT 1", (digest,))
+    if cur.fetchone():
+        raise AIDomainError("Imagen duplicada dentro de FINAL_TEST.")
+
+    handle, temp_name = tempfile.mkstemp(prefix="astrid_final_test_", suffix=_original_extension(bytes(image_bytes)))
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(handle, "wb") as temp_file:
+            temp_file.write(bytes(image_bytes))
+        prediction = predict_with_ai_model(
+            FINAL_TEST_AI_MODEL_ID,
+            str(temp_path),
+            cur=cur,
+            inspector_factory=inspector_factory,
+            preprocess=True,
+            preprocessing_profile=FINAL_TEST_PREPROCESSING,
+        )
+    finally:
+        temp_path.unlink(missing_ok=True)
+    score = prediction.get("score_percent")
+    if score is None:
+        raise AIDomainError("La inferencia FINAL_TEST no produjo score.")
+    anomaly = float(score) >= FINAL_TEST_THRESHOLD
+    predicted_category = "MANCHA" if anomaly else "NORMAL"
+    correct = predicted_category == category_key
+    session_id = int(state["id"])
+    case_dir = (
+        f"garment_{FINAL_TEST_GARMENT_MODEL_ID}/final_test/"
+        f"session_{session_id}/case_{digest[:16]}"
+    )
+    original_rel = f"{case_dir}/original{_original_extension(bytes(image_bytes))}"
+    heatmap_rel = f"{case_dir}/heatmap.png" if prediction.get("anomaly_map") is not None else None
+    comparison_rel = f"{case_dir}/comparison.png" if prediction.get("anomaly_map") is not None else None
+    cur.execute(
+        """INSERT INTO ai_final_test_cases
+           (final_test_session_id, ai_model_id, garment_model_id, category,
+            image_path, image_sha256, anomaly_score, threshold_used,
+            prediction, correct, heatmap_path, comparison_path, created_by)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (
+            session_id, FINAL_TEST_AI_MODEL_ID, FINAL_TEST_GARMENT_MODEL_ID,
+            category_key, original_rel, digest, float(score),
+            FINAL_TEST_THRESHOLD, predicted_category, int(correct),
+            heatmap_rel, comparison_rel, actor_id,
+        ),
+    )
+    case_id = int(cur.lastrowid)
+    root = get_ai_artifacts_root()
+    atomic_write_bytes(resolve_under_root(root, original_rel), bytes(image_bytes))
+    if heatmap_rel:
+        try:
+            import cv2
+            import numpy as np
+            original = cv2.imdecode(np.frombuffer(bytes(image_bytes), dtype=np.uint8), cv2.IMREAD_COLOR)
+            heatmap = render_heatmap(prediction.get("anomaly_map"), reference_shape=original.shape if original is not None else None)
+            heatmap_png = _encode_png(heatmap)
+            comparison_png = _encode_png(render_comparison(original, heatmap)) if original is not None else None
+            if heatmap_png:
+                atomic_write_bytes(resolve_under_root(root, heatmap_rel), heatmap_png)
+            if comparison_png:
+                atomic_write_bytes(resolve_under_root(root, comparison_rel), comparison_png)
+        except Exception:
+            app_log = "[FINAL_TEST] No se pudo generar heatmap/comparación."
+            print(app_log)
+            heatmap_rel = comparison_rel = None
+            cur.execute("UPDATE ai_final_test_cases SET heatmap_path=NULL, comparison_path=NULL WHERE id=%s", (case_id,))
+    record_ai_event(
+        cur,
+        "FINAL_TEST_CASE_REGISTERED",
+        actor_id=actor_id,
+        ai_model_id=FINAL_TEST_AI_MODEL_ID,
+        payload={
+            "final_test_session_id": session_id,
+            "final_test_case_id": case_id,
+            "category": category_key,
+            "score": float(score),
+            "prediction": predicted_category,
+            "correct": bool(correct),
+            "threshold_fixed": FINAL_TEST_THRESHOLD,
+            "preprocessing_profile": FINAL_TEST_PREPROCESSING,
+            "image_sha256": digest,
+        },
+    )
+    return {
+        "id": case_id,
+        "category": category_key,
+        "anomaly_score": float(score),
+        "threshold_used": FINAL_TEST_THRESHOLD,
+        "prediction": predicted_category,
+        "correct": bool(correct),
+        "image_sha256": digest,
+        "image_path": original_rel,
+        "heatmap_path": heatmap_rel,
+        "comparison_path": comparison_rel,
+        "created_at": None,
+    }
+
+
+def evaluate_final_test(cur, *, actor_id=None) -> dict:
+    """Calculate metrics only over this session; never search thresholds."""
+    state = get_final_test_state(cur)
+    if not state.get("integrity_ok"):
+        raise AIDomainError(state.get("integrity_error") or "Configuración FINAL_TEST inválida.")
+    if not state.get("ready_to_evaluate"):
+        raise AIDomainError("La evaluación requiere exactamente 10 BUENAS y 10 MANCHAS nuevas.")
+    cases = state["cases"]
+    metrics = binary_metrics(cases, FINAL_TEST_THRESHOLD)
+    metrics.update({
+        "cohort": "FINAL_TEST",
+        "threshold_fixed": FINAL_TEST_THRESHOLD,
+        "candidate_thresholds": [],
+        "recalibration_performed": False,
+        "confusion_matrix": [[metrics["tn"], metrics["fp"]], [metrics["fn"], metrics["tp"]]],
+        "good_cases": state["counts"]["BUENA"],
+        "stain_cases": state["counts"]["MANCHA"],
+    })
+    cur.execute(
+        "UPDATE ai_final_test_sessions SET status='EVALUADA', metrics_json=%s, evaluated_at=NOW() WHERE id=%s AND status='ABIERTA'",
+        (json.dumps(metrics, ensure_ascii=False), int(state["id"])),
+    )
+    record_ai_event(
+        cur,
+        "FINAL_TEST_EVALUATED",
+        actor_id=actor_id,
+        ai_model_id=FINAL_TEST_AI_MODEL_ID,
+        payload={"final_test_session_id": int(state["id"]), "metrics": metrics, "activated": False},
+    )
     return metrics
 
 

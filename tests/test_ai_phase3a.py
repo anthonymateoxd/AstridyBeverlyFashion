@@ -1485,6 +1485,288 @@ class StagingFallbackTests(unittest.TestCase):
         )
 
 
+class AcceptedImageStagingContractTests(unittest.TestCase):
+    """La aceptación de captura permite ROI fallback, nunca relaja integridad."""
+
+    GARMENT_ID = 42
+    DATASET_ID = 12
+    CAPTURE_ID = 13392
+    SESSION_ID = 81
+    RELATIVE = "garment_42/datasets/dataset_12/images/13392.png"
+    MANIFEST = "garment_42/datasets/dataset_12/manifest.json"
+
+    class Cursor:
+        def __init__(self, row, dataset, validation_hashes=()):
+            self.row = dict(row)
+            self.dataset = dict(dataset)
+            self.validation_hashes = list(validation_hashes)
+            self.result = None
+
+        def execute(self, sql, params=()):
+            if "FROM ai_dataset_images di" in sql:
+                self.result = [self.row]
+            elif "FROM ai_datasets WHERE id" in sql:
+                self.result = self.dataset
+            elif "FROM ai_validation_cases" in sql:
+                self.result = [
+                    {"image_sha256": value} for value in self.validation_hashes
+                ]
+            elif "FROM ai_final_test_cases" in sql:
+                self.result = []
+            else:
+                raise AssertionError(f"Consulta inesperada de staging: {sql}")
+
+        def fetchall(self):
+            result, self.result = self.result, None
+            return result
+
+        def fetchone(self):
+            result, self.result = self.result, None
+            return result
+
+    def setUp(self):
+        import cv2
+
+        self.tmp = Path(tempfile.mkdtemp(prefix="accepted_staging_"))
+        self.root = self.tmp / "artifacts"
+        self.staging = self.tmp / "staging"
+        source = self.root.joinpath(*self.RELATIVE.split("/"))
+        source.parent.mkdir(parents=True, exist_ok=True)
+        self.frame = rose_blouse_frame()
+        self.assertTrue(cv2.imwrite(str(source), self.frame))
+        source_bytes = source.read_bytes()
+        digest = hashlib.sha256(source_bytes).hexdigest()
+        self.row = {
+            "id": self.CAPTURE_ID,
+            "image_path": "garment_42/capture_sessions/session_81/accepted/capture.png",
+            "sha256": digest,
+            "garment_model_id": self.GARMENT_ID,
+            "status": "ACEPTADA",
+            "capture_session_id": self.SESSION_ID,
+            "session_status": "COMPLETADA",
+        }
+        self.item = {
+            "image_id": self.CAPTURE_ID,
+            "path": self.RELATIVE,
+            "sha256": digest,
+            "size": len(source_bytes),
+            "category": "NORMAL",
+            "capture_session_id": self.SESSION_ID,
+        }
+        self.dataset = {
+            "id": self.DATASET_ID,
+            "garment_model_id": self.GARMENT_ID,
+            "status": "CERRADO",
+            "image_count": 1,
+            "dataset_path": "garment_42/datasets/dataset_12",
+            "manifest_path": self.MANIFEST,
+        }
+        self._write_manifest()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_manifest(self, *, category="NORMAL", item=None):
+        payload_item = dict(item or self.item, category=category)
+        payload = {
+            "dataset_id": self.DATASET_ID,
+            "garment_model_id": self.GARMENT_ID,
+            "version": "d1",
+            "image_count": 1,
+            "images": [payload_item],
+            "content_hash": "regression-test",
+        }
+        target = self.root.joinpath(*self.MANIFEST.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        self.dataset["manifest_hash"] = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    def _stage(self, *, row=None, validation_hashes=()):
+        from unittest import mock
+
+        cursor = self.Cursor(row or self.row, self.dataset, validation_hashes)
+        with mock.patch("ai_training.get_ai_artifacts_root", return_value=self.root):
+            return ai_training.stage_training_images(
+                cursor, self.DATASET_ID, self.staging, ROI_TEST
+            )
+
+    def test_accepted_image_with_good_segmentation_uses_normal_pipeline(self):
+        staged = self._stage()
+        self.assertEqual(len(staged), 1)
+        self.assertFalse(staged[0]["segmentation_fallback"])
+        output = self._cv2_read(staged[0]["path"])
+        bounds = ai_training.patchcore_preprocess.roi_bounds_from_fractions(
+            self.frame, ROI_TEST
+        )
+        self.assertEqual(output.shape, self.frame[bounds[1]:bounds[3], bounds[0]:bounds[2]].shape)
+
+    def test_accepted_image_false_negative_uses_full_roi_fallback(self):
+        from unittest import mock
+
+        cursor = self.Cursor(self.row, self.dataset)
+        with mock.patch("ai_training.get_ai_artifacts_root", return_value=self.root), \
+             mock.patch.object(
+                 ai_training.patchcore_preprocess,
+                 "create_garment_mask",
+                 side_effect=RuntimeError("La silueta detectada es demasiado pequeña."),
+             ):
+            staged = ai_training.stage_training_images(
+                cursor, self.DATASET_ID, self.staging, ROI_TEST
+            )
+        self.assertTrue(staged[0]["segmentation_fallback"])
+        output = self._cv2_read(staged[0]["path"])
+        bounds = ai_training.patchcore_preprocess.roi_bounds_from_fractions(
+            self.frame, ROI_TEST
+        )
+        self.assertTrue(
+            self._np_equal(output, self.frame[bounds[1]:bounds[3], bounds[0]:bounds[2]])
+        )
+
+    def test_corrupt_image_is_blocked(self):
+        source = self.root.joinpath(*self.RELATIVE.split("/"))
+        source.write_bytes(b"not an image")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        row = dict(self.row, sha256=digest)
+        item = dict(self.item, sha256=digest, size=source.stat().st_size)
+        self._write_manifest(item=item)
+        with self.assertRaisesRegex(AIDomainError, "No se pudo leer"):
+            self._stage(row=row)
+
+    def test_hash_incorrecto_is_blocked(self):
+        with self.assertRaisesRegex(AIDomainError, "hash"):
+            self._stage(row=dict(self.row, sha256="0" * 64))
+
+    def test_nonaccepted_capture_is_blocked(self):
+        with self.assertRaisesRegex(AIDomainError, "ACEPTADA"):
+            self._stage(row=dict(self.row, status="RECHAZADA"))
+
+    def test_validation_hash_is_blocked_from_training(self):
+        with self.assertRaisesRegex(AIDomainError, "validation"):
+            self._stage(validation_hashes=(self.row["sha256"],))
+
+    def test_mixed_training_validation_content_is_blocked(self):
+        with self.assertRaises(AIDomainError):
+            self._stage(validation_hashes=(self.row["sha256"],))
+
+    def test_manifest_defect_category_is_blocked(self):
+        self._write_manifest(category="DEFECT")
+        with self.assertRaisesRegex(AIDomainError, "NORMAL"):
+            self._stage()
+
+    @staticmethod
+    def _cv2_read(path):
+        import cv2
+        return cv2.imread(str(path))
+
+    @staticmethod
+    def _np_equal(left, right):
+        import numpy as np
+        return np.array_equal(left, right)
+
+
+class VersionedPreprocessingProfileTests(unittest.TestCase):
+    def test_model_bundle_reads_its_versioned_preprocessing_profile(self):
+        import ai_validation
+        from unittest import mock
+
+        temp = Path(tempfile.mkdtemp(prefix="preprocessing_bundle_"))
+        model_id = 901
+        root = temp
+        relative_checkpoint = (
+            f"garment_42/models/ai_model_{model_id}/checkpoint/model.ckpt"
+        )
+        checkpoint = root.joinpath(*relative_checkpoint.split("/"))
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.write_bytes(b"checkpoint-fixture")
+        config_path = (
+            root / "garment_42" / "models" / f"ai_model_{model_id}"
+            / "training" / "config.json"
+        )
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps({"config": {"input_size": 256,
+                                    "validation_preprocessing_profile": "FULL_ROI"}}),
+            encoding="utf-8",
+        )
+
+        class Cursor:
+            def execute(self, _sql, _params):
+                pass
+
+            def fetchone(self):
+                return {
+                    "id": model_id, "garment_model_id": 42, "version": "v7",
+                    "status": "ENTRENADO", "notes": None,
+                    "checkpoint_path": relative_checkpoint,
+                    "checkpoint_hash": "a" * 64, "input_size": "256",
+                    "dataset_id": 8, "active": 0, "threshold_final": None,
+                    "threshold_frozen_at": None, "threshold_frozen_by": None,
+                    "threshold_provenance": None,
+                }
+
+        try:
+            with mock.patch("ai_validation.get_ai_artifacts_root", return_value=root):
+                bundle = ai_validation.load_model_bundle(Cursor(), model_id)
+            self.assertEqual(bundle["preprocessing_profile"], "FULL_ROI")
+            self.assertEqual(bundle["input_size"], 256)
+        finally:
+            shutil.rmtree(temp, ignore_errors=True)
+
+    def test_training_profile_is_summarized_from_actual_staging_modes(self):
+        self.assertEqual(
+            ai_training.summarize_preprocessing_profile([
+                {"preprocessing_mode": "FULL_ROI"},
+                {"preprocessing_mode": "FULL_ROI"},
+            ]),
+            "FULL_ROI",
+        )
+        self.assertEqual(
+            ai_training.summarize_preprocessing_profile([
+                {"preprocessing_mode": "SEGMENTED"},
+                {"preprocessing_mode": "SEGMENTED"},
+            ]),
+            "SEGMENTED",
+        )
+        self.assertEqual(
+            ai_training.summarize_preprocessing_profile([
+                {"preprocessing_mode": "FULL_ROI"},
+                {"preprocessing_mode": "SEGMENTED"},
+            ]),
+            "PER_IMAGE",
+        )
+
+    def test_full_roi_validation_profile_matches_training_roi_exactly(self):
+        import cv2
+        import numpy as np
+
+        import ai_validation
+        import patchcore_preprocess
+
+        temp = Path(tempfile.mkdtemp(prefix="validation_full_roi_"))
+        image_path = temp / "accepted.png"
+        frame = rose_blouse_frame()
+        self.assertTrue(cv2.imwrite(str(image_path), frame))
+        output_path = None
+        try:
+            from unittest import mock
+            with mock.patch.object(
+                patchcore_preprocess,
+                "create_garment_mask",
+                side_effect=AssertionError("FULL_ROI profile must not segment"),
+            ):
+                output_path = ai_validation.build_validation_input(
+                    image_path, preprocessing_profile="FULL_ROI"
+                )
+            bounds = ai_validation._roi_bounds(frame)
+            expected = frame[bounds[1]:bounds[3], bounds[0]:bounds[2]]
+            actual = cv2.imread(str(output_path))
+            self.assertTrue(np.array_equal(actual, expected))
+        finally:
+            if output_path:
+                Path(output_path).unlink(missing_ok=True)
+            shutil.rmtree(temp, ignore_errors=True)
+
+
 class QualityGateTests(unittest.TestCase):
     """§6/§7: gate de calidad y hoja de contactos."""
 
@@ -1725,7 +2007,7 @@ class TrainingStagingGateDbTests(_TrainingDbCase):
 
     ADMIN_USERNAME = "ph3g_admin"
 
-    MODELS = ("TEST-PH3A-GATE",)
+    MODELS = ("TEST-PH3A-GATE", "TEST-PH3A-GATE-LOW")
     USERS = (("ph3g_admin", "ADMIN"),)
 
     @staticmethod
@@ -1847,6 +2129,84 @@ class TrainingStagingGateDbTests(_TrainingDbCase):
             [{"image_id": 0, "path": path} for path in staged_pngs],
         )
         self.assertTrue(gate["ok"], gate["errors"])
+
+        dataset = result["dataset"]
+        manifest_path = Path(get_ai_artifacts_root()) / dataset["manifest_path"]
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            dataset["manifest_hash"],
+        )
+        self.assertEqual(manifest["image_count"], dataset["image_count"])
+        self.assertEqual(len(manifest["images"]), dataset["image_count"])
+        self.assertTrue(all(item["category"] == "NORMAL" for item in manifest["images"]))
+        self.assertTrue(all(item["capture_session_id"] for item in manifest["images"]))
+        for item in manifest["images"]:
+            path = Path(get_ai_artifacts_root()) / item["path"]
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.stat().st_size, item["size"])
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), item["sha256"])
+
+        # Reintentar la materialización reutiliza la misma versión/conjunto.
+        cur = self.conn.cursor(dictionary=True)
+        try:
+            again = ai_training.materialize_training_dataset(
+                cur, model_id, self.user_ids[self.ADMIN_USERNAME]
+            )
+            self.assertEqual(again["id"], dataset["id"])
+            self.assertEqual(again["image_count"], dataset["image_count"])
+            cur.execute(
+                "SELECT COUNT(*) AS total FROM ai_dataset_images WHERE dataset_id = %s",
+                (int(dataset["id"]),),
+            )
+            self.assertEqual(int(cur.fetchone()["total"]), dataset["image_count"])
+
+            original = manifest_path.read_bytes()
+            try:
+                manifest_path.unlink()
+                missing_manifest = ai_training.verify_training_dataset(
+                    cur, dataset_id=dataset["id"], ai_model_id=result["ai_model"]["id"]
+                )
+                self.assertFalse(missing_manifest["ok"])
+            finally:
+                manifest_path.write_bytes(original)
+
+            try:
+                manifest_path.write_text("{corrupt", encoding="utf-8")
+                corrupt_manifest = ai_training.verify_training_dataset(
+                    cur, dataset_id=dataset["id"], ai_model_id=result["ai_model"]["id"]
+                )
+                self.assertFalse(corrupt_manifest["ok"])
+            finally:
+                manifest_path.write_bytes(original)
+
+            image_path = Path(get_ai_artifacts_root()) / manifest["images"][0]["path"]
+            image_bytes = image_path.read_bytes()
+            try:
+                image_path.unlink()
+                missing_image = ai_training.verify_training_dataset(
+                    cur, dataset_id=dataset["id"], ai_model_id=result["ai_model"]["id"]
+                )
+                self.assertFalse(missing_image["ok"])
+            finally:
+                image_path.write_bytes(image_bytes)
+        finally:
+            cur.close()
+
+    def test_fewer_than_minimum_images_rejects_materialization(self):
+        model_id = self.model_ids["TEST-PH3A-GATE-LOW"]
+        self._seed_accepted(
+            model_id, self.user_ids[self.ADMIN_USERNAME],
+            count=max(0, self.min_images - 1),
+        )
+        cur = self.conn.cursor(dictionary=True)
+        try:
+            with self.assertRaises(AIDomainError):
+                ai_training.materialize_training_dataset(
+                    cur, model_id, self.user_ids[self.ADMIN_USERNAME]
+                )
+        finally:
+            cur.close()
 
 
 @unittest.skipUnless(

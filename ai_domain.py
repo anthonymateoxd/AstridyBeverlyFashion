@@ -1454,6 +1454,9 @@ AI_EVENT_TYPES = {
     "TRAINING_CANCELLED",
     "VALIDATION_STARTED",
     "VALIDATION_CASE_REGISTERED",
+    "FINAL_TEST_STARTED",
+    "FINAL_TEST_CASE_REGISTERED",
+    "FINAL_TEST_EVALUATED",
     "VALIDATION_CASE_CATEGORY_CHANGED",
     "VALIDATION_CASE_DELETED",
     "VALIDATION_EVALUATED",
@@ -1797,6 +1800,7 @@ def ensure_ai_schema(cur, db_name, ensure_column=None):
             version VARCHAR(40) NOT NULL,
             status VARCHAR(30) NOT NULL DEFAULT 'ABIERTO',
             image_count INT NOT NULL DEFAULT 0,
+            dataset_path VARCHAR(500) NULL,
             manifest_path VARCHAR(500) NULL,
             manifest_hash CHAR(64) NULL,
             created_by INT NULL,
@@ -1823,6 +1827,12 @@ def ensure_ai_schema(cur, db_name, ensure_column=None):
           DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
         """
+    )
+
+    add_column(
+        "ai_datasets",
+        "dataset_path",
+        "dataset_path VARCHAR(500) NULL AFTER image_count",
     )
 
     # --------------------------------------------------------
@@ -2460,6 +2470,66 @@ def ensure_ai_schema(cur, db_name, ensure_column=None):
         """
     )
 
+    # FASE 3C.5: cohorte FINAL_TEST aislada de las sesiones y métricas
+    # de calibración. Se crea vacía; no se copian casos históricos.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ai_final_test_sessions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            garment_model_id INT NOT NULL,
+            ai_model_id INT NOT NULL,
+            cohort VARCHAR(20) NOT NULL DEFAULT 'FINAL_TEST',
+            threshold_fixed DECIMAL(8,2) NOT NULL,
+            preprocessing_profile VARCHAR(30) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'ABIERTA',
+            metrics_json JSON NULL,
+            created_by INT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            evaluated_at DATETIME NULL,
+            UNIQUE KEY uq_ai_final_test_model (ai_model_id),
+            CONSTRAINT fk_ai_final_test_model FOREIGN KEY (ai_model_id)
+                REFERENCES garment_ai_models(id) ON DELETE RESTRICT,
+            CONSTRAINT fk_ai_final_test_garment FOREIGN KEY (garment_model_id)
+                REFERENCES garment_models(id) ON DELETE RESTRICT,
+            CONSTRAINT fk_ai_final_test_user FOREIGN KEY (created_by)
+                REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ai_final_test_cases (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            final_test_session_id INT NOT NULL,
+            ai_model_id INT NOT NULL,
+            garment_model_id INT NOT NULL,
+            category VARCHAR(20) NOT NULL,
+            image_path VARCHAR(500) NOT NULL,
+            image_sha256 CHAR(64) NOT NULL,
+            anomaly_score DECIMAL(10,4) NOT NULL,
+            threshold_used DECIMAL(8,2) NOT NULL,
+            prediction VARCHAR(20) NOT NULL,
+            correct TINYINT(1) NOT NULL,
+            heatmap_path VARCHAR(500) NULL,
+            comparison_path VARCHAR(500) NULL,
+            created_by INT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_ai_final_test_case_hash (image_sha256),
+            KEY idx_ai_final_test_case_session (final_test_session_id),
+            CONSTRAINT fk_ai_final_case_session FOREIGN KEY (final_test_session_id)
+                REFERENCES ai_final_test_sessions(id) ON DELETE RESTRICT,
+            CONSTRAINT fk_ai_final_case_model FOREIGN KEY (ai_model_id)
+                REFERENCES garment_ai_models(id) ON DELETE RESTRICT,
+            CONSTRAINT fk_ai_final_case_garment FOREIGN KEY (garment_model_id)
+                REFERENCES garment_models(id) ON DELETE RESTRICT,
+            CONSTRAINT fk_ai_final_case_user FOREIGN KEY (created_by)
+                REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+        """
+    )
+
     add_column(
         "ai_validation_cases",
         "validation_cohort",
@@ -2614,6 +2684,288 @@ def create_next_ai_model_version(
         "version": version,
         "status": AI_MODEL_STATUS_PREPARACION,
     }
+
+
+def prepare_normal_v2_version(
+    cur,
+    *,
+    garment_model_id: int,
+    parent_ai_model_id: int,
+    actor_id: int | None,
+    artifacts_root: Path | None = None,
+    min_new_images: int = 30,
+) -> dict:
+    """Create BLUSA-762 v2 PREPARACION from v1's verified NORMAL snapshot.
+
+    It links the v1 training image records into a new open v2 dataset, but
+    never copies validation or FINAL_TEST cases and never creates a job.
+    """
+    garment_id = int(garment_model_id)
+    parent_id = int(parent_ai_model_id)
+    minimum = int(min_new_images)
+    if garment_id != 1082 or parent_id != 1649 or minimum != 30:
+        raise AIDomainError("La ampliación v2 configurada requiere BLUSA-762 v1 y mínimo 30 nuevas.")
+    _lock_garment_model(cur, garment_id)
+
+    cur.execute(
+        "SELECT id, code, status, active FROM garment_models WHERE id=%s FOR UPDATE",
+        (garment_id,),
+    )
+    garment = cur.fetchone()
+    if not garment or str(garment.get("code") or "").upper() != "BLUSA-762":
+        raise AIDomainError("El garment_model_id no corresponde a BLUSA-762.")
+    if garment.get("status") != "APROBADO" or int(garment.get("active") or 0) != 1:
+        raise AIDomainError("El modelo de prenda debe seguir aprobado y activo.")
+
+    cur.execute(
+        """SELECT id, garment_model_id, version, model_type, status, active,
+                  dataset_id, checkpoint_path, checkpoint_hash, threshold_final
+           FROM garment_ai_models WHERE id=%s FOR UPDATE""",
+        (parent_id,),
+    )
+    parent = cur.fetchone()
+    if (
+        not parent
+        or int(parent["garment_model_id"]) != garment_id
+        or str(parent.get("version") or "").lower() != "v1"
+        or str(parent.get("model_type") or "").lower() != "patchcore"
+        or str(parent.get("status") or "").upper() != AI_MODEL_STATUS_VALIDACION
+        or int(parent.get("active") or 0) != 0
+        or parent.get("threshold_final") is not None
+        or parent.get("dataset_id") is None
+    ):
+        raise AIDomainError("La fuente debe ser BLUSA-762 v1 en VALIDACION, inactiva y sin threshold final.")
+
+    cur.execute(
+        """SELECT id,version,status,image_count,manifest_path,manifest_hash
+           FROM ai_datasets WHERE id=%s FOR UPDATE""",
+        (int(parent["dataset_id"]),),
+    )
+    source_dataset = cur.fetchone()
+    if (
+        not source_dataset
+        or str(source_dataset.get("status") or "").upper() != DATASET_STATUS_CERRADO
+        or int(source_dataset.get("image_count") or 0) != 27
+    ):
+        raise AIDomainError("El dataset original de v1 debe estar cerrado y contener exactamente 27 imágenes.")
+
+    cur.execute(
+        """SELECT ti.id,ti.sha256,ti.image_path,ti.status,ti.garment_model_id,
+                  ti.capture_session_id,cs.status AS capture_status
+           FROM ai_dataset_images di
+           JOIN ai_training_images ti ON ti.id=di.image_id
+           JOIN ai_capture_sessions cs ON cs.id=ti.capture_session_id
+           WHERE di.dataset_id=%s ORDER BY ti.id""",
+        (int(source_dataset["id"]),),
+    )
+    source_images = [dict(row) for row in cur.fetchall()]
+    if len(source_images) != 27 or any(
+        int(row["garment_model_id"]) != garment_id
+        or row["status"] != TRAINING_IMAGE_STATUS_ACEPTADA
+        or row["capture_status"] != CAPTURE_STATUS_COMPLETADA
+        for row in source_images
+    ):
+        raise AIDomainError("El snapshot de v1 no es exclusivamente 27 capturas normales aceptadas y completadas.")
+    source_ids = {int(row["id"]) for row in source_images}
+    source_hashes = {normalize_sha256(str(row["sha256"])) for row in source_images}
+    if len(source_hashes) != 27:
+        raise AIDomainError("El dataset fuente v1 contiene hashes duplicados.")
+
+    root = Path(artifacts_root) if artifacts_root is not None else get_ai_artifacts_root()
+    root = root.expanduser().resolve()
+    for row in source_images:
+        image = resolve_under_root(root, ensure_safe_relative_path(row["image_path"]))
+        if not image.is_file() or sha256_file(image) != normalize_sha256(str(row["sha256"])):
+            raise AIDomainError(f"El archivo fuente de training {row['id']} no verifica su SHA-256.")
+
+    manifest_path = resolve_under_root(root, ensure_safe_relative_path(source_dataset["manifest_path"]))
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        raise AIDomainError("No se puede leer el manifest del dataset fuente v1.") from error
+    entries = manifest.get("images")
+    if not isinstance(entries, list) or len(entries) != 27:
+        raise AIDomainError("El manifest fuente v1 no contiene exactamente 27 imágenes.")
+    content_hash = compute_manifest_hash([
+        {"id": item.get("image_id"), "sha256": item.get("sha256")}
+        for item in entries
+    ])
+    if (
+        hashlib.sha256(manifest_bytes).hexdigest() != str(source_dataset["manifest_hash"]).lower()
+        or content_hash != str(manifest.get("content_hash") or "").lower()
+        or content_hash != compute_manifest_hash(source_images)
+        or int(manifest.get("image_count") or 0) != 27
+    ):
+        raise AIDomainError("El manifest de v1 no corresponde al snapshot de 27 imágenes verificado.")
+    entry_by_id = {int(item["image_id"]): item for item in entries}
+    if len(entry_by_id) != 27 or set(entry_by_id) != source_ids:
+        raise AIDomainError("El manifest y las 27 imágenes enlazadas a v1 difieren.")
+    for row in source_images:
+        item = entry_by_id[int(row["id"])]
+        materialized = resolve_under_root(root, ensure_safe_relative_path(item["path"]))
+        if (
+            item.get("category") != "NORMAL"
+            or not materialized.is_file()
+            or sha256_file(materialized) != normalize_sha256(str(row["sha256"]))
+        ):
+            raise AIDomainError("El manifest v1 contiene una entrada no normal o un archivo materializado inválido.")
+
+    cur.execute(
+        """SELECT image_sha256 FROM ai_validation_cases
+           WHERE garment_model_id=%s""",
+        (garment_id,),
+    )
+    validation_hashes = {normalize_sha256(str(row["image_sha256"])) for row in cur.fetchall()}
+    cur.execute(
+        """SELECT image_sha256 FROM ai_final_test_cases
+           WHERE garment_model_id=%s""",
+        (garment_id,),
+    )
+    final_hashes = {normalize_sha256(str(row["image_sha256"])) for row in cur.fetchall()}
+    if source_hashes & validation_hashes:
+        raise AIDomainError("Training v1 se intersecta por hash con VALIDATION; preparación detenida.")
+    if source_hashes & final_hashes:
+        raise AIDomainError("Training v1 se intersecta por hash con FINAL_TEST; preparación detenida.")
+    if validation_hashes & final_hashes:
+        raise AIDomainError("VALIDATION y FINAL_TEST tienen hashes compartidos; preparación detenida.")
+
+    cur.execute(
+        """SELECT id,threshold_fixed,preprocessing_profile,status
+           FROM ai_final_test_sessions WHERE ai_model_id=%s ORDER BY id DESC LIMIT 1""",
+        (parent_id,),
+    )
+    final_session = cur.fetchone()
+    if (
+        not final_session
+        or final_session.get("status") != "EVALUADA"
+        or float(final_session.get("threshold_fixed") or 0) != 47.32
+        or str(final_session.get("preprocessing_profile") or "").upper() != "FULL_ROI"
+    ):
+        raise AIDomainError("La auditoría FINAL_TEST v1 no tiene la cohorte esperada con threshold 47.32 y FULL_ROI.")
+    cur.execute(
+        """SELECT category,COUNT(*) AS total FROM ai_final_test_cases
+           WHERE final_test_session_id=%s GROUP BY category""",
+        (int(final_session["id"]),),
+    )
+    final_counts = {str(row["category"]).upper(): int(row["total"]) for row in cur.fetchall()}
+    if final_counts != {"NORMAL": 10, "MANCHA": 10}:
+        raise AIDomainError("FINAL_TEST debe conservar sus 10 BUENAS y 10 MANCHAS antes de preparar v2.")
+
+    cur.execute(
+        """SELECT ti.id FROM ai_training_images ti
+           JOIN ai_capture_sessions cs ON cs.id=ti.capture_session_id
+           WHERE ti.garment_model_id=%s AND ti.status='ACEPTADA'
+             AND cs.status='COMPLETADA'""",
+        (garment_id,),
+    )
+    completed_ids = {int(row["id"]) for row in cur.fetchall()}
+    if completed_ids != source_ids:
+        raise AIDomainError("Hay capturas aceptadas adicionales fuera del snapshot TRAINING v1 de 27 imágenes.")
+    cur.execute(
+        "SELECT id FROM ai_capture_sessions WHERE garment_model_id=%s AND status='ABIERTA' LIMIT 1",
+        (garment_id,),
+    )
+    if cur.fetchone():
+        raise AIDomainError("Cierre o cancele la sesión de captura abierta antes de preparar v2.")
+    cur.execute(
+        """SELECT j.id FROM ai_jobs j JOIN garment_ai_models m ON m.id=j.ai_model_id
+           WHERE m.garment_model_id=%s AND j.kind='TRAINING'
+             AND j.status IN ('PENDIENTE','EN_CURSO') LIMIT 1""",
+        (garment_id,),
+    )
+    if cur.fetchone():
+        raise AIDomainError("Existe un job activo; no se puede preparar v2.")
+
+    cur.execute(
+        """SELECT id,version,status,active FROM garment_ai_models
+           WHERE garment_model_id=%s ORDER BY id FOR UPDATE""",
+        (garment_id,),
+    )
+    versions = [dict(row) for row in cur.fetchall()]
+    if len(versions) != 1 or next_version_label(versions) != "v2":
+        raise AIDomainError("La auditoría no confirma que v2 sea la siguiente versión única disponible.")
+
+    checkpoint = resolve_under_root(root, ensure_safe_relative_path(parent["checkpoint_path"]))
+    if not checkpoint.is_file() or sha256_file(checkpoint) != str(parent["checkpoint_hash"]).lower():
+        raise AIDomainError("Checkpoint v1 ausente o su SHA-256 no coincide; v2 no se creó.")
+
+    dataset = create_ai_dataset(cur, garment_id, actor_id)
+    dataset_id = int(dataset["id"])
+    dataset_rel = f"garment_{garment_id}/datasets/dataset_{dataset_id}"
+    cur.execute(
+        """INSERT INTO garment_ai_models (
+             garment_model_id,version,model_type,dataset_name,dataset_path,
+             checkpoint_path,status,normal_images_count,notes,created_by,active,
+             parent_ai_model_id,source_dataset_id,normal_augmentation_min_new_images,dataset_id
+           ) VALUES (%s,'v2','PatchCore',%s,%s,NULL,'PREPARACION',27,%s,%s,0,%s,%s,%s,%s)""",
+        (
+            garment_id,
+            f"BLUSA-762 v2 · ampliación exclusiva del patrón NORMAL",
+            dataset_rel,
+            "Preparación NORMAL desde v1: hereda 27 imágenes; aún no entrenada.",
+            actor_id,
+            parent_id,
+            int(source_dataset["id"]),
+            minimum,
+            dataset_id,
+        ),
+    )
+    new_ai_model_id = int(cur.lastrowid)
+    added = add_images_to_dataset(cur, dataset_id, sorted(source_ids))
+    if added != 27:
+        raise AIDomainError("No se heredaron exactamente las 27 imágenes normales de v1.")
+    record_ai_event(
+        cur,
+        "VERSION_PREPARED",
+        actor_id=actor_id,
+        ai_model_id=new_ai_model_id,
+        dataset_id=dataset_id,
+        payload={
+            "version": "v2",
+            "parent_ai_model_id": parent_id,
+            "source_dataset_id": int(source_dataset["id"]),
+            "source_manifest_hash": source_dataset["manifest_hash"],
+            "inherited_good_images": 27,
+            "minimum_new_good_images": minimum,
+            "recommended_new_good_images": 40,
+            "validation_hashes_excluded": len(validation_hashes),
+            "final_test_hashes_excluded": len(final_hashes),
+            "status": AI_MODEL_STATUS_PREPARACION,
+            "active": 0,
+            "training_started": False,
+        },
+    )
+    return {
+        "ai_model_id": new_ai_model_id,
+        "garment_model_id": garment_id,
+        "version": "v2",
+        "status": AI_MODEL_STATUS_PREPARACION,
+        "active": 0,
+        "parent_ai_model_id": parent_id,
+        "source_dataset_id": int(source_dataset["id"]),
+        "dataset_id": dataset_id,
+        "inherited_good_images": added,
+        "new_good_images": 0,
+        "new_good_images_completed": 0,
+        "total_available": added,
+        "minimum_new_good_images": minimum,
+        "recommended_new_good_images": 40,
+        "training_started": False,
+        "checkpoint_created": False,
+    }
+
+
+def validate_normal_v2_capture_confirmation(*, version, decision, human_category):
+    """Enforce an explicit human BUENA confirmation on v2 accepts."""
+    if str(version or "").lower() != "v2":
+        return
+    category = str(human_category or "").strip().upper()
+    action = str(decision or "").strip().lower()
+    if category in ("MANCHA", "DEFECTUOSA", "AGUJERO"):
+        raise AIDomainError("MANCHA/DEFECTUOSA no se admite en training v2; solo prendas BUENAS.")
+    if action == "accept" and category != "BUENA":
+        raise AIDomainError("Confirme explícitamente BUENA antes de aceptar una captura de training v2.")
 
 
 def prepare_normal_augmentation_version(
@@ -2934,6 +3286,7 @@ def normal_augmentation_summary(cur, ai_model_id: int) -> dict | None:
         "total_available": inherited + new_images,
         "dataset_linked_images": linked_total,
         "minimum_new_good_images": int(model["normal_augmentation_min_new_images"] or 20),
+        "recommended_new_good_images": 40,
         "can_train": new_completed >= int(model["normal_augmentation_min_new_images"] or 20),
     }
 
@@ -3890,6 +4243,7 @@ def close_ai_dataset(
     actor_id: int | None,
     *,
     artifacts_root: Path | None = None,
+    manifest_images: list | None = None,
 ) -> dict:
     """Cierra un dataset: congela relación, cuenta y guarda manifest."""
     cur.execute(
@@ -3935,37 +4289,45 @@ def close_ai_dataset(
         dataset["garment_model_id"],
         dataset_id,
     )
+    dataset_path = str(Path(manifest_path).parent.as_posix())
 
+    database_manifest_hash = manifest_hash
     try:
         root = Path(artifacts_root) if artifacts_root else get_ai_artifacts_root()
         target = resolve_under_root(root, manifest_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(
-                {
-                    "dataset_id": dataset_id,
-                    "garment_model_id": dataset["garment_model_id"],
-                    "version": dataset["version"],
-                    "image_count": len(rows),
-                    "manifest_hash": manifest_hash,
-                    "images": [
-                        {
-                            "image_id": int(row["id"]),
-                            "sha256": str(row["sha256"]).lower(),
-                        }
-                        for row in sorted(
-                            rows,
-                            key=lambda item: int(item["id"]),
-                        )
-                    ],
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-    except OSError:
-        manifest_path = None
+        manifest_data = {
+            "dataset_id": dataset_id,
+            "garment_model_id": dataset["garment_model_id"],
+            "version": dataset["version"],
+            "image_count": len(rows),
+            "manifest_hash": manifest_hash,
+            "images": manifest_images if manifest_images is not None else [
+                {"image_id": int(row["id"]), "sha256": str(row["sha256"]).lower()}
+                for row in sorted(rows, key=lambda item: int(item["id"]))
+            ],
+        }
+        if manifest_images is not None:
+            # En los datasets formales nuevos manifest_hash en BD representa
+            # el SHA-256 byte-a-byte; content_hash conserva el snapshot lógico.
+            manifest_data["content_hash"] = manifest_hash
+            encoded = json.dumps(
+                manifest_data, ensure_ascii=False, sort_keys=True, indent=2
+            ).encode("utf-8")
+            database_manifest_hash = hashlib.sha256(encoded).hexdigest()
+            target.write_bytes(encoded)
+        else:
+            target.write_text(
+                json.dumps(manifest_data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            database_manifest_hash = manifest_hash
+    except OSError as error:
+        # Jamás cerrar un dataset sin su manifiesto durable: el caller
+        # mantiene la transacción y revertirá el cierre/el job.
+        raise AIDomainError(
+            "No se pudo escribir el manifest del dataset; no se cerró."
+        ) from error
 
     cur.execute(
         """
@@ -3973,12 +4335,13 @@ def close_ai_dataset(
         SET
             status = 'CERRADO',
             image_count = %s,
+            dataset_path = %s,
             manifest_path = %s,
             manifest_hash = %s,
             closed_at = NOW()
         WHERE id = %s
         """,
-        (len(rows), manifest_path, manifest_hash, dataset_id),
+        (len(rows), dataset_path, manifest_path, database_manifest_hash, dataset_id),
     )
 
     return {
@@ -3987,8 +4350,9 @@ def close_ai_dataset(
         "version": dataset["version"],
         "status": DATASET_STATUS_CERRADO,
         "image_count": len(rows),
+        "dataset_path": dataset_path,
         "manifest_path": manifest_path,
-        "manifest_hash": manifest_hash,
+        "manifest_hash": database_manifest_hash,
     }
 
 

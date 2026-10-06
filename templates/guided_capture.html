@@ -457,14 +457,15 @@
     </p>
     {% if ai_capture and ai_capture.normal_augmentation %}
     <div class="guide-info" style="display:block">
-      <strong>v3 · preparación de nuevo entrenamiento</strong><br>
-      Captura exclusiva de prendas BUENAS para el patrón NORMAL. No se aceptan
-      MANCHAS ni AGUJEROS en training.<br>
+      <strong>{{ ai_capture.normal_augmentation.version }} · ampliación del patrón NORMAL</strong><br>
+      Capture únicamente prendas BUENAS. No se aceptan MANCHAS ni AGUJEROS en training.<br>
       <span id="augInherited">{{ ai_capture.normal_augmentation.inherited_good_images }}</span> imágenes normales heredadas +
       <span id="augNew">{{ ai_capture.normal_augmentation.new_good_images }}</span> nuevas =
-      <span id="augTotal">{{ ai_capture.normal_augmentation.total_available }}</span> disponibles para v3.
-      Capture variaciones normales de posición, inclinación ligera, desplazamiento,
-      arrugas naturales y orientaciones admitidas por el puesto.
+      <span id="augTotal">{{ ai_capture.normal_augmentation.total_available }}</span> disponibles para {{ ai_capture.normal_augmentation.version }}.<br>
+      Mínimo antes de entrenar: <strong>{{ ai_capture.normal_augmentation.minimum_new_good_images }} capturas nuevas</strong> · objetivo recomendado: <strong>{{ ai_capture.normal_augmentation.recommended_new_good_images }}</strong>.
+      El mínimo cuenta solo capturas nuevas completadas, nunca las heredadas.<br>
+      Variaciones normales recomendadas: desplazamiento leve izquierda/derecha y arriba/abajo, inclinación suave, tensión de tela ligeramente distinta, arrugas naturales y pequeñas diferencias de colocación de producción.<br>
+      No use giros de 90°/180°, prendas de cabeza, escalas extremas ni posiciones que no ocurren en producción.
     </div>
     {% endif %}
 
@@ -509,13 +510,20 @@
       <img id="capturePreview" alt="Vista previa de la última captura">
       <span class="guide-review-status" id="capturePreviewStatus"></span>
       <ul class="guide-preview-warnings" id="captureWarnings"></ul>
+      {% if ai_capture and ai_capture.normal_augmentation and ai_capture.normal_augmentation.version == 'v2' %}
+      <label class="guide-hint" style="display:block">
+        <input id="v2GoodConfirm" type="checkbox">
+        Confirmo que esta prenda está BUENA y sin mancha; aceptarla la incorpora únicamente al patrón normal v2.
+      </label>
+      {% endif %}
       <div class="guide-review-actions">
         <button
           class="guide-button accept"
           type="button"
           data-review="accept"
+          {% if ai_capture and ai_capture.normal_augmentation and ai_capture.normal_augmentation.version == 'v2' %}disabled{% endif %}
         >
-          ACEPTAR
+        {% if ai_capture and ai_capture.normal_augmentation and ai_capture.normal_augmentation.version == 'v2' %}ACEPTAR BUENA{% else %}ACEPTAR{% endif %}
         </button>
         <button
           class="guide-button repeat"
@@ -661,6 +669,7 @@
   const elCaptureBtn = document.getElementById("captureBtn");
   const elCaptureHint = document.getElementById("captureHint");
   const elReview = document.getElementById("guideReview");
+  const elV2GoodConfirm = document.getElementById("v2GoodConfirm");
   const elPreview = document.getElementById("capturePreview");
   const elPreviewStatus = document.getElementById("capturePreviewStatus");
   const elFinishBtn = document.getElementById("finishBtn");
@@ -1106,6 +1115,11 @@
       } else {
         pendingPreview = data;
         reviewedPreview = null;
+        if (elV2GoodConfirm) {
+          elV2GoodConfirm.checked = false;
+          const acceptButton = elReview.querySelector('[data-review="accept"]');
+          if (acceptButton) acceptButton.disabled = true;
+        }
         if (data.guide) state.guide = data.guide;
       }
     } catch (error) {
@@ -1118,6 +1132,10 @@
   }
 
   async function reviewCapture(decision) {
+    if (decision === "accept" && elV2GoodConfirm && !elV2GoodConfirm.checked) {
+      showError("Confirme que la prenda está BUENA y sin mancha para incorporarla al training normal de v2.");
+      return;
+    }
     if (busy) return;
 
     // La revisión normal vive sobre la vista previa CONGELADA
@@ -1149,7 +1167,8 @@
         garment_model_id: config.modelId,
         pending_token: pendingToken,
         image_id: legacyImageId,
-        decision: decision
+        decision: decision,
+        human_category: elV2GoodConfirm && decision === "accept" ? "BUENA" : null
       });
 
       if (!data.ok) {
@@ -1168,6 +1187,11 @@
             "descarte. Vuelva a la cámara y capture cuando tenga " +
             "una imagen nueva."
           );
+          if (elV2GoodConfirm) {
+            elV2GoodConfirm.checked = false;
+            const acceptButton = elReview.querySelector('[data-review="accept"]');
+            if (acceptButton) acceptButton.disabled = true;
+          }
         } else {
           reviewedPreview = {
             ...pendingPreview,
@@ -1182,6 +1206,11 @@
           );
         }
         pendingPreview = null;
+        if (elV2GoodConfirm) {
+          elV2GoodConfirm.checked = false;
+          const acceptButton = elReview.querySelector('[data-review="accept"]');
+          if (acceptButton) acceptButton.disabled = true;
+        }
       }
     } catch (error) {
       showError("No se pudo guardar la revisión. Intente de nuevo.");
@@ -1206,6 +1235,12 @@
       reviewCapture(button.getAttribute("data-review"));
     });
   });
+  if (elV2GoodConfirm) {
+    const acceptButton = elReview.querySelector('[data-review="accept"]');
+    elV2GoodConfirm.addEventListener("change", () => {
+      if (acceptButton) acceptButton.disabled = !elV2GoodConfirm.checked;
+    });
+  }
 
   document.querySelectorAll("[data-single-submit='true']").forEach((form) => {
     form.addEventListener("submit", () => {

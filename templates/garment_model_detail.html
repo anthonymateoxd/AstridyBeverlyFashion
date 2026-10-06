@@ -1292,6 +1292,36 @@
     </div>
     {% endif %}
 
+    {% if normal_v2_can_prepare %}
+    <div class="ai-capture-notice" id="normalV2Prepare">
+      <strong>BLUSA-762 v2 · ampliación del patrón NORMAL</strong><br>
+      Heredará exclusivamente las <strong>27 imágenes BUENAS</strong> del training original v1.
+      VALIDATION y FINAL_TEST quedan excluidos por hash.<br>
+      Imágenes normales heredadas: 27 · nuevas: 0 · disponibles: 27.<br>
+      Capture mínimo: <strong>30 imágenes BUENAS nuevas</strong> · objetivo recomendado: <strong>40</strong>.
+      La preparación crea v2 INACTIVA y no inicia entrenamiento.
+      <form method="post" action="{{ url_for('garment_ai_prepare_v2_normal', model_id=model.id) }}">
+        <button class="detail-button primary" type="submit">Preparar v2 · ampliación normal</button>
+      </form>
+    </div>
+    {% endif %}
+
+    {% if normal_v2 %}
+    <div class="ai-capture-notice" id="normalV2Summary">
+      <strong>v2 · ampliación del patrón NORMAL · PREPARACION · INACTIVA</strong><br>
+      Imágenes normales heredadas: {{ normal_v2.inherited_good_images }} ·
+      nuevas: {{ normal_v2.new_good_images }} · disponibles: {{ normal_v2.total_available }}.<br>
+      Mínimo NUEVO antes de entrenar: {{ normal_v2.minimum_new_good_images }} ·
+      objetivo recomendado: {{ normal_v2.recommended_new_good_images }}.<br>
+      Fuente training: v1 · dataset {{ normal_v2.source_dataset_id }} ·
+      dataset v2 {{ normal_v2.dataset_id }}. VALIDATION/FINAL_TEST no cuentan.
+      {% if normal_v2.status == 'PREPARACION' %}
+      <p>Capture únicamente prendas BUENAS. No se permite incorporar MANCHAS ni AGUJEROS.</p>
+      <a class="detail-button success" href="{{ url_for('guided_capture_page', model_id=model.id) }}">Capturar BUENAS nuevas para v2</a>
+      {% endif %}
+    </div>
+    {% endif %}
+
     {% if normal_augmentation %}
     <div class="ai-capture-notice" id="normalAugmentationSummary">
       <strong>v3 · preparación de nuevo entrenamiento</strong><br>

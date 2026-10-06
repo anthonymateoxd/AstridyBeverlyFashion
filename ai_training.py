@@ -16,9 +16,11 @@ La inferencia productiva (PATCHCORE_CKPT) no se toca nunca aquí.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import platform
 import re
+import shutil
 import socket
 import time
 from datetime import datetime
@@ -53,6 +55,7 @@ from ai_domain import (
     get_ai_capture_config,
     is_technically_invalidated,
     next_version_label,
+    normal_augmentation_summary,
     normalize_sha256,
     record_ai_event,
     resolve_under_root,
@@ -334,6 +337,85 @@ def _accepted_rows_from_completed_sessions(cur, garment_model_id: int) -> list:
     return [dict(row) for row in cur.fetchall()]
 
 
+def verify_normal_expansion_capture_isolation(cur, *, ai_model_id, garment_model_id):
+    """Preflight the exact inherited-v1 + new-target set before materializing.
+
+    All checks run before a new closed training dataset or training job is
+    created. Development validation and FINAL_TEST hashes are excluded.
+    """
+    cur.execute(
+        """SELECT source_dataset_id,parent_ai_model_id,version,status
+           FROM garment_ai_models WHERE id=%s FOR UPDATE""",
+        (int(ai_model_id),),
+    )
+    model = cur.fetchone()
+    if (
+        not model
+        or str(model.get("version") or "").lower() != "v2"
+        or str(model.get("status") or "").upper() != AI_MODEL_STATUS_PREPARACION
+        or int(model.get("parent_ai_model_id") or 0) != 1649
+        or int(model.get("source_dataset_id") or 0) <= 0
+    ):
+        raise AIDomainError("La ampliación normal v2 no conserva el parent/source esperado de v1.")
+    source_dataset_id = int(model["source_dataset_id"])
+    cur.execute(
+        """SELECT ti.id,ti.sha256,ti.status,ti.garment_model_id
+           FROM ai_dataset_images di JOIN ai_training_images ti ON ti.id=di.image_id
+           WHERE di.dataset_id=%s ORDER BY ti.id""",
+        (source_dataset_id,),
+    )
+    source_rows = [dict(row) for row in cur.fetchall()]
+    source_ids = {int(row["id"]) for row in source_rows}
+    if len(source_rows) != 27 or any(
+        row["status"] != "ACEPTADA" or int(row["garment_model_id"]) != int(garment_model_id)
+        for row in source_rows
+    ):
+        raise AIDomainError("El training heredado v1 debe contener exactamente 27 imágenes aceptadas.")
+    cur.execute(
+        """SELECT ti.id,ti.sha256,ti.status,ti.garment_model_id
+           FROM ai_training_images ti JOIN ai_capture_sessions cs ON cs.id=ti.capture_session_id
+           WHERE cs.target_ai_model_id=%s AND cs.status='COMPLETADA'
+             AND ti.status='ACEPTADA' ORDER BY ti.id""",
+        (int(ai_model_id),),
+    )
+    new_rows = [dict(row) for row in cur.fetchall()]
+    new_ids = {int(row["id"]) for row in new_rows}
+    if len(new_rows) != len(new_ids) or any(
+        int(row["garment_model_id"]) != int(garment_model_id) for row in new_rows
+    ):
+        raise AIDomainError("Las nuevas capturas v2 no son únicas o pertenecen a otra prenda.")
+    completed_ids = {int(row["id"]) for row in _accepted_rows_from_completed_sessions(cur, garment_model_id)}
+    if completed_ids != source_ids | new_ids:
+        raise AIDomainError(
+            "Se detectaron capturas ajenas a TRAINING v1 o a la cohorte nueva de v2; se bloquea entrenamiento."
+        )
+    hashes = [normalize_sha256(str(row["sha256"])) for row in source_rows + new_rows]
+    if len(hashes) != len(set(hashes)):
+        raise AIDomainError("TRAINING v2 contiene imágenes duplicadas por hash.")
+    cur.execute(
+        "SELECT image_sha256 FROM ai_validation_cases WHERE garment_model_id=%s",
+        (int(garment_model_id),),
+    )
+    validation_hashes = {normalize_sha256(str(row["image_sha256"])) for row in cur.fetchall()}
+    cur.execute(
+        "SELECT image_sha256 FROM ai_final_test_cases WHERE garment_model_id=%s",
+        (int(garment_model_id),),
+    )
+    final_hashes = {normalize_sha256(str(row["image_sha256"])) for row in cur.fetchall()}
+    training_hashes = set(hashes)
+    if training_hashes & validation_hashes:
+        raise AIDomainError("TRAINING v2 se intersecta con VALIDATION; se bloquea entrenamiento.")
+    if training_hashes & final_hashes:
+        raise AIDomainError("TRAINING v2 se intersecta con FINAL_TEST; se bloquea entrenamiento.")
+    return {
+        "inherited_ids": source_ids,
+        "new_ids": new_ids,
+        "training_hashes": training_hashes,
+        "validation_hashes": validation_hashes,
+        "final_test_hashes": final_hashes,
+    }
+
+
 def materialize_training_dataset(
     cur,
     garment_model_id: int,
@@ -352,6 +434,25 @@ def materialize_training_dataset(
     _lock_garment(cur, garment_model_id)
 
     rows = _accepted_rows_from_completed_sessions(cur, garment_model_id)
+    minimum = int(get_ai_capture_config()["min_images"])
+    if len(rows) < minimum:
+        raise AIDomainError(
+            f"Hay {len(rows)} imágenes normales aceptadas y se requieren al menos {minimum}."
+        )
+    root = Path(artifacts_root) if artifacts_root else get_ai_artifacts_root()
+    # Validar originales antes de crear/modificar registros: la materialización
+    # nunca mueve ni sobrescribe las capturas.
+    for row in rows:
+        try:
+            source = resolve_under_root(
+                root, ensure_safe_relative_path(row["image_path"])
+            )
+        except AIDomainError as error:
+            raise AIDomainError(f"La captura {row['id']} tiene una ruta no segura.") from error
+        if not source.is_file():
+            raise AIDomainError(f"Falta el archivo de la captura aceptada {row['id']}.")
+        if sha256_file(source) != normalize_sha256(str(row["sha256"])):
+            raise AIDomainError(f"El hash de la captura aceptada {row['id']} no coincide.")
     desired_hash = compute_manifest_hash(rows)
 
     cur.execute(
@@ -369,13 +470,21 @@ def materialize_training_dataset(
     created_event = False
 
     if latest is not None and latest["status"] == DATASET_STATUS_CERRADO:
-        same_snapshot = (
-            str(latest["manifest_hash"] or "").lower() == desired_hash
-            and int(latest["image_count"] or 0) == len(rows)
-        )
+        same_snapshot = int(latest["image_count"] or 0) == len(rows)
+        if same_snapshot:
+            try:
+                old_manifest = resolve_under_root(
+                    root, ensure_safe_relative_path(latest["manifest_path"])
+                )
+                old_data = json.loads(old_manifest.read_text(encoding="utf-8"))
+                same_snapshot = str(
+                    old_data.get("content_hash", old_data.get("manifest_hash", ""))
+                ).lower() == desired_hash
+            except (AIDomainError, OSError, ValueError, TypeError):
+                same_snapshot = str(latest["manifest_hash"] or "").lower() == desired_hash
 
         if same_snapshot:
-            return {
+            reused = {
                 "id": int(latest["id"]),
                 "garment_model_id": int(garment_model_id),
                 "version": latest["version"],
@@ -385,7 +494,34 @@ def materialize_training_dataset(
                 "manifest_hash": latest["manifest_hash"],
                 "created": False,
             }
-
+            check = verify_training_dataset(
+                cur, dataset_id=int(latest["id"]), artifacts_root=root,
+                min_images=minimum,
+            )
+            manifest_is_materialized = False
+            if check["ok"]:
+                try:
+                    manifest_file = resolve_under_root(
+                        root, ensure_safe_relative_path(latest["manifest_path"])
+                    )
+                    manifest_obj = json.loads(manifest_file.read_text(encoding="utf-8"))
+                    manifest_is_materialized = all(
+                        item.get("path") and item.get("size") is not None
+                        and item.get("category") == "NORMAL"
+                        for item in manifest_obj.get("images", [])
+                    ) and len(manifest_obj.get("images", [])) == len(rows)
+                    manifest_is_materialized = (
+                        manifest_is_materialized
+                        and str(manifest_obj.get("content_hash") or "").lower() == desired_hash
+                        and hashlib.sha256(manifest_file.read_bytes()).hexdigest()
+                        == str(latest["manifest_hash"] or "").lower()
+                    )
+                except (OSError, ValueError, TypeError):
+                    manifest_is_materialized = False
+            if check["ok"] and manifest_is_materialized:
+                return reused
+            # Los datasets CERRADOS antiguos no se mutan. Se crea una nueva
+            # versión autocontenida con el mismo snapshot aceptado.
         dataset = create_ai_dataset(cur, garment_model_id, actor_id)
     elif latest is not None and latest["status"] == DATASET_STATUS_ABIERTO:
         dataset = {
@@ -421,11 +557,34 @@ def materialize_training_dataset(
         if added:
             created_event = True
 
+    # Dataset físico autocontenido e inmutable. La ruta de los originales se
+    # conserva en BD; el dataset recibe copias verificadas, nunca movimientos.
+    data_dir = root / f"garment_{int(garment_model_id)}" / "datasets" / f"dataset_{dataset_id}" / "images"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for row in rows:
+        source = resolve_under_root(root, ensure_safe_relative_path(row["image_path"]))
+        suffix = source.suffix.lower() or ".img"
+        relative = (
+            f"garment_{int(garment_model_id)}/datasets/dataset_{dataset_id}"
+            f"/images/{int(row['id'])}{suffix}"
+        )
+        target = resolve_under_root(root, relative)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            if sha256_file(target) != normalize_sha256(str(row["sha256"])):
+                raise AIDomainError(f"El archivo materializado {row['id']} ya existe con contenido distinto.")
+        else:
+            shutil.copy2(source, target)
+        entries.append({
+            "image_id": int(row["id"]), "path": relative,
+            "sha256": normalize_sha256(str(row["sha256"])),
+            "size": int(target.stat().st_size), "category": "NORMAL",
+            "capture_session_id": int(row["capture_session_id"]),
+        })
     closed = close_ai_dataset(
-        cur,
-        dataset_id,
-        actor_id,
-        artifacts_root=artifacts_root,
+        cur, dataset_id, actor_id, artifacts_root=root,
+        manifest_images=entries,
     )
     closed["created"] = bool(created_event)
 
@@ -639,15 +798,6 @@ def verify_training_dataset(
                             "del dataset."
                         )
 
-                    if (
-                        str(manifest.get("manifest_hash") or "").lower()
-                        != str(dataset["manifest_hash"] or "").lower()
-                    ):
-                        errors.append(
-                            "El hash del manifest no coincide con el "
-                            "registrado en base de datos."
-                        )
-
                     recomputed = compute_manifest_hash(
                         [
                             {
@@ -658,11 +808,47 @@ def verify_training_dataset(
                         ]
                     )
 
-                    if recomputed != str(dataset["manifest_hash"] or ""):
-                        errors.append(
-                            "El contenido del manifest no reproduce su "
-                            "hash declarado."
-                        )
+                    if manifest.get("content_hash") is not None:
+                        actual_manifest_hash = hashlib.sha256(
+                            manifest_abs.read_bytes()
+                        ).hexdigest()
+                        if actual_manifest_hash != str(dataset["manifest_hash"] or "").lower():
+                            errors.append("El SHA-256 byte-a-byte del manifest no coincide con BD.")
+                        if recomputed != str(manifest.get("content_hash") or "").lower():
+                            errors.append("El contenido del manifest no reproduce el snapshot registrado.")
+                    else:
+                        if str(manifest.get("manifest_hash") or "").lower() != str(dataset["manifest_hash"] or "").lower():
+                            errors.append("El hash del manifest no coincide con el registrado en base de datos.")
+                        if recomputed != str(dataset["manifest_hash"] or ""):
+                            errors.append("El contenido del manifest no reproduce su hash declarado.")
+                    if manifest.get("images"):
+                        by_id = {int(item.get("image_id")): item for item in manifest["images"]}
+                        if len(by_id) != len(manifest["images"]) or len(by_id) != len(links):
+                            errors.append("El manifest contiene entradas duplicadas o cantidad incorrecta.")
+                        for row in links:
+                            item = by_id.get(int(row["image_id"]))
+                            if not item:
+                                errors.append(f"Falta la imagen {row['image_id']} en el manifest.")
+                                continue
+                            try:
+                                materialized = resolve_under_root(root, ensure_safe_relative_path(item["path"]))
+                                if not materialized.is_file():
+                                    errors.append(f"Falta el archivo materializado {row['image_id']}.")
+                                    continue
+                                if sha256_file(materialized) != normalize_sha256(str(item["sha256"])):
+                                    errors.append(f"El hash materializado {row['image_id']} no coincide.")
+                                if int(item.get("size", -1)) != materialized.stat().st_size:
+                                    errors.append(f"El tamaño materializado {row['image_id']} no coincide.")
+                                if item.get("category") != "NORMAL":
+                                    errors.append(f"Categoría inválida para imagen {row['image_id']}.")
+                            except (AIDomainError, KeyError, TypeError, ValueError):
+                                errors.append(f"La ruta materializada de {row['image_id']} no es segura.")
+                        declared_sha = manifest.get("manifest_sha256")
+                        hash_payload = dict(manifest)
+                        hash_payload.pop("manifest_sha256", None)
+                        canonical = json.dumps(hash_payload, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
+                        if declared_sha and hashlib.sha256(canonical).hexdigest() != declared_sha:
+                            errors.append("El SHA-256 del manifest no coincide.")
 
     if ai_model_id is not None and details.get("ai_model"):
         model = details["ai_model"]
@@ -934,8 +1120,14 @@ def request_training_job(
         new_good_count = int(cur.fetchone()["total"] or 0)
         if new_good_count < required_new:
             raise AIDomainError(
-                f"La preparación v3 requiere al menos {required_new} imágenes BUENAS nuevas "
-                f"(actualmente {new_good_count}); las 52 heredadas no satisfacen este requisito."
+                f"La preparación {model.get('version')} requiere al menos {required_new} imágenes BUENAS nuevas "
+                f"(actualmente {new_good_count}); las imágenes heredadas no satisfacen este requisito."
+            )
+        if str(model.get("version") or "").lower() == "v2":
+            verify_normal_expansion_capture_isolation(
+                cur,
+                ai_model_id=ai_model_id,
+                garment_model_id=garment_model_id,
             )
 
     dataset = materialize_training_dataset(
@@ -1391,53 +1583,42 @@ def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
         and latest_model.get("parent_ai_model_id") is not None
         and latest_model.get("status") == AI_MODEL_STATUS_PREPARACION
     ):
-        required_new = int(
-            latest_model.get("normal_augmentation_min_new_images") or 20
-        )
-        cur.execute(
-            """SELECT COUNT(DISTINCT ti.id) AS total
-               FROM ai_training_images ti
-               JOIN ai_capture_sessions cs ON cs.id = ti.capture_session_id
-               WHERE cs.target_ai_model_id = %s AND cs.status = 'COMPLETADA'
-                 AND ti.status = 'ACEPTADA'""",
-            (int(latest_model["id"]),),
-        )
-        new_count = int(cur.fetchone()["total"] or 0)
-        cur.execute(
-            """SELECT COUNT(DISTINCT ti.id) AS total
-               FROM ai_training_images ti
-               JOIN ai_capture_sessions cs ON cs.id = ti.capture_session_id
-               WHERE cs.target_ai_model_id = %s AND cs.status = 'COMPLETADA'
-                 AND ti.status = 'ACEPTADA'""",
-            (int(latest_model["id"]),),
-        )
-        completed_new_count = int(cur.fetchone()["total"] or 0)
+        summary = normal_augmentation_summary(cur, int(latest_model["id"]))
+        if summary is None:
+            payload["blocked_reason"] = "No se pudo verificar el snapshot NORMAL heredado."
+            return payload
+        required_new = int(summary["minimum_new_good_images"])
+        new_count = int(summary["new_good_images"])
+        completed_new_count = int(summary["new_good_images_completed"])
+        inherited_count = int(summary["inherited_good_images"])
+        version_name = str(latest_model["version"])
         payload.update({
-            "version": latest_model["version"],
+            "version": version_name,
             "model_id": int(latest_model["id"]),
             "model_status": latest_model["status"],
-            "inherited_normal_count": 52,
+            "inherited_normal_count": inherited_count,
             "new_normal_count": new_count,
             "completed_new_normal_count": completed_new_count,
-            "total_normal_available": 52 + new_count,
+            "total_normal_available": inherited_count + new_count,
             "minimum_new_normal_count": required_new,
-            "image_count": 52 + new_count,
+            "recommended_new_normal_count": int(summary["recommended_new_good_images"]),
+            "image_count": inherited_count + new_count,
         })
         if allowed is False:
             payload["blocked_reason"] = "No tiene permisos para entrenar este modelo."
             return payload
         if completed_new_count < required_new:
             payload["blocked_reason"] = (
-                f"Capture y finalice al menos {required_new} imágenes BUENAS nuevas; "
-                f"hay {completed_new_count} finalizadas. Las 52 heredadas no sustituyen las nuevas."
+                f"Capture y finalice al menos {required_new} imágenes BUENAS nuevas para {version_name}; "
+                f"hay {completed_new_count} finalizadas. Las {inherited_count} heredadas no sustituyen las nuevas."
             )
             return payload
         payload.update({
             "ui_status": TRAINING_UI_READY,
-            "ui_label": "LISTO PARA ENTRENAR v3 · SOLO BUENAS",
+            "ui_label": f"LISTO PARA ENTRENAR {version_name} · SOLO BUENAS",
             "can_train": True,
             "blocked_reason": None,
-            "accepted_count": 52 + new_count,
+            "accepted_count": inherited_count + new_count,
         })
         return payload
 
@@ -1647,17 +1828,25 @@ class _JobReporter:
 
 
 def stage_training_images(cur, dataset_id, staging_dir, roi_fractions) -> list:
-    """Genera la representación de entrenamiento (misma que producción)."""
+    """Prepara solo imágenes NORMAL ACEPTADA, preservando las barreras físicas.
+
+    La máscara aporta una representación cuando es fiable, pero no revalida
+    la aceptación de captura: ante un falso negativo geométrico se usa el ROI
+    completo, que es el fallback compartido con la ruta productiva.
+    """
     import cv2
+    import numpy as np
 
     staging = Path(staging_dir)
     staging.mkdir(parents=True, exist_ok=True)
 
     cur.execute(
         """
-        SELECT ti.id, ti.image_path, ti.sha256, ti.garment_model_id
+        SELECT ti.id, ti.image_path, ti.sha256, ti.garment_model_id,
+               ti.status, ti.capture_session_id, cs.status AS session_status
         FROM ai_dataset_images di
         JOIN ai_training_images ti ON ti.id = di.image_id
+        JOIN ai_capture_sessions cs ON cs.id = ti.capture_session_id
         WHERE di.dataset_id = %s
         ORDER BY ti.id ASC
         """,
@@ -1665,51 +1854,195 @@ def stage_training_images(cur, dataset_id, staging_dir, roi_fractions) -> list:
     )
     rows = [dict(row) for row in cur.fetchall()]
 
+    cur.execute(
+        """SELECT id, garment_model_id, status, image_count, dataset_path,
+                  manifest_path, manifest_hash
+           FROM ai_datasets WHERE id = %s""",
+        (int(dataset_id),),
+    )
+    dataset_row = cur.fetchone()
+    if not dataset_row:
+        raise AIDomainError("El dataset de staging no existe.")
+    dataset_row = dict(dataset_row)
+    if dataset_row["status"] != DATASET_STATUS_CERRADO:
+        raise AIDomainError("No se puede preparar un dataset que no está CERRADO.")
+    if int(dataset_row["image_count"] or 0) != len(rows):
+        raise AIDomainError("El dataset no coincide con las imágenes enlazadas.")
+    if not dataset_row.get("dataset_path") or not dataset_row.get("manifest_path"):
+        raise AIDomainError("El dataset no tiene ruta formal y manifest.")
+
+    root = get_ai_artifacts_root()
+    try:
+        manifest_relative = ensure_safe_relative_path(dataset_row["manifest_path"])
+        manifest_abs = resolve_under_root(root, manifest_relative)
+        expected_dataset_prefix = ensure_safe_relative_path(
+            dataset_row["dataset_path"]
+        ).rstrip("/") + "/images/"
+    except AIDomainError as error:
+        raise AIDomainError("La ruta del dataset o manifest no es segura.") from error
+    if not manifest_abs.is_file():
+        raise AIDomainError("No existe el manifest del dataset.")
+    try:
+        manifest_bytes = manifest_abs.read_bytes()
+        manifest_data = json.loads(manifest_bytes.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError) as error:
+        raise AIDomainError("El manifest del dataset no es válido.") from error
+    if hashlib.sha256(manifest_bytes).hexdigest() != str(dataset_row["manifest_hash"] or "").lower():
+        raise AIDomainError("El hash del manifest del dataset no coincide.")
+    if (
+        int(manifest_data.get("dataset_id") or 0) != int(dataset_id)
+        or int(manifest_data.get("garment_model_id") or 0)
+        != int(dataset_row["garment_model_id"])
+        or int(manifest_data.get("image_count") or 0) != len(rows)
+    ):
+        raise AIDomainError("La cabecera del manifest no coincide con el dataset.")
+    manifest_items = manifest_data.get("images")
+    if not isinstance(manifest_items, list) or len(manifest_items) != len(rows):
+        raise AIDomainError("El manifest no contiene exactamente las imágenes del dataset.")
+    manifest_images = {}
+    try:
+        for item in manifest_items:
+            image_id = int(item["image_id"])
+            if image_id in manifest_images:
+                raise AIDomainError("El manifest contiene imágenes duplicadas.")
+            if item.get("category") != "NORMAL":
+                raise AIDomainError("El manifest contiene una categoría distinta de NORMAL.")
+            relative = ensure_safe_relative_path(item["path"])
+            if not relative.startswith(expected_dataset_prefix):
+                raise AIDomainError("Una imagen del manifest queda fuera del dataset.")
+            manifest_images[image_id] = item
+    except AIDomainError:
+        raise
+    except (KeyError, TypeError, ValueError) as error:
+        raise AIDomainError("El manifest del dataset contiene entradas inválidas.") from error
+    row_ids = {int(row["id"]) for row in rows}
+    if len(row_ids) != len(rows) or set(manifest_images) != row_ids:
+        raise AIDomainError("El manifest no corresponde exactamente a las imágenes enlazadas.")
+
+    # Ningún hash presente en el banco de validación puede entrar a TRAINING.
+    cur.execute(
+        """SELECT image_sha256 FROM ai_validation_cases
+           WHERE garment_model_id = %s""",
+        (int(dataset_row["garment_model_id"]),),
+    )
+    validation_hashes = {
+        normalize_sha256(str(item["image_sha256"])) for item in cur.fetchall()
+    }
+    source_hashes = {
+        normalize_sha256(str(row["sha256"])) for row in rows
+    }
+    if source_hashes.intersection(validation_hashes):
+        raise AIDomainError("El dataset de training se intersecta con imágenes de validation.")
+    cur.execute(
+        """SELECT image_sha256 FROM ai_final_test_cases
+           WHERE garment_model_id = %s""",
+        (int(dataset_row["garment_model_id"]),),
+    )
+    final_test_hashes = {
+        normalize_sha256(str(item["image_sha256"])) for item in cur.fetchall()
+    }
+    if source_hashes.intersection(final_test_hashes):
+        raise AIDomainError("El dataset de training se intersecta con imágenes de FINAL_TEST.")
+
     if not rows:
         raise AIDomainError("El dataset no contiene imágenes.")
 
-    root = get_ai_artifacts_root()
     staged = []
 
     for row in rows:
-        relative = ensure_safe_relative_path(row["image_path"])
+        image_id = int(row["id"])
+        manifest_item = manifest_images[image_id]
+        if row["status"] != "ACEPTADA" or row["session_status"] != "COMPLETADA":
+            raise AIDomainError(f"La captura {image_id} no es NORMAL ACEPTADA de sesión completada.")
+        if int(row["garment_model_id"]) != int(dataset_row["garment_model_id"]):
+            raise AIDomainError(f"La captura {image_id} pertenece a otro modelo.")
+        if int(manifest_item.get("capture_session_id") or 0) != int(row["capture_session_id"]):
+            raise AIDomainError(f"La procedencia de la captura {image_id} no coincide con el manifest.")
+        relative = ensure_safe_relative_path(manifest_item["path"])
         source = resolve_under_root(root, relative)
 
         if not source.is_file():
             raise AIDomainError(
                 f"Falta el archivo de la imagen {row['id']} en el dataset."
             )
+        actual_sha = sha256_file(source)
+        expected_sha = normalize_sha256(str(row["sha256"]))
+        if actual_sha != expected_sha or actual_sha != normalize_sha256(str(manifest_item.get("sha256"))):
+            raise AIDomainError(f"El hash de la imagen {image_id} no coincide con su manifest.")
+        try:
+            if int(manifest_item.get("size", -1)) != source.stat().st_size:
+                raise AIDomainError(f"El tamaño de la imagen {image_id} no coincide con su manifest.")
+        except (TypeError, ValueError) as error:
+            raise AIDomainError(f"El tamaño de la imagen {image_id} no es válido.") from error
 
-        frame = cv2.imread(str(source))
+        try:
+            frame = cv2.imread(str(source))
+        except cv2.error as error:
+            raise AIDomainError(
+                f"No se pudo decodificar la imagen {image_id} del dataset."
+            ) from error
 
         if frame is None:
             raise AIDomainError(
                 f"No se pudo leer la imagen {row['id']} del dataset."
             )
-
-        roi_bounds = patchcore_preprocess.roi_bounds_from_fractions(
-            frame,
-            roi_fractions,
-        )
+        if (
+            frame.ndim != 3 or frame.shape[0] < 2 or frame.shape[1] < 2
+            or frame.shape[2] != 3 or frame.dtype != np.uint8
+        ):
+            raise AIDomainError(f"La imagen {image_id} tiene dimensiones o formato inválido.")
 
         try:
-            mask = patchcore_preprocess.create_garment_mask(
-                frame,
-                roi_bounds,
+            roi_bounds = patchcore_preprocess.roi_bounds_from_fractions(
+                frame, roi_fractions,
+            )
+        except (ValueError, IndexError) as error:
+            raise AIDomainError(f"No se pudo obtener un ROI válido para la imagen {image_id}.") from error
+        try:
+            mask = patchcore_preprocess.create_garment_mask(frame, roi_bounds)
+            if mask is None or tuple(mask.shape) != tuple(frame.shape[:2]):
+                raise AIDomainError(f"La máscara de la imagen {image_id} tiene dimensiones inválidas.")
+            roi_mask = mask[roi_bounds[1]:roi_bounds[3], roi_bounds[0]:roi_bounds[2]]
+            coverage = patchcore_preprocess.mask_coverage(roi_mask, cv2_mod=cv2)
+            if coverage < patchcore_preprocess.MIN_MASK_COVERAGE:
+                raise RuntimeError("low_coverage")
+        except AIDomainError:
+            raise
+        except RuntimeError as error:
+            detail = str(error).lower()
+            if "demasiado grande" in detail:
+                reason = "high_coverage"
+            elif "low_coverage" in detail or "demasiado pequeña" in detail:
+                reason = "low_coverage"
+            else:
+                raise AIDomainError(
+                    f"Falló el segmentador en la imagen {image_id} por un error no geométrico."
+                ) from error
+            print(
+                f"[STAGING] segmentation_fallback capture_id={image_id} "
+                f"reason={reason}; using accepted ROI"
+            )
+            # La máscara vacía activa el fallback común documentado por
+            # patchcore_preprocess.build_patchcore_regions: ROI rectangular.
+            mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        except (ValueError, IndexError) as error:
+            raise AIDomainError(f"Máscara inválida para la imagen {image_id}.") from error
+
+        try:
+            patchcore_input = patchcore_preprocess.build_patchcore_input(
+                frame, mask, roi_bounds,
             )
         except Exception as error:
-            raise AIDomainError(
-                f"No se pudo preparar la imagen {row['id']}: "
-                "la prenda no se detectó correctamente."
-            ) from error
-
-        patchcore_input = patchcore_preprocess.build_patchcore_input(
-            frame,
-            mask,
-            roi_bounds,
+            raise AIDomainError(f"No se pudo aplicar preprocessing a la imagen {image_id}.") from error
+        expected_shape = (
+            int(roi_bounds[3] - roi_bounds[1]),
+            int(roi_bounds[2] - roi_bounds[0]),
+            int(frame.shape[2]),
         )
+        if patchcore_input is None or tuple(patchcore_input.shape) != expected_shape:
+            raise AIDomainError(f"El preprocessing de la imagen {image_id} produjo dimensiones inválidas.")
 
-        target = staging / f"frame_{int(row['id'])}.png"
+        target = staging / f"frame_{image_id}.png"
 
         if not cv2.imwrite(str(target), patchcore_input):
             raise AIDomainError(
@@ -1721,10 +2054,27 @@ def stage_training_images(cur, dataset_id, staging_dir, roi_fractions) -> list:
                 "image_id": int(row["id"]),
                 "path": target,
                 "source": source,
+                "capture_id": image_id,
+                "segmentation_fallback": bool(mask is not None and not np.any(mask)),
+                "preprocessing_mode": (
+                    "FULL_ROI"
+                    if mask is not None and not np.any(mask)
+                    else "SEGMENTED"
+                ),
             }
         )
 
     return staged
+
+
+def summarize_preprocessing_profile(staged) -> str:
+    """Resume el preprocesamiento realmente usado por cada imagen de training."""
+    modes = {str(item.get("preprocessing_mode") or "PER_IMAGE") for item in staged}
+    if modes == {"FULL_ROI"}:
+        return "FULL_ROI"
+    if modes == {"SEGMENTED"}:
+        return "SEGMENTED"
+    return "PER_IMAGE"
 
 
 # ============================================================
@@ -2256,6 +2606,11 @@ def execute_training_job(
             cfg,
         )
         reporter.log(f"imagenes_preparadas={len(staged)}")
+        preprocessing_profile = summarize_preprocessing_profile(staged)
+        cfg["validation_preprocessing_profile"] = preprocessing_profile
+        reporter.log(
+            f"validation_preprocessing_profile={preprocessing_profile}"
+        )
 
         if int(job["image_count"] or 0) != len(staged):
             raise AIDomainError(

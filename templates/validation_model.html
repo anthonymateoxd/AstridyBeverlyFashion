@@ -407,6 +407,14 @@
   {% endif %}
 
   <section class="val-card">
+    {% if validation.ai_model_id == 1649 %}
+    <div class="ai-capture-notice warn" role="note">
+      <strong>PRUEBA FINAL · BLUSA-762 · IA v1</strong>
+      <p>Threshold fijo: 47.32 · preprocessing: FULL_ROI. Los casos anteriores de VALIDACIÓN, incluidos los 6 BUENAS + 6 MANCHAS, permanecen históricos y no cuentan en FINAL_TEST.</p>
+      <p>No se modifica el umbral, training ni checkpoint; v1 permanece INACTIVA.</p>
+      <a href="#finalTestPanel">Ir al bloque PRUEBA FINAL</a>
+    </div>
+    {% endif %}
     <h2>Modelo y versión</h2>
 
     <div class="val-grid">
@@ -462,6 +470,10 @@
       · Agujeros: <strong id="valAgujerosCount">{{ validation.counts_defects['AGUJERO'] }}</strong>
     </p>
     <div class="val-defect-detail" id="thresholdFinalPanel">
+      {% if validation.ai_model_id == 1649 %}
+      <strong>Threshold fijo de prueba FINAL_TEST: 47.32 · no editable</strong>
+      <span>Este valor pertenece a la cohorte independiente y no requiere congelar el threshold del modelo.</span>
+      {% else %}
       <span id="thresholdCandidateLabel">
         Threshold candidato: {% if validation.threshold_candidate is not none %}{{ '%.2f'|format(validation.threshold_candidate) }}{% else %}sin candidato{% endif %}
       </span>
@@ -471,7 +483,7 @@
       {% else %}
         <strong id="thresholdFinalLabel">Threshold definitivo: SIN CONGELAR</strong>
       {% endif %}
-      {% if can_manage and validation.model_status == 'VALIDACION' and validation.threshold_final is none %}
+      {% if can_manage and validation.model_status == 'VALIDACION' and validation.threshold_final is none and validation.ai_model_id != 1649 %}
       <div class="val-actions">
         <label for="thresholdFinalInput">Confirmar threshold definitivo</label>
         <input id="thresholdFinalInput" type="number" min="0" max="100" step="0.01" value="50.00">
@@ -479,6 +491,7 @@
         <button type="button" class="detail-button" id="thresholdFreeze">Confirmar y congelar</button>
         <span id="thresholdFreezeMessage" role="status"></span>
       </div>
+      {% endif %}
       {% endif %}
     </div>
   </section>
@@ -499,7 +512,71 @@
     {% endif %}
   </section>
 
-  {% if can_manage %}
+  {% if validation.ai_model_id == 1649 %}
+  <section class="val-card" id="finalTestPanel">
+    <h2>PRUEBA FINAL</h2>
+    <p><strong>Modelo:</strong> BLUSA-762 · <strong>IA:</strong> v1 · <strong>Threshold fijo:</strong> 47.32 · <strong>Estado:</strong> <span id="finalTestStatus">{{ validation.final_test.status_label if validation.final_test else 'INACTIVA' }}</span></p>
+    <div class="ai-capture-notice warn">
+      Cohorte independiente <strong>FINAL_TEST</strong>. Captura únicamente desde cámara. Threshold fijo <strong>47.32</strong>, preprocessing <strong>FULL_ROI</strong>. No recalibra, no modifica training/checkpoint y no activa ni congela v1.
+    </div>
+    <img id="finalTestFrame" class="val-camera" src="{{ url_for('garment_validation_frame', model_id=model.id) }}" alt="Vista en vivo de cámara para la prueba final">
+    <p id="finalTestState" class="val-empty">
+      {% if validation.final_test and validation.final_test.started %}
+        Cohorte iniciada · {{ validation.final_test.created_at }} · responsable usuario {{ validation.final_test.created_by }} · threshold 47.32 · FULL_ROI
+      {% else %}
+        Cohorte FINAL_TEST vacía (0 casos). Los registros históricos no se copian.
+      {% endif %}
+    </p>
+    {% if validation.final_test and validation.final_test.start_block_reason %}
+    <p class="val-error">No se puede iniciar: {{ validation.final_test.start_block_reason }}</p>
+    {% endif %}
+    <div class="val-counts">
+      <div class="val-count"><span class="detail-label">Buenas</span><strong id="finalGoodCount">{{ validation.final_test.counts.BUENA if validation.final_test else 0 }} / 10</strong></div>
+      <div class="val-count"><span class="detail-label">Manchas</span><strong id="finalStainCount">{{ validation.final_test.counts.MANCHA if validation.final_test else 0 }} / 10</strong></div>
+      <div class="val-count"><span class="detail-label">Total</span><strong id="finalTotalCount">{{ validation.final_test.counts.total if validation.final_test else 0 }} / 20</strong></div>
+    </div>
+    {% if can_manage %}
+    <div class="val-actions">
+      {% if validation.final_test and validation.final_test.can_start %}
+      <button type="button" id="finalTestStart" class="detail-button primary">Iniciar prueba final</button>
+      {% endif %}
+      <select id="finalTestCategory" aria-label="Clasificación humana para prueba final">
+        <option value="NORMAL">BUENA</option>
+        <option value="MANCHA">DEFECTUOSA → MANCHA</option>
+      </select>
+      <button type="button" id="finalTestCapture" class="detail-button" {% if not validation.final_test or not validation.final_test.started or validation.final_test.status != 'ABIERTA' %}disabled{% endif %}>CAPTURAR CASO FINAL</button>
+      <button type="button" id="finalTestEvaluate" class="detail-button success" {% if not validation.final_test or not validation.final_test.ready_to_evaluate or validation.final_test.metrics %}disabled{% endif %}>EVALUAR PRUEBA FINAL</button>
+    </div>
+    {% endif %}
+    <p id="finalTestMessage" role="status"></p>
+    <div id="finalTestMetrics">
+      {% if validation.final_test and validation.final_test.metrics %}
+      <p>TP {{ validation.final_test.metrics.tp }} · TN {{ validation.final_test.metrics.tn }} · FP {{ validation.final_test.metrics.fp }} · FN {{ validation.final_test.metrics.fn }}</p>
+      <p>Precisión {{ validation.final_test.metrics.precision }} · Recall {{ validation.final_test.metrics.recall }} · Especificidad {{ validation.final_test.metrics.specificity }} · F1 {{ validation.final_test.metrics.f1 }} · Accuracy {{ validation.final_test.metrics.accuracy }}</p>
+      <p>Matriz de confusión: {{ validation.final_test.metrics.confusion_matrix }}</p>
+      {% endif %}
+    </div>
+    <table class="val-table">
+      <thead><tr><th>Clasificación real</th><th>Score</th><th>Predicción</th><th>Resultado</th><th>Fecha</th><th>Original / heatmap</th></tr></thead>
+      <tbody id="finalTestCases">
+        {% if validation.final_test %}
+        {% for case in validation.final_test.cases %}
+        <tr>
+          <td>{{ 'BUENA' if case.category == 'NORMAL' else 'DEFECTUOSA → MANCHA' }}</td>
+          <td>{{ '%.2f'|format(case.anomaly_score) }}</td>
+          <td>{{ 'DEFECTUOSA' if case.prediction == 'MANCHA' else 'BUENA' }}</td>
+          <td>{{ 'CORRECTO' if case.correct else 'INCORRECTO' }}</td>
+          <td>{{ case.created_at }}</td>
+          <td><a href="{{ url_for('garment_final_test_asset', model_id=model.id, case_id=case.id, kind='original') }}">original</a>{% if case.heatmap_path %} · <a href="{{ url_for('garment_final_test_asset', model_id=model.id, case_id=case.id, kind='heatmap') }}">heatmap</a>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        {% endif %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {% if can_manage and validation.ai_model_id != 1649 %}
   <section class="val-card">
     <h2>Captura de validación</h2>
 
@@ -760,6 +837,10 @@
       'caseUpdate': url_for('ai_validation_case_update'),
       'caseDelete': url_for('ai_validation_case_delete'),
       'evaluate': url_for('ai_validation_evaluate'),
+      'finalTestStart': url_for('ai_validation_final_test_start'),
+      'finalTestCase': url_for('ai_validation_final_test_case'),
+      'finalTestEvaluate': url_for('ai_validation_final_test_evaluate'),
+      'finalTestAsset': url_for('garment_final_test_asset', model_id=model.id),
       'freezeThreshold': url_for('ai_validation_threshold_freeze'),
       'complete': url_for('ai_validation_complete'),
       'bankExport': url_for('ai_validation_bank_export'),
@@ -1578,4 +1659,77 @@
   renderStatus();
 })();
 </script>
+{% if validation.ai_model_id == 1649 %}
+<script>
+(() => {
+  const cfg = window.ASTRID_AI_VALIDATION;
+  if (!cfg) return;
+  let finalState = (cfg.state || {}).final_test || {};
+  const start = document.getElementById("finalTestStart");
+  const capture = document.getElementById("finalTestCapture");
+  const evaluate = document.getElementById("finalTestEvaluate");
+  const category = document.getElementById("finalTestCategory");
+  const message = document.getElementById("finalTestMessage");
+  const postJson = async (url, payload) => {
+    const response = await fetch(url, {
+      method: "POST", credentials: "same-origin",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) throw new Error(data.error || "La operación FINAL_TEST falló.");
+    return data;
+  };
+  const asset = (id, kind) => `${cfg.urls.finalTestAsset}?case_id=${id}&kind=${kind}`;
+  function render() {
+    const counts = finalState.counts || {BUENA: 0, MANCHA: 0, total: 0};
+    document.getElementById("finalGoodCount").textContent = `${counts.BUENA || 0} / 10`;
+    document.getElementById("finalStainCount").textContent = `${counts.MANCHA || 0} / 10`;
+    document.getElementById("finalTotalCount").textContent = `${counts.total || 0} / 20`;
+    document.getElementById("finalTestState").textContent = finalState.started
+      ? `FINAL_TEST ${finalState.status_label || "EN CURSO"} · ${finalState.created_at || ""} · responsable usuario ${finalState.created_by || ""} · threshold 47.32 · FULL_ROI`
+      : "Cohorte FINAL_TEST vacía (0 casos). Los registros históricos no se copian.";
+    document.getElementById("finalTestStatus").textContent = finalState.status_label || "INACTIVA";
+    if (start) start.disabled = !!finalState.started;
+    if (capture) capture.disabled = !finalState.started || finalState.status !== "ABIERTA" || (counts.total || 0) >= 20;
+    if (evaluate) evaluate.disabled = !finalState.ready_to_evaluate || !!finalState.metrics;
+    const tbody = document.getElementById("finalTestCases");
+    tbody.innerHTML = (finalState.cases || []).map((item) => `
+      <tr><td>${item.category === "NORMAL" ? "BUENA" : "DEFECTUOSA → MANCHA"}</td>
+      <td>${Number(item.anomaly_score).toFixed(2)}</td>
+      <td>${item.prediction === "MANCHA" ? "DEFECTUOSA" : "BUENA"}</td>
+      <td>${item.correct ? "CORRECTO" : "INCORRECTO"}</td><td>${item.created_at || ""}</td>
+      <td><a href="${asset(item.id, "original")}">original</a>${item.heatmap_path ? ` · <a href="${asset(item.id, "heatmap")}">heatmap</a>` : ""}</td></tr>`).join("");
+    const metrics = finalState.metrics;
+    document.getElementById("finalTestMetrics").innerHTML = metrics ?
+      `<p>TP ${metrics.tp} · TN ${metrics.tn} · FP ${metrics.fp} · FN ${metrics.fn}</p>` +
+      `<p>Precisión ${metrics.precision ?? "s/d"} · Recall ${metrics.recall ?? "s/d"} · Especificidad ${metrics.specificity ?? "s/d"} · F1 ${metrics.f1 ?? "s/d"}</p>` +
+      `<p>Matriz de confusión: ${JSON.stringify(metrics.confusion_matrix)}</p>` : "";
+  }
+  async function act(button, operation) {
+    if (!button) return;
+    button.disabled = true;
+    if (message) message.textContent = "Procesando…";
+    try {
+      const response = await operation();
+      finalState = response.final_test || finalState;
+      if (response.metrics) finalState.metrics = response.metrics;
+      if (message) message.textContent = "FINAL_TEST actualizado. Threshold y modelo permanecen intactos.";
+      render();
+    } catch (error) {
+      if (message) message.textContent = error.message;
+      button.disabled = false;
+    }
+  }
+  if (start) start.addEventListener("click", () => act(start, () => postJson(cfg.urls.finalTestStart, {garment_model_id: cfg.modelId})));
+  if (capture) capture.addEventListener("click", () => act(capture, () => postJson(cfg.urls.finalTestCase, {garment_model_id: cfg.modelId, category: category.value})));
+    if (evaluate) evaluate.addEventListener("click", () => act(evaluate, () => postJson(cfg.urls.finalTestEvaluate, {garment_model_id: cfg.modelId})));
+  const camera = document.getElementById("finalTestFrame");
+  if (camera) setInterval(() => {
+    if (!document.hidden) camera.src = cfg.urls.frame + "?t=" + Date.now();
+  }, 1500);
+  render();
+})();
+</script>
+{% endif %}
 {% endblock %}
