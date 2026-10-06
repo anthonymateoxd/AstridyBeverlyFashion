@@ -742,11 +742,16 @@ def init_db():
         ("L\u00ednea 2",),
     )
 
-    admin_username = os.getenv("ADMIN_USERNAME", "admin")
-    admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
+    admin_username = os.getenv("ADMIN_USERNAME", "admin").strip() or "admin"
 
     cur.execute("SELECT id FROM users WHERE username = %s", (admin_username,))
     if cur.fetchone() is None:
+        admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
+        if len(admin_password) < 12:
+            raise RuntimeError(
+                "ADMIN_PASSWORD es obligatorio para crear el administrador inicial "
+                "y debe tener al menos 12 caracteres."
+            )
         cur.execute(
             "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)",
             (admin_username, generate_password_hash(admin_password), "ADMIN"),
@@ -21471,5 +21476,19 @@ if __name__ == "__main__":
     init_db()
     # Exactamente un lector RTSP continuo (no uno por request).
     ensure_camera_capture_worker()
-    # app.run(debug=True, host="127.0.0.1", port=5000)
-    app.run(debug=True, host="0.0.0.0", port=5000, threaded=True, use_reloader=False)
+
+    debug_mode = os.getenv("FLASK_DEBUG", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    app_port = int(os.getenv("APP_PORT", "5000"))
+
+    app.run(
+        debug=debug_mode,
+        host="0.0.0.0",
+        port=app_port,
+        threaded=True,
+        use_reloader=False,
+    )

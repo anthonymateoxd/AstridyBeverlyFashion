@@ -1,70 +1,49 @@
+# Secretos y configuración local
 .env
-# Entornos y secretos
-.env
-venv/
-venv_patchcore/
-
-# Backups temporales
-*.backup*
-app.py.backup*
-capture_patchcore_dataset.py.backup*
-
-# Evidencia generada en ejecución
-static/captures/
-static/results/
-results/
-
-# Datasets locales
-anomaly_dataset/
-
-# Artefactos IA (Fase 1+: datasets, checkpoints, validaciones)
-ai_artifacts/
-
-# Python
-__pycache__/
-*.pyc
-
-# Modelos entrenados / artefactos pesados
-patchcore_results/
-
-# Archivo accidental local
-e build app
-
-# ==========================================
-# Astrid Quality Control - archivos locales
-# ==========================================
-
-# Python
-*.py[cod]
-
-# Entornos virtuales
-.venv/
-
-# Configuracion privada
 .env.*
 !.env.example
 
-# Backups y diagnosticos locales
-_backup*/
-diagnostico*.txt
-estado_*.txt
-flash_*.txt
-revision_*.txt
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+venv_patchcore/
 
-# Dumps temporales
+# Datos/runtime locales
+instance/
+static/captures/
+static/results/
+results/
+diagnostics/
+runs/
+benchmark_frames/
+
+# Artefactos IA y modelos pesados
+ai_artifacts/
+patchcore_results/
+models/
+
+# Backups y temporales
+*.backup*
+*_backup*/
+templates/*_backup.html
+static/css/*_backup.css
 textile_quality_db_antes_*.sql
+*.tmp
 
-# Datos/runtime generados
-
-# Dataset de entrenamiento
-
-# Resultados/modelos pesados de PatchCore
+# Material auxiliar local
 dashboard_source/
 dashboard_source.zip
 tesis_audit/
 tesis_audit.zip
-templates/*_backup.html
-static/css/*_backup.css
-desktop.ini
+diagnostico*.txt
+estado_*.txt
+flash_*.txt
+revision_*.txt
 pdf_tables_actual.txt
 records_actual.txt
+desktop.ini
+
+# Archivos accidentales
+e build app
