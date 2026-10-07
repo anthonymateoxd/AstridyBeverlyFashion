@@ -1364,8 +1364,9 @@ AUTO_STABILIZATION_SECONDS = float(os.getenv("AUTO_STABILIZATION_SECONDS", "0.6"
 # ------------------------------------------------------------
 # Detección automática de presencia de la blusa.
 #
-# La blusa completa suele ocupar aproximadamente 50-52 % del ROI.
-# El automático espera que entre suficientemente antes de capturar.
+# En la instalación de producción la blusa completa ocupa aproximadamente
+# 34-38 % del ROI. El automático espera que entre suficientemente antes
+# de capturar, dejando margen para variaciones de talla y posición.
 # ------------------------------------------------------------
 AUTO_GARMENT_ENTER_COVERAGE = float(
     os.getenv(
@@ -1377,7 +1378,7 @@ AUTO_GARMENT_ENTER_COVERAGE = float(
 AUTO_GARMENT_CAPTURE_COVERAGE = float(
     os.getenv(
         "AUTO_GARMENT_CAPTURE_COVERAGE",
-        "0.48",
+        "0.33",
     )
 )
 
