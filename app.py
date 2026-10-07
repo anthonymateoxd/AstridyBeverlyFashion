@@ -7599,6 +7599,9 @@ def batches():
           AND gm.active = 1
           AND ai.status = 'ACTIVO'
           AND ai.active = 1
+          AND NULLIF(TRIM(ai.checkpoint_path), '') IS NOT NULL
+          AND ai.threshold_final IS NOT NULL
+          AND ai.threshold_frozen_at IS NOT NULL
 
           AND ai.id = (
               SELECT ai2.id
@@ -7681,6 +7684,61 @@ def batches():
                 url_for("batches")
             )
 
+        quantity_override = (
+            request.form.get(
+                "quantity_override",
+                "0",
+            )
+            == "1"
+        )
+
+        if production_plan["has_goal"]:
+            remaining = int(
+                production_plan[
+                    "remaining_garments"
+                ]
+                or 0
+            )
+
+            suggested = int(
+                production_plan[
+                    "suggested_quantity"
+                ]
+                or 0
+            )
+
+            if (
+                remaining <= 0
+                and not quantity_override
+            ):
+                flash(
+                    "El objetivo de producci\u00f3n ya est\u00e1 "
+                    "completamente planificado. "
+                    "No es necesario crear otro lote.",
+                    "error",
+                )
+
+                return redirect(
+                    url_for("batches")
+                )
+
+            if (
+                remaining > 0
+                and not quantity_override
+                and planned_quantity != suggested
+            ):
+                flash(
+                    "La planificaci\u00f3n cambi\u00f3. "
+                    f"El sistema recomienda "
+                    f"{suggested} prendas para el "
+                    "siguiente lote.",
+                    "error",
+                )
+
+                return redirect(
+                    url_for("batches")
+                )
+
         selected_line = fetch_one(
             """
             SELECT
@@ -7736,6 +7794,9 @@ def batches():
               AND gm.active = 1
               AND ai.status = 'ACTIVO'
               AND ai.active = 1
+              AND NULLIF(TRIM(ai.checkpoint_path), '') IS NOT NULL
+              AND ai.threshold_final IS NOT NULL
+              AND ai.threshold_frozen_at IS NOT NULL
 
             ORDER BY ai.id DESC
             LIMIT 1
@@ -7746,7 +7807,7 @@ def batches():
         if selected_model is None:
             flash(
                 "Seleccione un modelo aprobado "
-                "que tenga una IA activa.",
+                "que tenga una IA activa y lista para producci\u00f3n.",
                 "error",
             )
 
@@ -7866,66 +7927,6 @@ def batches():
                 created=batch_id,
             )
         )
-    # SMART_BATCH_QUANTITY_GUARD_V1
-    smart_plan = get_today_production_plan()
-
-    quantity_override = (
-        request.form.get(
-            "quantity_override",
-            "0",
-        )
-        == "1"
-    )
-
-    if request.method == "POST" and smart_plan["has_goal"]:
-
-        remaining = int(
-            smart_plan[
-                "remaining_garments"
-            ]
-            or 0
-        )
-
-        suggested = int(
-            smart_plan[
-                "suggested_quantity"
-            ]
-            or 0
-        )
-
-        if (
-            remaining <= 0
-            and not quantity_override
-        ):
-            flash(
-                "El objetivo de producci\u00f3n ya est\u00e1 "
-                "completamente planificado. "
-                "No es necesario crear otro lote.",
-                "error",
-            )
-
-            return redirect(
-                url_for("batches")
-            )
-
-        if (
-            remaining > 0
-            and not quantity_override
-            and planned_quantity != suggested
-        ):
-            flash(
-                "La planificaci\u00f3n cambi\u00f3. "
-                f"El sistema recomienda "
-                f"{suggested} prendas para el "
-                "siguiente lote.",
-                "error",
-            )
-
-            return redirect(
-                url_for("batches")
-            )
-
-
     all_batches = get_batches()
 
     today_key = (
@@ -8114,7 +8115,12 @@ def start_batch(batch_id):
                 ai.id AS linked_ai_id,
                 ai.garment_model_id AS ai_garment_model_id,
                 ai.version AS ai_version,
-                ai.model_type AS ai_model_type
+                ai.model_type AS ai_model_type,
+                ai.status AS ai_status,
+                ai.active AS ai_active,
+                ai.checkpoint_path AS ai_checkpoint_path,
+                ai.threshold_final AS ai_threshold_final,
+                ai.threshold_frozen_at AS ai_threshold_frozen_at
 
             FROM batches b
 
@@ -8210,6 +8216,64 @@ def start_batch(batch_id):
             flash(
                 "La versi\u00f3n de IA asociada al lote "
                 "no es v\u00e1lida para este modelo.",
+                "error",
+            )
+
+            return redirect(
+                url_for("batches")
+            )
+
+        checkpoint_relative = str(
+            batch.get("ai_checkpoint_path")
+            or ""
+        ).strip()
+
+        if (
+            str(batch.get("ai_status") or "").upper()
+            != "ACTIVO"
+            or int(batch.get("ai_active") or 0) != 1
+            or not checkpoint_relative
+            or batch.get("ai_threshold_final") is None
+            or batch.get("ai_threshold_frozen_at") is None
+        ):
+            conn.rollback()
+
+            flash(
+                "La versi\u00f3n de IA asociada al lote "
+                "no est\u00e1 lista para producci\u00f3n. "
+                "Debe tener checkpoint y threshold "
+                "definitivo congelado.",
+                "error",
+            )
+
+            return redirect(
+                url_for("batches")
+            )
+
+        try:
+            checkpoint_abs = resolve_under_root(
+                get_ai_artifacts_root(),
+                checkpoint_relative,
+            )
+        except (AIDomainError, ValueError, OSError):
+            conn.rollback()
+
+            flash(
+                "El checkpoint de la versi\u00f3n de IA "
+                "no tiene una ruta de producci\u00f3n v\u00e1lida.",
+                "error",
+            )
+
+            return redirect(
+                url_for("batches")
+            )
+
+        if not checkpoint_abs.is_file():
+            conn.rollback()
+
+            flash(
+                "No se encontr\u00f3 el checkpoint de la "
+                "versi\u00f3n de IA asociada al lote.",
                 "error",
             )
 
