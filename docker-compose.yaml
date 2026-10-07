@@ -3,6 +3,11 @@ services:
     image: mysql:8.0
     container_name: textile_mysql
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       MYSQL_ROOT_PASSWORD: '${MYSQL_ROOT_PASSWORD}'
       MYSQL_DATABASE: '${MYSQL_DATABASE}'
@@ -29,6 +34,11 @@ services:
     build: .
     container_name: astrid_quality_app
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - '127.0.0.1:5000:5000'
     environment:
@@ -87,6 +97,11 @@ services:
     build: .
     container_name: astrid_ai_worker
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     command: python ai_worker.py
     environment:
       MYSQL_HOST: mysql
