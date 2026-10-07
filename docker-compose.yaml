@@ -30,7 +30,7 @@ services:
     container_name: astrid_quality_app
     restart: unless-stopped
     ports:
-      - '5000:5000'
+      - '127.0.0.1:5000:5000'
     environment:
       SECRET_KEY: '${SECRET_KEY}'
 
