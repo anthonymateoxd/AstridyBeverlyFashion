@@ -17,6 +17,7 @@ class _Cursor:
         self.model = dict(model)
         self.rowcount = 0
         self.update_called = False
+        self.update_sql = None
         self.update_params = None
         self.closed = False
 
@@ -28,6 +29,7 @@ class _Cursor:
 
         if normalized.startswith("UPDATE garment_models"):
             self.update_called = True
+            self.update_sql = normalized
             self.update_params = params
             self.rowcount = 1
 
@@ -113,7 +115,8 @@ class GarmentModelDeleteIncompleteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertTrue(cursor.update_called)
-        self.assertEqual(cursor.update_params[1], 77)
+        self.assertEqual(cursor.update_params, (77,))
+        self.assertNotIn("updated_at", cursor.update_sql.lower())
         self.assertEqual(conn.commits, 1)
         self.assertEqual(conn.rollbacks, 0)
         self.assertTrue(cursor.closed)

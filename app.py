@@ -15999,12 +15999,11 @@ def garment_model_delete_incomplete(model_id):
         cur.execute(
             """
             UPDATE garment_models
-            SET active = 0,
-                updated_at = %s
+            SET active = 0
             WHERE id = %s
               AND active = 1
             """,
-            (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), model_id),
+            (model_id,),
         )
 
         if cur.rowcount != 1:
