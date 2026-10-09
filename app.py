@@ -15831,7 +15831,9 @@ def save_garment_reference_images(model_id, images):
 def garment_models_page():
     role = normalize_role(session.get("role"))
 
-    where = ""
+    where = """
+        WHERE gm.active = 1
+    """
     params = ()
 
     if role == ROLE_QUALITY_MANAGER:
@@ -15856,6 +15858,15 @@ def garment_models_page():
                   AND ai.active = 1
                   AND ai.status = 'ACTIVO'
             ) AS ai_ready,
+            EXISTS(
+                SELECT 1
+                FROM garment_ai_models ai
+                WHERE ai.garment_model_id = gm.id
+                  AND (
+                      ai.status = 'ACTIVO'
+                      OR ai.active = 1
+                  )
+            ) AS has_active_ai,
             (
                 SELECT ai.version
                 FROM garment_ai_models ai
@@ -15864,7 +15875,18 @@ def garment_models_page():
                   AND ai.status = 'ACTIVO'
                 ORDER BY ai.id DESC
                 LIMIT 1
-            ) AS ai_version
+            ) AS ai_version,
+            EXISTS(
+                SELECT 1
+                FROM batches b
+                WHERE b.garment_model_id = gm.id
+            ) AS has_batches,
+            EXISTS(
+                SELECT 1
+                FROM garment_ai_models ai
+                WHERE ai.garment_model_id = gm.id
+                  AND ai.status = 'ENTRENANDO'
+            ) AS ai_training_now
         FROM garment_models gm
         LEFT JOIN users u
           ON u.id = gm.created_by
@@ -15887,6 +15909,133 @@ def garment_models_page():
         models=models,
         role=role,
     )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/eliminar-incompleto",
+    methods=["POST"],
+)
+@login_required
+@role_required(ROLE_ADMIN)
+def garment_model_delete_incomplete(model_id):
+    """
+    Retira del catálogo un modelo incompleto que nunca llegó a producción.
+
+    Se usa borrado lógico (active=0) para conservar trazabilidad técnica y
+    permitir recuperación manual si fuera necesario.
+    """
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+
+        cur.execute(
+            """
+            SELECT
+                gm.id,
+                gm.code,
+                gm.name,
+                gm.active,
+                EXISTS(
+                    SELECT 1
+                    FROM batches b
+                    WHERE b.garment_model_id = gm.id
+                ) AS has_batches,
+                EXISTS(
+                    SELECT 1
+                    FROM garment_ai_models ai
+                    WHERE ai.garment_model_id = gm.id
+                      AND (
+                          ai.status = 'ACTIVO'
+                          OR ai.active = 1
+                      )
+                ) AS has_active_ai,
+                EXISTS(
+                    SELECT 1
+                    FROM garment_ai_models ai
+                    WHERE ai.garment_model_id = gm.id
+                      AND ai.status = 'ENTRENANDO'
+                ) AS ai_training_now
+            FROM garment_models gm
+            WHERE gm.id = %s
+            FOR UPDATE
+            """,
+            (model_id,),
+        )
+
+        model = cur.fetchone()
+
+        if model is None or int(model.get("active") or 0) != 1:
+            conn.rollback()
+            flash("El modelo ya no está disponible.", "error")
+            return redirect(url_for("garment_models_page"))
+
+        if int(model.get("has_batches") or 0) == 1:
+            conn.rollback()
+            flash(
+                "No se puede eliminar este modelo porque ya fue usado en un lote. "
+                "Si el lote fue creado por error y no tiene inspecciones, elimine primero ese lote.",
+                "error",
+            )
+            return redirect(url_for("garment_models_page"))
+
+        if int(model.get("has_active_ai") or 0) == 1:
+            conn.rollback()
+            flash(
+                "No se puede eliminar un modelo que tiene una versión de IA activa.",
+                "error",
+            )
+            return redirect(url_for("garment_models_page"))
+
+        if int(model.get("ai_training_now") or 0) == 1:
+            conn.rollback()
+            flash(
+                "No se puede eliminar el modelo mientras su IA está entrenando.",
+                "error",
+            )
+            return redirect(url_for("garment_models_page"))
+
+        cur.execute(
+            """
+            UPDATE garment_models
+            SET active = 0,
+                updated_at = %s
+            WHERE id = %s
+              AND active = 1
+            """,
+            (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), model_id),
+        )
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            flash("No fue posible eliminar el modelo.", "error")
+            return redirect(url_for("garment_models_page"))
+
+        conn.commit()
+
+        flash(
+            f"Modelo {model.get('code') or model_id} eliminado del catálogo.",
+            "success",
+        )
+        return redirect(url_for("garment_models_page"))
+
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+
+        app.logger.exception(
+            "No fue posible retirar el modelo incompleto %s.",
+            model_id,
+        )
+        flash(
+            "No fue posible eliminar el modelo. Intente nuevamente.",
+            "error",
+        )
+        return redirect(url_for("garment_models_page"))
+    finally:
+        cur.close()
+        conn.close()
 
 
 def generate_garment_model_code():
