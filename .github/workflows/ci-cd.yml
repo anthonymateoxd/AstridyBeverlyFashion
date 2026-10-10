@@ -1,0 +1,299 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  ci:
+    name: Validar aplicación
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-password
+          MYSQL_DATABASE: textile_quality_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci-root-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: ci-admin-password
+      FLASK_DEBUG: "0"
+      SESSION_COOKIE_SECURE: "0"
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: "3306"
+      MYSQL_ROOT_PASSWORD: ci-root-password
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ci-root-password
+      MYSQL_DATABASE: textile_quality_ci
+      CAMERA_INDEX: "0"
+      CAMERA_IP: 127.0.0.1
+      CAMERA_USER: ci
+      CAMERA_PASSWORD: ci
+      CAMERA_RTSP_PORT: "554"
+      CAMERA_CHANNEL: "1"
+      CAMERA_SUBTYPE: "0"
+      CAMERA_WIDTH: "1280"
+      CAMERA_HEIGHT: "720"
+      CAMERA_FPS: "15"
+      CAMERA_DISCOVERY_ENABLED: "0"
+      ROI_X1: "0.20"
+      ROI_Y1: "0.08"
+      ROI_X2: "0.80"
+      ROI_Y2: "0.95"
+      AI_ARTIFACTS_ROOT: /tmp/astrid-ai-artifacts
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v5
+
+      - name: Configurar Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Instalar librerías del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 \
+            libglib2.0-0 \
+            libsm6 \
+            libxext6 \
+            libxrender1
+
+      - name: Instalar dependencias Python
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install \
+            torch==2.14.0 \
+            torchvision==0.29.0 \
+            timm==1.0.29
+          python -m pip check
+
+      - name: Validar sintaxis Python
+        run: |
+          python -m compileall -q \
+            app.py \
+            ai_capture.py \
+            ai_domain.py \
+            ai_training.py \
+            ai_validation.py \
+            ai_worker.py \
+            patchcore_inference.py \
+            patchcore_preprocess.py \
+            tests
+
+      - name: Validar Docker Compose
+        run: docker compose config --quiet
+
+      - name: Preparar base de datos de CI
+        run: |
+          mkdir -p "${AI_ARTIFACTS_ROOT}"
+          python -c "import app; app.init_db()"
+
+      - name: Ejecutar suite de pruebas
+        run: python -m unittest discover -s tests -v
+  deploy:
+    name: Desplegar en producción
+    needs: ci
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      vars.CD_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    concurrency:
+      group: astrid-production
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v5
+
+      - name: Validar configuración de CD
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AWS_DEPLOY_ROLE_ARN}" ]; then
+            echo "::error::Falta la variable AWS_DEPLOY_ROLE_ARN."
+            exit 1
+          fi
+
+      - name: Autenticar en AWS mediante OIDC
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}
+          role-session-name: astrid-github-deploy
+      - name: Resolver EC2 de producción
+        id: ec2
+        env:
+          EC2_NAME: ${{ vars.EC2_NAME || 'astrid-aws' }}
+        run: |
+          set -euo pipefail
+          instance_id="$(
+            aws ec2 describe-instances \
+              --filters \
+                "Name=tag:Name,Values=${EC2_NAME}" \
+                "Name=instance-state-name,Values=running" \
+              --query 'Reservations[].Instances[].InstanceId' \
+              --output text
+          )"
+          if [ -z "${instance_id}" ] || [ "${instance_id}" = "None" ]; then
+            echo "::error::No se encontró una instancia EC2 activa con Name=${EC2_NAME}."
+            exit 1
+          fi
+          if [ "$(wc -w <<< "${instance_id}")" -ne 1 ]; then
+            echo "::error::Se encontró más de una instancia EC2 con Name=${EC2_NAME}."
+            exit 1
+          fi
+          echo "instance_id=${instance_id}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verificar que SSM esté conectado
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+        run: |
+          set -euo pipefail
+          status="$(
+            aws ssm get-connection-status \
+              --target "${INSTANCE_ID}" \
+              --query Status \
+              --output text
+          )"
+          test "${status}" = "connected" || test "${status}" = "Connected"
+      - name: Desplegar mediante Systems Manager
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.instance_id }}
+          DEPLOY_SHA: ${{ github.sha }}
+          APP_DIR: ${{ vars.APP_DIR || '/opt/astrid-quality-control' }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'ubuntu' }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+
+          app_dir = os.environ["APP_DIR"]
+          deploy_user = os.environ["DEPLOY_USER"]
+          deploy_sha = os.environ["DEPLOY_SHA"]
+
+          commands = [
+              "set -euo pipefail",
+              f"sudo -u {deploy_user} git -C {app_dir} fetch --prune origin main",
+              (
+                  f"sudo -u {deploy_user} git -C {app_dir} "
+                  "show origin/main:scripts/deploy-production.sh "
+                  "> /tmp/astrid-deploy-production.sh"
+              ),
+              "chmod 700 /tmp/astrid-deploy-production.sh",
+              (
+                  f"DEPLOY_SHA={deploy_sha} "
+                  f"APP_DIR={app_dir} "
+                  f"DEPLOY_USER={deploy_user} "
+                  "bash /tmp/astrid-deploy-production.sh"
+              ),
+          ]
+          with open("ssm-parameters.json", "w", encoding="utf-8") as handle:
+              json.dump(
+                  {"commands": commands, "executionTimeout": ["1800"]},
+                  handle,
+              )
+          PY
+          command_id="$(
+            aws ssm send-command \
+              --instance-ids "${INSTANCE_ID}" \
+              --document-name "AWS-RunShellScript" \
+              --comment "Astrid deploy ${DEPLOY_SHA}" \
+              --parameters file://ssm-parameters.json \
+              --query 'Command.CommandId' \
+              --output text
+          )"
+          echo "SSM command: ${command_id}"
+
+          set +e
+          aws ssm wait command-executed \
+            --command-id "${command_id}" \
+            --instance-id "${INSTANCE_ID}"
+          wait_code=$?
+          set -e
+
+          status="$(
+            aws ssm get-command-invocation \
+              --command-id "${command_id}" \
+              --instance-id "${INSTANCE_ID}" \
+              --query Status \
+              --output text
+          )"
+
+          echo "Estado SSM: ${status}"
+          echo "----- salida remota -----"
+          aws ssm get-command-invocation \
+            --command-id "${command_id}" \
+            --instance-id "${INSTANCE_ID}" \
+            --query StandardOutputContent \
+            --output text || true
+
+          if [ "${status}" != "Success" ] || [ "${wait_code}" -ne 0 ]; then
+            echo "----- error remoto -----"
+            aws ssm get-command-invocation \
+              --command-id "${command_id}" \
+              --instance-id "${INSTANCE_ID}" \
+              --query StandardErrorContent \
+              --output text || true
+            exit 1
+          fi
+      - name: Comprobar dominio público
+        run: |
+          set -euo pipefail
+          response="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 12 \
+              --retry-all-errors \
+              --retry-delay 5 \
+              https://www.astridbeverlyfashion.com/health
+          )"
+          echo "${response}"
+          HEALTH_RESPONSE="${response}" python - <<'PY'
+          import json
+          import os
+
+          payload = json.loads(os.environ["HEALTH_RESPONSE"])
+          if payload.get("status") != "ok":
+              raise SystemExit(f"Health público no está OK: {payload!r}")
+          PY
