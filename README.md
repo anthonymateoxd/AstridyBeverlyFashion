@@ -138,6 +138,8 @@ Los modelos de entrenamiento, validación y producción no deben mezclarse manua
 
 ## Despliegue
 
+La automatización de CI/CD se documenta en `docs/CI_CD.md` y la estrategia de respaldos/restauración en `docs/BACKUPS.md`.
+
 El repositorio contiene el código fuente y configuración reproducible. El despliegue en servidor se realiza en cuatro partes:
 
 ```text

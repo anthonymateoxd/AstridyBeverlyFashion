@@ -110,6 +110,16 @@ jobs:
             patchcore_preprocess.py \
             tests
 
+      - name: Validar scripts de operaciones
+        run: |
+          bash -n scripts/deploy-production.sh
+          bash -n scripts/backup-production.sh
+          bash -n scripts/verify-latest-backup.sh
+          bash -n scripts/install-backup-timer.sh
+          bash -n scripts/setup-backup-s3.sh
+          bash -n scripts/test-restore-latest.sh
+          bash -n scripts/restore-env-latest.sh
+
       - name: Validar Docker Compose
         run: docker compose config --quiet
 

@@ -5,8 +5,10 @@ APP_DIR="${APP_DIR:-/opt/astrid-quality-control}"
 DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
 DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA es obligatorio}"
 BACKUP_DIR="${BACKUP_DIR:-/opt/astrid-backups/mysql}"
+BACKUP_CONFIG_FILE="${BACKUP_CONFIG_FILE:-/etc/astrid/backup.env}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:5000/health}"
 BACKUP_KEEP="${BACKUP_KEEP:-10}"
+MAINTENANCE_LOCK="${MAINTENANCE_LOCK:-/var/lock/astrid-quality-maintenance.lock}"
 
 log() {
   printf '[deploy] %s\n' "$*"
@@ -69,9 +71,9 @@ if [ ! -f "${APP_DIR}/.env" ]; then
   exit 1
 fi
 
-exec 9>/var/lock/astrid-quality-deploy.lock
+exec 9>"${MAINTENANCE_LOCK}"
 if ! flock -n 9; then
-  echo "Ya existe otro despliegue de Astrid en ejecución." >&2
+  echo "Ya existe otro backup o despliegue de Astrid en ejecución." >&2
   exit 1
 fi
 
@@ -93,17 +95,27 @@ fi
 
 log "Versión anterior: ${previous_sha}"
 log "Versión objetivo:  ${DEPLOY_SHA}"
-mkdir -p "${BACKUP_DIR}"
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-backup_file="${BACKUP_DIR}/textile_quality_${timestamp}_${previous_sha:0:8}.sql.gz"
 
-log "Creando respaldo MySQL: ${backup_file}"
-compose exec -T mysql sh -lc 'exec mysqldump --single-transaction --routines --triggers -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' | gzip -9 >"${backup_file}"
+if [ -f "${BACKUP_CONFIG_FILE}" ]; then
+  log "Creando backup externo pre-deploy."
+  backup_script="/tmp/astrid-backup-production.sh"
+  git_as_deploy_user show     "origin/main:scripts/backup-production.sh"     >"${backup_script}"
+  chmod 700 "${backup_script}"
 
-if [ ! -s "${backup_file}" ]; then
-  echo "El respaldo MySQL quedó vacío. Se cancela el despliegue." >&2
-  rm -f "${backup_file}"
-  exit 1
+  BACKUP_CONFIG_FILE="${BACKUP_CONFIG_FILE}"   BACKUP_DATABASE_ONLY=1   BACKUP_SKIP_LOCK=1   bash "${backup_script}" --reason predeploy
+else
+  log "S3 aún no está configurado; creando respaldo MySQL local de fallback."
+  mkdir -p "${BACKUP_DIR}"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup_file="${BACKUP_DIR}/textile_quality_${timestamp}_${previous_sha:0:8}.sql.gz"
+
+  compose exec -T mysql sh -lc     'exec mysqldump --single-transaction --routines --triggers -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"'     | gzip -9 >"${backup_file}"
+
+  if [ ! -s "${backup_file}" ]; then
+    echo "El respaldo MySQL quedó vacío. Se cancela el despliegue." >&2
+    rm -f "${backup_file}"
+    exit 1
+  fi
 fi
 
 log "Actualizando código."

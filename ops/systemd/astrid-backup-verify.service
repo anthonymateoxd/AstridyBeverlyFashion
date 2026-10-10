@@ -1,0 +1,15 @@
+[Unit]
+Description=Verificación del último backup de Astrid & Beverly Fashion
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/astrid/backup.env
+Environment=VERIFY_DOWNLOAD=0
+ExecStart=/opt/astrid-quality-control/scripts/verify-latest-backup.sh
+TimeoutStartSec=30m
+Nice=10
+UMask=0077

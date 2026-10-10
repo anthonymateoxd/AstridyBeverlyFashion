@@ -1,0 +1,12 @@
+[Unit]
+Description=Backup diario de Astrid & Beverly Fashion
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 America/Guatemala
+Persistent=true
+RandomizedDelaySec=5m
+AccuracySec=1m
+Unit=astrid-backup.service
+
+[Install]
+WantedBy=timers.target
