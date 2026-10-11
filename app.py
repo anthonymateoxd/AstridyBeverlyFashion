@@ -1827,7 +1827,7 @@ CAMERA_READ_FAIL_RELEASE_LIMIT = int(
 CAMERA_DISCOVERY_ENABLED = (
     os.getenv(
         "CAMERA_DISCOVERY_ENABLED",
-        "1",
+        "0",
     ).strip().lower()
     not in (
         "0",
