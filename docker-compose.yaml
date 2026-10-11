@@ -163,6 +163,11 @@ services:
       AI_WORKER_ONCE: '${AI_WORKER_ONCE:-0}'
       AI_CAPTURE_MIN_IMAGES: '${AI_CAPTURE_MIN_IMAGES:-20}'
 
+      # Flujo corto temporal para demostración de tesis. En false se
+      # conserva íntegro el proceso normal de validación y congelamiento.
+      AI_DEMO_FAST_TRACK: '${AI_DEMO_FAST_TRACK:-false}'
+      AI_DEMO_FAST_TRACK_THRESHOLD: '${AI_DEMO_FAST_TRACK_THRESHOLD:-55.20}'
+
       # Entrenamiento: input_size=256 = tamaño que la inferencia
       # productiva aplica hoy (Resize 256). Cambiar solo con análisis.
       PATCHCORE_INPUT_SIZE: '${PATCHCORE_INPUT_SIZE:-256}'

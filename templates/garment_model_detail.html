@@ -2222,7 +2222,8 @@
       'start': url_for('ai_training_start'),
       'retrain': url_for('ai_training_retrain'),
       'cancel': url_for('ai_training_cancel'),
-      'status': url_for('ai_training_status')
+      'status': url_for('ai_training_status'),
+      'models': url_for('garment_models_page')
     },
     'state': ai_training
   }|tojson }};
@@ -2245,6 +2246,7 @@
   let errorMessage = "";
   let modalConfirmFn = null;
   let pollTimer = null;
+  const demoReturnKey = "astrid_ai_demo_return_" + config.modelId;
 
   const esc = (value) =>
     String(value === null || value === undefined ? "" : value).replace(
@@ -2515,6 +2517,20 @@
           (state.ui_status === "ENTRENADO" ||
             state.ui_status === "FALLIDO");
 
+        if (
+          state.demo_fast_track_active === true &&
+          window.sessionStorage.getItem(demoReturnKey) &&
+          config.urls.models
+        ) {
+          window.sessionStorage.removeItem(demoReturnKey);
+          window.location.assign(config.urls.models);
+          return;
+        }
+
+        if (state.ui_status === "FALLIDO") {
+          window.sessionStorage.removeItem(demoReturnKey);
+        }
+
         if (finished) {
           const reloadKey =
             "astrid_ai_reloaded_" +
@@ -2587,19 +2603,34 @@
   }
 
   const doStart = () =>
-    runAction(() =>
-      post(config.urls.start, { garment_model_id: config.modelId })
-    );
+    runAction(async () => {
+      const data = await post(
+        config.urls.start,
+        { garment_model_id: config.modelId }
+      );
+      window.sessionStorage.setItem(demoReturnKey, "1");
+      return data;
+    });
 
   const doRetrain = () =>
-    runAction(() =>
-      post(config.urls.retrain, { garment_model_id: config.modelId })
-    );
+    runAction(async () => {
+      const data = await post(
+        config.urls.retrain,
+        { garment_model_id: config.modelId }
+      );
+      window.sessionStorage.setItem(demoReturnKey, "1");
+      return data;
+    });
 
   const doCancel = () =>
-    runAction(() =>
-      post(config.urls.cancel, { job_id: state.job_id })
-    );
+    runAction(async () => {
+      const data = await post(
+        config.urls.cancel,
+        { job_id: state.job_id }
+      );
+      window.sessionStorage.removeItem(demoReturnKey);
+      return data;
+    });
 
   function openModal(options) {
     if (!modal) {
