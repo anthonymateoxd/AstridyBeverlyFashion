@@ -26,6 +26,8 @@ from functools import wraps
 import io
 from zoneinfo import ZoneInfo
 
+from camera_diagnostics import build_camera_diagnostic, probe_tcp_port
+
 import mysql.connector
 
 from ai_domain import (
@@ -1789,6 +1791,7 @@ camera_capture = None
 CAMERA_CONNECTED = False
 CAMERA_LAST_OK_AT = None
 CAMERA_LAST_ERROR = "Comprobando conexión con la cámara."
+CAMERA_LAST_ERROR_CODE = "CAMERA_CHECKING"
 CAMERA_LAST_CONNECT_ATTEMPT = 0.0
 CAMERA_FAILURE_COUNT = 0
 
@@ -2230,10 +2233,31 @@ def _clear_latest_frame():
         latest_frame_timestamp_monotonic = None
 
 
-def _note_camera_signal_lost(error_message):
+
+def _set_camera_error(error_code, message):
+    global CAMERA_LAST_ERROR
+    global CAMERA_LAST_ERROR_CODE
+
+    CAMERA_LAST_ERROR_CODE = error_code
+    CAMERA_LAST_ERROR = message
+
+
+def _rtsp_port_is_reachable():
+    return probe_tcp_port(
+        CAMERA_CURRENT_IP or CAMERA_IP,
+        CAMERA_RTSP_PORT,
+        timeout=min(
+            max(float(CAMERA_OPEN_TIMEOUT_MS) / 1000.0, 0.2),
+            1.0,
+        ),
+    )
+
+
+def _note_camera_signal_lost(error_message, error_code=None):
     global CAMERA_CONNECTED
     global CAMERA_FAILURE_COUNT
     global CAMERA_LAST_ERROR
+    global CAMERA_LAST_ERROR_CODE
     global AUTO_INSPECTION_ENABLED
     global AUTO_LAST_ERROR
 
@@ -2242,6 +2266,8 @@ def _note_camera_signal_lost(error_message):
 
     if error_message:
         CAMERA_LAST_ERROR = error_message
+    if error_code:
+        CAMERA_LAST_ERROR_CODE = error_code
 
     if (
         AUTO_INSPECTION_ENABLED
@@ -2266,10 +2292,12 @@ def get_camera():
     global camera_capture
     global CAMERA_LAST_CONNECT_ATTEMPT
     global CAMERA_LAST_ERROR
+    global CAMERA_LAST_ERROR_CODE
 
     if cv2 is None:
-        CAMERA_LAST_ERROR = (
-            "OpenCV no esta disponible."
+        _set_camera_error(
+            "CAMERA_RUNTIME_UNAVAILABLE",
+            "OpenCV no esta disponible.",
         )
         return None
 
@@ -2347,13 +2375,23 @@ def get_camera():
 
             camera_capture = None
 
-            CAMERA_LAST_ERROR = (
-                "No se pudo establecer "
-                "conexion con la camara."
-            )
+            if _rtsp_port_is_reachable():
+                _set_camera_error(
+                    "CAMERA_RTSP_OPEN_FAILED",
+                    "La camara responde por RTSP, pero el stream no pudo abrirse.",
+                )
+            else:
+                _set_camera_error(
+                    "CAMERA_RTSP_UNREACHABLE",
+                    "La IP o el puerto RTSP de la camara no responden.",
+                )
 
             return None
 
+        _set_camera_error(
+            "CAMERA_CHECKING",
+            "Conexion RTSP abierta; esperando frames de video.",
+        )
         return camera_capture
 
     except Exception as error:
@@ -2365,9 +2403,10 @@ def get_camera():
 
         camera_capture = None
 
-        CAMERA_LAST_ERROR = (
+        _set_camera_error(
+            "CAMERA_OPEN_ERROR",
             "Error al conectar con "
-            f"la camara: {error}"
+            f"la camara: {error}",
         )
 
         return None
@@ -2417,8 +2456,9 @@ def reset_camera_connection():
     _clear_latest_frame()
 
     CAMERA_CONNECTED = False
-    CAMERA_LAST_ERROR = (
-        "Reconectando con la c\u00e1mara de inspecci\u00f3n."
+    _set_camera_error(
+        "CAMERA_RECONNECTING",
+        "Reconectando con la c\u00e1mara de inspecci\u00f3n.",
     )
     CAMERA_LAST_CONNECT_ATTEMPT = 0.0
     CAMERA_FAILURE_COUNT = 0
@@ -2481,6 +2521,7 @@ def camera_capture_worker():
     global CAMERA_CONNECTED
     global CAMERA_LAST_OK_AT
     global CAMERA_LAST_ERROR
+    global CAMERA_LAST_ERROR_CODE
     global CAMERA_FAILURE_COUNT
     global CAMERA_RECONNECTING
     global CAMERA_FORCE_REOPEN
@@ -2501,8 +2542,9 @@ def camera_capture_worker():
         while True:
             if cv2 is None:
                 CAMERA_CONNECTED = False
-                CAMERA_LAST_ERROR = (
-                    "OpenCV no esta disponible."
+                _set_camera_error(
+                    "CAMERA_RUNTIME_UNAVAILABLE",
+                    "OpenCV no esta disponible.",
                 )
                 time.sleep(1.0)
                 continue
@@ -2533,7 +2575,9 @@ def camera_capture_worker():
             if cap is None:
                 _note_camera_signal_lost(
                     CAMERA_LAST_ERROR
-                    or "Cámara sin señal."
+                    or "Camara sin senal.",
+                    CAMERA_LAST_ERROR_CODE
+                    or "CAMERA_RTSP_UNREACHABLE",
                 )
                 with CAMERA_RECONNECT_LOCK:
                     CAMERA_RECONNECTING = True
@@ -2555,8 +2599,9 @@ def camera_capture_worker():
             except Exception as error:
                 ok = False
                 frame = None
-                CAMERA_LAST_ERROR = (
-                    f"Error de lectura RTSP: {error}"
+                _set_camera_error(
+                    "CAMERA_STREAM_READ_ERROR",
+                    f"Error de lectura RTSP: {error}",
                 )
 
             if ok and frame is not None:
@@ -2567,6 +2612,7 @@ def camera_capture_worker():
                 CAMERA_CONNECTED = True
                 CAMERA_FAILURE_COUNT = 0
                 CAMERA_LAST_ERROR = None
+                CAMERA_LAST_ERROR_CODE = None
                 CAMERA_LAST_OK_AT = datetime.now().strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
@@ -2585,9 +2631,15 @@ def camera_capture_worker():
 
             # --- fallo de lectura ---
             read_failures += 1
+            read_error_code = (
+                CAMERA_LAST_ERROR_CODE
+                if CAMERA_LAST_ERROR_CODE == "CAMERA_STREAM_READ_ERROR"
+                else "CAMERA_STREAM_NO_FRAMES"
+            )
             _note_camera_signal_lost(
                 CAMERA_LAST_ERROR
-                or "No se está recibiendo video de la cámara."
+                or "No se esta recibiendo video de la camara.",
+                read_error_code,
             )
             _clear_latest_frame()
 
@@ -2664,50 +2716,90 @@ def ensure_camera_reconnect_worker():
     return ensure_camera_capture_worker()
 
 
+def _camera_technical_details():
+    transport_options = os.getenv(
+        "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+        "",
+    ).lower()
+
+    return {
+        "ip": CAMERA_CURRENT_IP or CAMERA_IP,
+        "rtsp_port": int(CAMERA_RTSP_PORT),
+        "channel": int(CAMERA_CHANNEL),
+        "subtype": int(CAMERA_SUBTYPE),
+        "stream": (
+            "Principal"
+            if int(CAMERA_SUBTYPE) == 0
+            else "Substream"
+        ),
+        "rtsp_transport": (
+            "TCP"
+            if "tcp" in transport_options
+            else "FFmpeg"
+        ),
+        "discovery_enabled": bool(CAMERA_DISCOVERY_ENABLED),
+        "failure_count": int(CAMERA_FAILURE_COUNT),
+        "open_timeout_ms": int(CAMERA_OPEN_TIMEOUT_MS),
+        "read_timeout_ms": int(CAMERA_READ_TIMEOUT_MS),
+        "last_ok_at": CAMERA_LAST_OK_AT,
+    }
+
+
 def get_camera_status():
     """
-    Estado operativo. Si no hay señal, asegura el capture worker
-    (que también reconecta). No abre RTSP por su cuenta.
+    Estado operativo y diagnóstico entendible para la interfaz.
+    No abre RTSP por su cuenta: el capture worker mantiene la conexión.
     """
     ensure_camera_capture_worker()
+
+    technical = _camera_technical_details()
 
     if CAMERA_CONNECTED:
         return {
             "connected": True,
             "reconnecting": False,
             "state": "CONNECTED",
-            "message": (
-                "Camara conectada y transmitiendo."
-            ),
+            "message": "Camara conectada y transmitiendo.",
             "last_ok_at": CAMERA_LAST_OK_AT,
+            "diagnostic": {
+                "code": "CAMERA_OK",
+                "severity": "ok",
+                "title": "Camara conectada",
+                "cause": "El sistema esta recibiendo video correctamente.",
+                "action": None,
+                "last_error": None,
+                "technical": technical,
+            },
         }
 
     with CAMERA_RECONNECT_LOCK:
         reconnecting = CAMERA_RECONNECTING
+
+    diagnostic = build_camera_diagnostic(
+        CAMERA_LAST_ERROR_CODE,
+        last_error=CAMERA_LAST_ERROR,
+        reconnecting=reconnecting,
+        technical=technical,
+    )
 
     if reconnecting:
         return {
             "connected": False,
             "reconnecting": True,
             "state": "CHECKING",
-            "message": (
-                "Reconectando automaticamente "
-                "con la camara."
-            ),
+            "message": diagnostic["cause"],
             "last_ok_at": CAMERA_LAST_OK_AT,
+            "diagnostic": diagnostic,
         }
 
     return {
         "connected": False,
         "reconnecting": False,
         "state": "DISCONNECTED",
-        "message": (
-            CAMERA_LAST_ERROR
-            or "No se recibe senal de la camara."
-        ),
+        "message": diagnostic["cause"],
         "last_ok_at": CAMERA_LAST_OK_AT,
+        "diagnostic": diagnostic,
     }
-
 
 
 def make_camera_error_frame(message="CAMARA NO DISPONIBLE"):
