@@ -44,6 +44,10 @@ python -m unittest discover -s tests -p "test_*.py" -q
 
 Resultado final: **408 tests; 260 ejecutados correctamente; 148 omitidos; 0 fallos; 0 errores**.
 
+## UAT posterior con blusa real
+
+El 13 de octubre se realizó una prueba autorizada con una blusa rosa iluminada y fotograma RTSP de 2688×1520. La segmentación normal, basada en semilla cromática, reconoció la prenda (50.77 % del ROI productivo configurado en AWS) tanto en el código previo como en esta rama. Sin embargo, la segmentación adaptativa aislada reconstruyó solo 11.68 % del ROI y **no superó el mínimo del 20 %**. La prueba real del fallback **no está aprobada**; ver `docs/UAT_PRENDA_REAL_20261013.md`. **No desplegar la corrección del segmentador únicamente por aprobar la suite sintética.**
+
 ## Limitaciones y siguiente validación
 
 Las métricas IoU anteriores son de una elipse **sintética** dibujada sobre imágenes reales de fondo; **no equivalen a la precisión de inspección de defectos PatchCore ni a un ensayo con prendas reales**.
