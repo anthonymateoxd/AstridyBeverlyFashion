@@ -62,6 +62,7 @@ from ai_domain import (
     sha256_bytes,
     start_ai_capture_session,
     stop_ai_capture_session,
+    transition_ai_model_status,
     resolve_validation_category,
     VALIDATION_CATEGORIES,
     VALIDATION_DEFECT_TYPES,
@@ -742,6 +743,21 @@ def init_db():
         )
         """,
         ("L\u00ednea 2",),
+    )
+
+    # Normaliza nombres de líneas creados por versiones antiguas con
+    # problemas de codificación.
+    cur.execute(
+        """
+        UPDATE inspection_lines
+        SET name = CASE code
+            WHEN 'LINEA-1' THEN %s
+            WHEN 'LINEA-2' THEN %s
+            ELSE name
+        END
+        WHERE code IN ('LINEA-1', 'LINEA-2')
+        """,
+        ("L\u00ednea 1", "L\u00ednea 2"),
     )
 
     admin_username = os.getenv("ADMIN_USERNAME", "admin").strip() or "admin"
@@ -1827,7 +1843,7 @@ CAMERA_READ_FAIL_RELEASE_LIMIT = int(
 CAMERA_DISCOVERY_ENABLED = (
     os.getenv(
         "CAMERA_DISCOVERY_ENABLED",
-        "0",
+        "1",
     ).strip().lower()
     not in (
         "0",
@@ -2458,7 +2474,7 @@ def reset_camera_connection():
     CAMERA_CONNECTED = False
     _set_camera_error(
         "CAMERA_RECONNECTING",
-        "Reconectando con la c\u00e1mara de inspecci\u00f3n.",
+        "Reconectando con la cámara de inspección.",
     )
     CAMERA_LAST_CONNECT_ATTEMPT = 0.0
     CAMERA_FAILURE_COUNT = 0
@@ -2747,8 +2763,8 @@ def _camera_technical_details():
 
 def get_camera_status():
     """
-    Estado operativo y diagnóstico entendible para la interfaz.
-    No abre RTSP por su cuenta: el capture worker mantiene la conexión.
+    Estado operativo y diagnostico entendible para la interfaz.
+    No abre RTSP por su cuenta: el capture worker mantiene la conexion.
     """
     ensure_camera_capture_worker()
 
@@ -2767,7 +2783,6 @@ def get_camera_status():
                 "title": "Camara conectada",
                 "cause": "El sistema esta recibiendo video correctamente.",
                 "action": None,
-                "last_error": None,
                 "technical": technical,
             },
         }
@@ -7691,9 +7706,6 @@ def batches():
           AND gm.active = 1
           AND ai.status = 'ACTIVO'
           AND ai.active = 1
-          AND NULLIF(TRIM(ai.checkpoint_path), '') IS NOT NULL
-          AND ai.threshold_final IS NOT NULL
-          AND ai.threshold_frozen_at IS NOT NULL
 
           AND ai.id = (
               SELECT ai2.id
@@ -7776,61 +7788,6 @@ def batches():
                 url_for("batches")
             )
 
-        quantity_override = (
-            request.form.get(
-                "quantity_override",
-                "0",
-            )
-            == "1"
-        )
-
-        if production_plan["has_goal"]:
-            remaining = int(
-                production_plan[
-                    "remaining_garments"
-                ]
-                or 0
-            )
-
-            suggested = int(
-                production_plan[
-                    "suggested_quantity"
-                ]
-                or 0
-            )
-
-            if (
-                remaining <= 0
-                and not quantity_override
-            ):
-                flash(
-                    "El objetivo de producci\u00f3n ya est\u00e1 "
-                    "completamente planificado. "
-                    "No es necesario crear otro lote.",
-                    "error",
-                )
-
-                return redirect(
-                    url_for("batches")
-                )
-
-            if (
-                remaining > 0
-                and not quantity_override
-                and planned_quantity != suggested
-            ):
-                flash(
-                    "La planificaci\u00f3n cambi\u00f3. "
-                    f"El sistema recomienda "
-                    f"{suggested} prendas para el "
-                    "siguiente lote.",
-                    "error",
-                )
-
-                return redirect(
-                    url_for("batches")
-                )
-
         selected_line = fetch_one(
             """
             SELECT
@@ -7886,9 +7843,6 @@ def batches():
               AND gm.active = 1
               AND ai.status = 'ACTIVO'
               AND ai.active = 1
-              AND NULLIF(TRIM(ai.checkpoint_path), '') IS NOT NULL
-              AND ai.threshold_final IS NOT NULL
-              AND ai.threshold_frozen_at IS NOT NULL
 
             ORDER BY ai.id DESC
             LIMIT 1
@@ -7899,7 +7853,7 @@ def batches():
         if selected_model is None:
             flash(
                 "Seleccione un modelo aprobado "
-                "que tenga una IA activa y lista para producci\u00f3n.",
+                "que tenga una IA activa.",
                 "error",
             )
 
@@ -8019,6 +7973,66 @@ def batches():
                 created=batch_id,
             )
         )
+    # SMART_BATCH_QUANTITY_GUARD_V1
+    smart_plan = get_today_production_plan()
+
+    quantity_override = (
+        request.form.get(
+            "quantity_override",
+            "0",
+        )
+        == "1"
+    )
+
+    if request.method == "POST" and smart_plan["has_goal"]:
+
+        remaining = int(
+            smart_plan[
+                "remaining_garments"
+            ]
+            or 0
+        )
+
+        suggested = int(
+            smart_plan[
+                "suggested_quantity"
+            ]
+            or 0
+        )
+
+        if (
+            remaining <= 0
+            and not quantity_override
+        ):
+            flash(
+                "El objetivo de producci\u00f3n ya est\u00e1 "
+                "completamente planificado. "
+                "No es necesario crear otro lote.",
+                "error",
+            )
+
+            return redirect(
+                url_for("batches")
+            )
+
+        if (
+            remaining > 0
+            and not quantity_override
+            and planned_quantity != suggested
+        ):
+            flash(
+                "La planificaci\u00f3n cambi\u00f3. "
+                f"El sistema recomienda "
+                f"{suggested} prendas para el "
+                "siguiente lote.",
+                "error",
+            )
+
+            return redirect(
+                url_for("batches")
+            )
+
+
     all_batches = get_batches()
 
     today_key = (
@@ -8099,15 +8113,29 @@ def delete_accidental_batch(batch_id):
                 url_for("batches")
             )
 
-        if (
-            batch["status"] != "PREPARACION"
-            or batch["started_at"] is not None
-            or int(
-                batch["inspection_count"]
-                or 0
-            ) != 0
-        ):
+        inspection_count = int(
+            batch["inspection_count"]
+            or 0
+        )
+
+        can_delete = (
+            inspection_count == 0
+            and (
+                (
+                    batch["status"] == "PREPARACION"
+                    and batch["started_at"] is None
+                )
+                or batch["status"] == "REVISION_PENDIENTE"
+            )
+        )
+
+        if not can_delete:
             conn.rollback()
+            flash(
+                "Este lote no puede eliminarse porque ya tiene "
+                "inspecciones registradas o no está en un estado eliminable.",
+                "error",
+            )
             return redirect(
                 url_for("batches")
             )
@@ -8116,8 +8144,12 @@ def delete_accidental_batch(batch_id):
             """
             DELETE FROM batches
             WHERE id = %s
-              AND status = 'PREPARACION'
-              AND started_at IS NULL
+              AND status IN ('PREPARACION', 'REVISION_PENDIENTE')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM inspections i
+                  WHERE i.batch_id = batches.id
+              )
             """,
             (batch_id,),
         )
@@ -8129,6 +8161,11 @@ def delete_accidental_batch(batch_id):
             )
 
         conn.commit()
+
+        flash(
+            "Lote accidental eliminado correctamente.",
+            "success",
+        )
 
         return redirect(
             url_for("batches")
@@ -8207,12 +8244,7 @@ def start_batch(batch_id):
                 ai.id AS linked_ai_id,
                 ai.garment_model_id AS ai_garment_model_id,
                 ai.version AS ai_version,
-                ai.model_type AS ai_model_type,
-                ai.status AS ai_status,
-                ai.active AS ai_active,
-                ai.checkpoint_path AS ai_checkpoint_path,
-                ai.threshold_final AS ai_threshold_final,
-                ai.threshold_frozen_at AS ai_threshold_frozen_at
+                ai.model_type AS ai_model_type
 
             FROM batches b
 
@@ -8308,64 +8340,6 @@ def start_batch(batch_id):
             flash(
                 "La versi\u00f3n de IA asociada al lote "
                 "no es v\u00e1lida para este modelo.",
-                "error",
-            )
-
-            return redirect(
-                url_for("batches")
-            )
-
-        checkpoint_relative = str(
-            batch.get("ai_checkpoint_path")
-            or ""
-        ).strip()
-
-        if (
-            str(batch.get("ai_status") or "").upper()
-            != "ACTIVO"
-            or int(batch.get("ai_active") or 0) != 1
-            or not checkpoint_relative
-            or batch.get("ai_threshold_final") is None
-            or batch.get("ai_threshold_frozen_at") is None
-        ):
-            conn.rollback()
-
-            flash(
-                "La versi\u00f3n de IA asociada al lote "
-                "no est\u00e1 lista para producci\u00f3n. "
-                "Debe tener checkpoint y threshold "
-                "definitivo congelado.",
-                "error",
-            )
-
-            return redirect(
-                url_for("batches")
-            )
-
-        try:
-            checkpoint_abs = resolve_under_root(
-                get_ai_artifacts_root(),
-                checkpoint_relative,
-            )
-        except (AIDomainError, ValueError, OSError):
-            conn.rollback()
-
-            flash(
-                "El checkpoint de la versi\u00f3n de IA "
-                "no tiene una ruta de producci\u00f3n v\u00e1lida.",
-                "error",
-            )
-
-            return redirect(
-                url_for("batches")
-            )
-
-        if not checkpoint_abs.is_file():
-            conn.rollback()
-
-            flash(
-                "No se encontr\u00f3 el checkpoint de la "
-                "versi\u00f3n de IA asociada al lote.",
                 "error",
             )
 
@@ -15950,15 +15924,6 @@ def garment_models_page():
                   AND ai.active = 1
                   AND ai.status = 'ACTIVO'
             ) AS ai_ready,
-            EXISTS(
-                SELECT 1
-                FROM garment_ai_models ai
-                WHERE ai.garment_model_id = gm.id
-                  AND (
-                      ai.status = 'ACTIVO'
-                      OR ai.active = 1
-                  )
-            ) AS has_active_ai,
             (
                 SELECT ai.version
                 FROM garment_ai_models ai
@@ -16091,11 +16056,12 @@ def garment_model_delete_incomplete(model_id):
         cur.execute(
             """
             UPDATE garment_models
-            SET active = 0
+            SET active = 0,
+                updated_at = %s
             WHERE id = %s
               AND active = 1
             """,
-            (model_id,),
+            (utc_now_db(), model_id),
         )
 
         if cur.rowcount != 1:
@@ -20377,6 +20343,171 @@ def ai_validation_final_test_evaluate():
         cur.close()
         conn.close()
     return jsonify({"ok": True, "metrics": _json_sanitize(metrics), "final_test": _json_sanitize(state), "active": 0}), 200
+
+
+
+@app.route("/api/ai/validation/activate", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def ai_validation_activate():
+    """Activa una versión VALIDADA únicamente después de FINAL_TEST EVALUADA."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+
+    _, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+    if guard_error is not None:
+        return guard_error
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+
+        validation_state = ai_validation.get_validation_state(cur, resolved)
+        if validation_state.get("model_status") != "VALIDADO":
+            raise AIDomainError(
+                "Solo una versión VALIDADA puede activarse."
+            )
+        if int(validation_state.get("active") or 0) == 1:
+            raise AIDomainError("Esta versión ya está activa.")
+
+        final_state = ai_validation.get_final_test_state(
+            cur,
+            ai_model_id=resolved,
+        )
+        if (
+            not final_state.get("started")
+            or str(final_state.get("status") or "").upper() != "EVALUADA"
+            or not final_state.get("metrics")
+            or not final_state.get("integrity_ok")
+        ):
+            raise AIDomainError(
+                "Debe completar y evaluar la PRUEBA FINAL antes de activar esta versión."
+            )
+
+        cur.execute(
+            """
+            SELECT
+                b.id,
+                b.code,
+                b.ai_model_id,
+                (
+                    SELECT COUNT(*)
+                    FROM inspections i
+                    WHERE i.batch_id = b.id
+                ) AS inspection_count
+            FROM batches b
+            WHERE b.garment_model_id = %s
+              AND b.status = 'EN_INSPECCION'
+            ORDER BY b.id DESC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (garment_model_id,),
+        )
+        active_batch = cur.fetchone()
+        if (
+            active_batch is not None
+            and int(active_batch.get("inspection_count") or 0) > 0
+        ):
+            raise AIDomainError(
+                "Finalice el lote activo "
+                f"{active_batch.get('code') or active_batch.get('id')} "
+                "antes de cambiar la versión de IA, porque ya contiene inspecciones."
+            )
+
+        cur.execute(
+            """
+            SELECT id, version
+            FROM garment_ai_models
+            WHERE garment_model_id = %s
+              AND status = 'ACTIVO'
+              AND id <> %s
+            FOR UPDATE
+            """,
+            (garment_model_id, resolved),
+        )
+        previous_active = cur.fetchall()
+
+        result = transition_ai_model_status(
+            cur,
+            int(resolved),
+            "ACTIVO",
+            actor_id,
+        )
+
+        if active_batch is not None:
+            cur.execute(
+                "UPDATE batches SET ai_model_id = %s WHERE id = %s",
+                (int(resolved), int(active_batch["id"])),
+            )
+
+        for previous in previous_active:
+            record_ai_event(
+                cur,
+                "RETIRED",
+                actor_id=actor_id,
+                ai_model_id=int(previous["id"]),
+                payload={
+                    "reason": "REPLACED_BY_VALIDATED_VERSION",
+                    "replacement_ai_model_id": int(resolved),
+                },
+            )
+
+        record_ai_event(
+            cur,
+            "ACTIVATED",
+            actor_id=actor_id,
+            ai_model_id=int(resolved),
+            payload={
+                "garment_model_id": int(garment_model_id),
+                "final_test_session_id": int(final_state["id"]),
+                "final_test_metrics": final_state.get("metrics"),
+                "rebound_batch_id": (
+                    int(active_batch["id"]) if active_batch is not None else None
+                ),
+            },
+        )
+
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo activar ai_model_id=%s después de FINAL_TEST.",
+            resolved,
+        )
+        return jsonify({
+            "ok": False,
+            "error": "No se pudo activar la versión de IA. Intente de nuevo.",
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": (
+            f"La versión {result.get('version')} quedó ACTIVA y la versión anterior fue retirada."
+        ),
+        "result": _json_sanitize(result),
+        "redirect_url": url_for("garment_model_detail", model_id=garment_model_id),
+    }), 200
 
 
 @app.route("/api/ai/validation/threshold/freeze", methods=["POST"])
