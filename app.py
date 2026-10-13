@@ -9592,6 +9592,34 @@ def inspection():
     return render_template("inspection.html", result=result)
 
 
+
+def classify_record_final_decision(
+    ai_decision,
+    status,
+    review_status,
+    human_validation,
+):
+    """Clasifica el resultado final sin confundir normalidad con revisión pendiente."""
+    unresolved = review_status in (None, "", "PENDIENTE")
+
+    if review_status == "DEFECTO_CONFIRMADO" or (
+        unresolved and human_validation == "Correcto"
+    ):
+        return "Rechazada por defecto", "rejected"
+
+    if review_status == "ALERTA_DESCARTADA" or (
+        unresolved and human_validation == "Incorrecto"
+    ):
+        return "Aceptada - alerta descartada", "passed"
+
+    if ai_decision == "NORMAL" or (
+        ai_decision is None and status == "Aprobado"
+    ):
+        return "Aceptada", "passed"
+
+    return "Pendiente de revisión", "pending"
+
+
 @app.route("/registros")
 @login_required
 def records():
@@ -10189,48 +10217,15 @@ def records():
             row.get("reviewed_at")
         )
 
-        review_status = row.get("review_status")
-        human_validation = row.get(
-            "human_validation"
+        (
+            row["decision_label"],
+            row["decision_class"],
+        ) = classify_record_final_decision(
+            ai_decision=row.get("ai_decision"),
+            status=row.get("status"),
+            review_status=row.get("review_status"),
+            human_validation=row.get("human_validation"),
         )
-
-        if (
-            review_status == "DEFECTO_CONFIRMADO"
-            or (
-                review_status in (
-                    None,
-                    "",
-                    "PENDIENTE",
-                )
-                and human_validation == "Correcto"
-            )
-        ):
-            row["decision_label"] = (
-                "Rechazada por defecto"
-            )
-            row["decision_class"] = "rejected"
-
-        elif (
-            review_status == "ALERTA_DESCARTADA"
-            or (
-                review_status in (
-                    None,
-                    "",
-                    "PENDIENTE",
-                )
-                and human_validation == "Incorrecto"
-            )
-        ):
-            row["decision_label"] = (
-                "Apta - alerta descartada"
-            )
-            row["decision_class"] = "passed"
-
-        else:
-            row["decision_label"] = (
-                "Pendiente de revision"
-            )
-            row["decision_class"] = "pending"
 
     batches_options = fetch_all(
         """
