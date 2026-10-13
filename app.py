@@ -7833,6 +7833,38 @@ def batches():
                 url_for("batches")
             )
 
+        # Validar la meta antes de abrir una transacción o crear el lote.
+        # El código anterior ejecutaba esta guarda tras el retorno POST.
+        quantity_override = (
+            request.form.get("quantity_override", "0") == "1"
+        )
+
+        if production_plan["has_goal"] and not quantity_override:
+            remaining = int(
+                production_plan["remaining_garments"] or 0
+            )
+            suggested = int(
+                production_plan["suggested_quantity"] or 0
+            )
+
+            if remaining <= 0:
+                flash(
+                    "El objetivo de producción ya está "
+                    "completamente planificado. "
+                    "No es necesario crear otro lote.",
+                    "error",
+                )
+                return redirect(url_for("batches"))
+
+            if planned_quantity != suggested:
+                flash(
+                    "La planificación cambió. "
+                    f"El sistema recomienda {suggested} "
+                    "prendas para el siguiente lote.",
+                    "error",
+                )
+                return redirect(url_for("batches"))
+
         selected_line = fetch_one(
             """
             SELECT
@@ -8021,66 +8053,6 @@ def batches():
                 created=batch_id,
             )
         )
-    # SMART_BATCH_QUANTITY_GUARD_V1
-    smart_plan = get_today_production_plan()
-
-    quantity_override = (
-        request.form.get(
-            "quantity_override",
-            "0",
-        )
-        == "1"
-    )
-
-    if request.method == "POST" and smart_plan["has_goal"]:
-
-        remaining = int(
-            smart_plan[
-                "remaining_garments"
-            ]
-            or 0
-        )
-
-        suggested = int(
-            smart_plan[
-                "suggested_quantity"
-            ]
-            or 0
-        )
-
-        if (
-            remaining <= 0
-            and not quantity_override
-        ):
-            flash(
-                "El objetivo de producci\u00f3n ya est\u00e1 "
-                "completamente planificado. "
-                "No es necesario crear otro lote.",
-                "error",
-            )
-
-            return redirect(
-                url_for("batches")
-            )
-
-        if (
-            remaining > 0
-            and not quantity_override
-            and planned_quantity != suggested
-        ):
-            flash(
-                "La planificaci\u00f3n cambi\u00f3. "
-                f"El sistema recomienda "
-                f"{suggested} prendas para el "
-                "siguiente lote.",
-                "error",
-            )
-
-            return redirect(
-                url_for("batches")
-            )
-
-
     all_batches = get_batches()
 
     today_key = (
