@@ -4059,6 +4059,22 @@ def _guided_adaptive_mask(sub_roi, roi_area, diagnostics, scale):
         cv2.FILLED,
     )
 
+    # Los bordes LAB se convierten en barreras durante la selección de
+    # la isla interior. Eso recorta unos píxeles de una silueta válida,
+    # especialmente cuando su cobertura real está cerca del mínimo.
+    # Recuperar únicamente esa franja ANTES de aplicar el límite de
+    # cobertura; no se modifica el umbral de 20 % ni se aceptan islas
+    # sin contorno. El tamaño acompaña la escala de trabajo.
+    recovery_size = max(3, int(9 * scale) | 1)
+    garment = cv2.dilate(
+        garment,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (recovery_size, recovery_size),
+        ),
+    )
+    diagnostics["edge_recovery_kernel"] = recovery_size
+
     coverage = float(cv2.countNonZero(garment)) / float(roi_area)
     diagnostics["adaptive_coverage"] = round(coverage, 4)
 
