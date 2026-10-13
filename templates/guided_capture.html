@@ -165,7 +165,25 @@
     background: #187f50;
   }
 
-  .guide-capture-block {
+  .guide-help {
+  margin-top: 12px;
+  border: 1px solid #e3e9f2;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fafbfd;
+}
+
+.guide-help summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #38547c;
+}
+
+.guide-help .guide-steps {
+  margin-top: 10px;
+}
+
+.guide-capture-block {
     margin-top: 16px;
     padding-top: 16px;
     border-top: 1px solid #e6ecf7;
@@ -450,22 +468,18 @@
   </figure>
 
   <article class="guide-panel" aria-live="polite">
-    <h2>Estado de la captura</h2>
+    <h2>Captura de imágenes</h2>
     <p class="guide-sub">
-      Siga los pasos de la izquierda. La imagen se guarda solo
-      cuando usted lo pide con el botón.
+      Siga la indicación que aparece abajo y capture cuando la prenda esté bien colocada.
     </p>
     {% if ai_capture and ai_capture.normal_augmentation %}
     <div class="guide-info" style="display:block">
-      <strong>{{ ai_capture.normal_augmentation.version }} · ampliación del patrón NORMAL</strong><br>
-      Capture únicamente prendas BUENAS. No se aceptan MANCHAS ni AGUJEROS en training.<br>
-      <span id="augInherited">{{ ai_capture.normal_augmentation.inherited_good_images }}</span> imágenes normales heredadas +
-      <span id="augNew">{{ ai_capture.normal_augmentation.new_good_images }}</span> nuevas =
-      <span id="augTotal">{{ ai_capture.normal_augmentation.total_available }}</span> disponibles para {{ ai_capture.normal_augmentation.version }}.<br>
-      Mínimo antes de entrenar: <strong>{{ ai_capture.normal_augmentation.minimum_new_good_images }} capturas nuevas</strong> · objetivo recomendado: <strong>{{ ai_capture.normal_augmentation.recommended_new_good_images }}</strong>.
-      El mínimo cuenta solo capturas nuevas completadas, nunca las heredadas.<br>
-      Variaciones normales recomendadas: desplazamiento leve izquierda/derecha y arriba/abajo, inclinación suave, tensión de tela ligeramente distinta, arrugas naturales y pequeñas diferencias de colocación de producción.<br>
-      No use giros de 90°/180°, prendas de cabeza, escalas extremas ni posiciones que no ocurren en producción.
+      <strong>Solo prendas buenas</strong><br>
+      Capture imágenes normales de la prenda, con pequeñas variaciones naturales de posición.
+      No utilice prendas con manchas o agujeros.
+      <span id="augInherited" hidden>{{ ai_capture.normal_augmentation.inherited_good_images }}</span>
+      <span id="augNew" hidden>{{ ai_capture.normal_augmentation.new_good_images }}</span>
+      <span id="augTotal" hidden>{{ ai_capture.normal_augmentation.total_available }}</span>
     </div>
     {% endif %}
 
@@ -479,16 +493,17 @@
 
     <div class="guide-info" id="guideInfo" hidden></div>
 
-    <ol class="guide-steps" id="guideSteps">
-      <li data-step="sin_prenda">Sin prenda</li>
-      <li data-step="colocar">Coloque la prenda dentro del área</li>
-      <li data-step="mover">
-        Mueva un poco a la izquierda, derecha, arriba o abajo
-      </li>
-      <li data-step="manos">Antes de capturar, retire las manos del área</li>
-      <li data-step="posicion">Posición correcta</li>
-      <li data-step="lista">Lista para capturar</li>
-    </ol>
+    <details class="guide-help">
+      <summary>Ver guía de posicionamiento</summary>
+      <ol class="guide-steps" id="guideSteps">
+        <li data-step="sin_prenda">Sin prenda</li>
+        <li data-step="colocar">Coloque la prenda dentro del área</li>
+        <li data-step="mover">Ajuste ligeramente la posición</li>
+        <li data-step="manos">Retire las manos del área</li>
+        <li data-step="posicion">Posición correcta</li>
+        <li data-step="lista">Lista para capturar</li>
+      </ol>
+    </details>
 
     <div class="guide-capture-block">
       <button
@@ -500,8 +515,7 @@
         CAPTURAR IMAGEN
       </button>
       <p class="guide-hint" id="captureHint">
-        Se activa cuando la cámara tiene una imagen reciente. La guía
-        automática es una asistencia, no un bloqueo.
+        El botón se habilita cuando la cámara esté lista.
       </p>
     </div>
 
@@ -553,26 +567,17 @@
         <strong id="guideAccepted">0 / 40</strong>
       </div>
       <div class="guide-stat">
-        <span>Descartadas</span>
-        <strong id="guideRejected">0</strong>
-      </div>
-      <div class="guide-stat">
-        <span>Mínimo para entrenar</span>
+        <span>Mínimo necesario</span>
         <strong id="guideMin">20</strong>
       </div>
       <div class="guide-stat">
-        <span>Objetivo</span>
-        <strong id="guideTarget">40</strong>
-      </div>
-      <div class="guide-stat">
-        <span>Sesión</span>
-        <strong id="guideSession">—</strong>
-      </div>
-      <div class="guide-stat">
-        <span>Faltan para el mínimo</span>
+        <span>Faltan</span>
         <strong id="guideMissing">20</strong>
       </div>
     </div>
+    <span id="guideRejected" hidden>0</span>
+    <span id="guideTarget" hidden>40</span>
+    <span id="guideSession" hidden>—</span>
 
     <div class="guide-progress">
       <div class="guide-progress-bar"><i id="guideBar"></i></div>

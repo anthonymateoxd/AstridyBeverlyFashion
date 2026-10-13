@@ -551,6 +551,9 @@
       </select>
       <button type="button" id="finalTestCapture" class="detail-button" {% if not validation.final_test.started or validation.final_test.status != 'ABIERTA' %}disabled{% endif %}>CAPTURAR CASO FINAL</button>
       <button type="button" id="finalTestEvaluate" class="detail-button success" {% if not validation.final_test.ready_to_evaluate or validation.final_test.metrics %}disabled{% endif %}>EVALUAR PRUEBA FINAL</button>
+      {% if current_role == 'ADMIN' and validation.model_status == 'VALIDADO' %}
+      <button type="button" id="activateVersion" class="detail-button primary" {% if validation.final_test.status != 'EVALUADA' or not validation.final_test.metrics %}disabled{% endif %}>ACTIVAR {{ validation.version }} PARA INSPECCIÓN</button>
+      {% endif %}
     </div>
     {% endif %}
     <p id="finalTestMessage" role="status"></p>
@@ -843,6 +846,7 @@
       'finalTestStart': url_for('ai_validation_final_test_start'),
       'finalTestCase': url_for('ai_validation_final_test_case'),
       'finalTestEvaluate': url_for('ai_validation_final_test_evaluate'),
+      'activate': url_for('ai_validation_activate'),
       'finalTestAsset': url_for('garment_final_test_asset', model_id=model.id),
       'freezeThreshold': url_for('ai_validation_threshold_freeze'),
       'complete': url_for('ai_validation_complete'),
@@ -1669,6 +1673,7 @@
   const start = document.getElementById("finalTestStart");
   const capture = document.getElementById("finalTestCapture");
   const evaluate = document.getElementById("finalTestEvaluate");
+  const activate = document.getElementById("activateVersion");
   const category = document.getElementById("finalTestCategory");
   const message = document.getElementById("finalTestMessage");
   const postJson = async (url, payload) => {
@@ -1694,6 +1699,7 @@
     if (start) start.disabled = !!finalState.started;
     if (capture) capture.disabled = !finalState.started || finalState.status !== "ABIERTA" || (counts.total || 0) >= 20;
     if (evaluate) evaluate.disabled = !finalState.ready_to_evaluate || !!finalState.metrics;
+    if (activate) activate.disabled = finalState.status !== "EVALUADA" || !finalState.metrics;
     const tbody = document.getElementById("finalTestCases");
     tbody.innerHTML = (finalState.cases || []).map((item) => `
       <tr><td>${item.category === "NORMAL" ? "BUENA" : "DEFECTUOSA → MANCHA"}</td>
@@ -1725,6 +1731,26 @@
   if (start) start.addEventListener("click", () => act(start, () => postJson(cfg.urls.finalTestStart, {garment_model_id: cfg.modelId, ai_model_id: cfg.state.ai_model_id})));
   if (capture) capture.addEventListener("click", () => act(capture, () => postJson(cfg.urls.finalTestCase, {garment_model_id: cfg.modelId, ai_model_id: cfg.state.ai_model_id, category: category.value})));
     if (evaluate) evaluate.addEventListener("click", () => act(evaluate, () => postJson(cfg.urls.finalTestEvaluate, {garment_model_id: cfg.modelId, ai_model_id: cfg.state.ai_model_id})));
+  if (activate) activate.addEventListener("click", async () => {
+    const confirmed = window.confirm(
+      "¿Activar " + cfg.state.version + " para inspección?\n\n" +
+      "La versión actualmente activa será retirada. Si el lote activo todavía no tiene inspecciones, se enlazará automáticamente a la nueva versión."
+    );
+    if (!confirmed) return;
+    activate.disabled = true;
+    if (message) message.textContent = "Activando versión…";
+    try {
+      const response = await postJson(cfg.urls.activate, {
+        garment_model_id: cfg.modelId,
+        ai_model_id: cfg.state.ai_model_id
+      });
+      if (message) message.textContent = response.message || "Versión activada.";
+      window.location.href = response.redirect_url || cfg.urls.detail;
+    } catch (error) {
+      if (message) message.textContent = error.message;
+      activate.disabled = false;
+    }
+  });
   const camera = document.getElementById("finalTestFrame");
   if (camera) setInterval(() => {
     if (!document.hidden) camera.src = cfg.urls.frame + "?t=" + Date.now();

@@ -27,6 +27,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ai_domain import (
+    AI_MODEL_STATUS_ACTIVO,
     AI_MODEL_STATUS_ENTRENADO,
     AI_MODEL_STATUS_ENTRENANDO,
     AI_MODEL_STATUS_FALLIDO,
@@ -114,6 +115,39 @@ _ENV_OVERRIDES = {
     "PATCHCORE_DEVICES": ("devices", int),
     "AI_TRAINING_KEEP_STAGING": ("keep_staging", "bool"),
 }
+
+
+DEMO_FAST_TRACK_PROVENANCE = (
+    "MODO DEMOSTRACION: activación automática posterior al entrenamiento"
+)
+
+
+def demo_fast_track_enabled(env=None) -> bool:
+    """Activa temporalmente el flujo corto usado para la demostración."""
+    source = os.environ if env is None else env
+    return str(source.get("AI_DEMO_FAST_TRACK", "false")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def demo_fast_track_threshold(env=None) -> float:
+    """Threshold temporal explícito del modo demostración."""
+    source = os.environ if env is None else env
+    raw = source.get("AI_DEMO_FAST_TRACK_THRESHOLD", "55.20")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as error:
+        raise AIDomainError(
+            "AI_DEMO_FAST_TRACK_THRESHOLD debe ser numérico."
+        ) from error
+    if not 0.0 <= value <= 100.0:
+        raise AIDomainError(
+            "AI_DEMO_FAST_TRACK_THRESHOLD debe estar entre 0 y 100."
+        )
+    return round(value, 2)
 
 
 def _coerce(kind, raw):
@@ -1378,6 +1412,9 @@ def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
         "validation_available": False,
         "validation_ai_model_id": None,
         "validation_version": None,
+        # Modo temporal de demostración: solo informa si la versión
+        # terminó activada automáticamente; el flujo normal sigue intacto.
+        "demo_fast_track_active": False,
     }
 
     if not garment_model_id:
@@ -1421,9 +1458,9 @@ def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
     # haberse creado) y la versión ya quedó ENTRENADO en la BD.
     cur.execute(
         """
-        SELECT id, version, status, notes, normal_images_count, trained_at,
+        SELECT id, version, status, active, notes, normal_images_count, trained_at,
                parent_ai_model_id, source_dataset_id,
-               normal_augmentation_min_new_images
+               normal_augmentation_min_new_images, threshold_provenance
         FROM garment_ai_models
         WHERE garment_model_id = %s
         ORDER BY id ASC
@@ -1442,6 +1479,13 @@ def training_status_payload(cur, garment_model_id, *, allowed=None) -> dict:
     if latest_model:
         payload["model_id"] = int(latest_model["id"])
         payload["model_status"] = latest_model["status"]
+        payload["demo_fast_track_active"] = bool(
+            latest_model["status"] == AI_MODEL_STATUS_ACTIVO
+            and int(latest_model.get("active") or 0) == 1
+            and str(latest_model.get("threshold_provenance") or "").startswith(
+                DEMO_FAST_TRACK_PROVENANCE
+            )
+        )
 
     payload["next_version"] = next_version_label(versions) if versions else None
     payload["invalidated_versions"] = [item["version"] for item in invalidated]
@@ -2947,6 +2991,140 @@ def _cleanup_staging(paths) -> None:
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def _activate_demo_fast_track(connect, *, ai_model_id: int) -> dict:
+    """Activa una versión recién entrenada solo cuando el modo demo está habilitado.
+
+    Se usa una transacción separada del cierre del entrenamiento. Si esta
+    activación falla, el modelo conserva el estado ENTRENADO y puede seguir
+    por el flujo normal de validación.
+    """
+    threshold = demo_fast_track_threshold()
+    conn = connect()
+
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            conn.start_transaction()
+            cur.execute(
+                """SELECT id, garment_model_id, version, status, active,
+                          threshold_final, threshold_frozen_at,
+                          threshold_provenance
+                   FROM garment_ai_models
+                   WHERE id = %s
+                   FOR UPDATE""",
+                (int(ai_model_id),),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise AIDomainError(
+                    "La versión entrenada ya no existe para activación demo."
+                )
+
+            if (
+                row["status"] == AI_MODEL_STATUS_ACTIVO
+                and int(row.get("active") or 0) == 1
+                and str(row.get("threshold_provenance") or "").startswith(
+                    DEMO_FAST_TRACK_PROVENANCE
+                )
+            ):
+                conn.commit()
+                return {
+                    "ai_model_id": int(ai_model_id),
+                    "status": AI_MODEL_STATUS_ACTIVO,
+                    "threshold": float(row["threshold_final"]),
+                    "already_active": True,
+                }
+
+            if row["status"] != AI_MODEL_STATUS_ENTRENADO:
+                raise AIDomainError(
+                    "La activación demo solo puede iniciar desde ENTRENADO."
+                )
+
+            transition_ai_model_status(
+                cur,
+                int(ai_model_id),
+                AI_MODEL_STATUS_VALIDACION,
+                None,
+            )
+
+            cur.execute(
+                """UPDATE garment_ai_models
+                   SET threshold_final = %s,
+                       threshold_frozen_at = NOW(),
+                       threshold_frozen_by = NULL,
+                       threshold_provenance = %s
+                   WHERE id = %s
+                     AND threshold_final IS NULL""",
+                (
+                    threshold,
+                    DEMO_FAST_TRACK_PROVENANCE,
+                    int(ai_model_id),
+                ),
+            )
+            if cur.rowcount != 1:
+                raise AIDomainError(
+                    "No se pudo fijar el threshold temporal del modo demo."
+                )
+
+            record_ai_event(
+                cur,
+                "THRESHOLD_FROZEN",
+                actor_id=None,
+                ai_model_id=int(ai_model_id),
+                payload={
+                    "threshold_final": threshold,
+                    "source": "DEMO_FAST_TRACK",
+                    "provenance": DEMO_FAST_TRACK_PROVENANCE,
+                },
+            )
+
+            transition_ai_model_status(
+                cur,
+                int(ai_model_id),
+                AI_MODEL_STATUS_VALIDADO,
+                None,
+            )
+            record_ai_event(
+                cur,
+                "VALIDATED",
+                actor_id=None,
+                ai_model_id=int(ai_model_id),
+                payload={"source": "DEMO_FAST_TRACK"},
+            )
+
+            transition_ai_model_status(
+                cur,
+                int(ai_model_id),
+                AI_MODEL_STATUS_ACTIVO,
+                None,
+            )
+            record_ai_event(
+                cur,
+                "ACTIVATED",
+                actor_id=None,
+                ai_model_id=int(ai_model_id),
+                payload={
+                    "source": "DEMO_FAST_TRACK",
+                    "threshold_final": threshold,
+                },
+            )
+            conn.commit()
+            return {
+                "ai_model_id": int(ai_model_id),
+                "status": AI_MODEL_STATUS_ACTIVO,
+                "threshold": threshold,
+                "already_active": False,
+            }
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+
 def _finish_success(
     connect,
     *,
@@ -3068,6 +3246,22 @@ def _finish_success(
             cur.close()
     finally:
         conn.close()
+
+    if demo_fast_track_enabled():
+        try:
+            activated = _activate_demo_fast_track(
+                connect,
+                ai_model_id=int(job["ai_model_id"]),
+            )
+            reporter.log(
+                "demo_fast_track=ACTIVO "
+                f"threshold={activated['threshold']:.2f}"
+            )
+        except Exception as error:  # noqa: BLE001 - entrenamiento ya quedó sano
+            reporter.log(
+                "demo_fast_track=NO_COMPLETADO detalle="
+                + redact_secrets(f"{type(error).__name__}: {error}")
+            )
 
 
 def _finish_failure(connect, *, job, human, technical, reporter):

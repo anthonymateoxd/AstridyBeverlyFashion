@@ -379,6 +379,21 @@ body.app-body{
 .model-view-btn:hover{background:#f7f9fc;color:var(--models-navy)}
 .model-view-btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2}
 
+.model-delete-form{margin:0}
+.model-delete-btn{
+  min-height:44px;
+  padding:0 14px;
+  border:1px solid #efcaca;
+  border-radius:8px;
+  background:#fff;
+  color:#a83232;
+  font-family:inherit;
+  font-size:13px;
+  font-weight:800;
+  cursor:pointer;
+}
+.model-delete-btn:hover{background:#fff4f4}
+
 .models-empty{
   display:none;
   padding:48px 24px;
@@ -590,6 +605,22 @@ body.app-body{
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></svg>
             Ver modelo
           </a>
+
+          {% if role == 'ADMIN'
+                and not model.ai_ready
+                and not model.has_batches
+                and not model.ai_training_now %}
+          <form
+            class="model-delete-form"
+            method="post"
+            action="{{ url_for('garment_model_delete_incomplete', model_id=model.id) }}"
+            onsubmit="return confirm('¿Eliminar este modelo incompleto del catálogo? Esta opción solo está disponible porque todavía no se ha usado en producción.');"
+          >
+            <button class="model-delete-btn" type="submit">
+              Eliminar
+            </button>
+          </form>
+          {% endif %}
         </div>
       </div>
     </article>

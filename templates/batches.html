@@ -816,12 +816,32 @@
 
      {% elif batch.status == 'REVISION_PENDIENTE' %}
 
-      <a
-       class="lot-btn"
-       href="{{ url_for('batch_review', batch_id=batch.id) }}"
-      >
-       Revisar alertas
-      </a>
+      {% if session.get('role') == 'ADMIN' and processed == 0 %}
+
+       <form
+        class="lot-delete-form"
+        method="post"
+        action="{{ url_for('delete_accidental_batch', batch_id=batch.id) }}"
+        onsubmit="return confirm('¿Eliminar este lote accidental? Solo se permite porque no tiene inspecciones registradas.');"
+       >
+        <button
+         class="lot-delete-link"
+         type="submit"
+        >
+         Eliminar lote accidental
+        </button>
+       </form>
+
+      {% else %}
+
+       <a
+        class="lot-btn"
+        href="{{ url_for('batch_review', batch_id=batch.id) }}"
+       >
+        Revisar alertas
+       </a>
+
+      {% endif %}
 
      {% endif %}
 
