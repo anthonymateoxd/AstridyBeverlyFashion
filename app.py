@@ -7745,6 +7745,9 @@ def batches():
           AND gm.active = 1
           AND ai.status = 'ACTIVO'
           AND ai.active = 1
+          AND NULLIF(TRIM(ai.checkpoint_path), '') IS NOT NULL
+          AND ai.threshold_final IS NOT NULL
+          AND ai.threshold_frozen_at IS NOT NULL
 
           AND ai.id = (
               SELECT ai2.id
@@ -7752,6 +7755,9 @@ def batches():
               WHERE ai2.garment_model_id = gm.id
                 AND ai2.status = 'ACTIVO'
                 AND ai2.active = 1
+                AND NULLIF(TRIM(ai2.checkpoint_path), '') IS NOT NULL
+                AND ai2.threshold_final IS NOT NULL
+                AND ai2.threshold_frozen_at IS NOT NULL
               ORDER BY ai2.id DESC
               LIMIT 1
           )
@@ -7882,6 +7888,9 @@ def batches():
               AND gm.active = 1
               AND ai.status = 'ACTIVO'
               AND ai.active = 1
+              AND NULLIF(TRIM(ai.checkpoint_path), '') IS NOT NULL
+              AND ai.threshold_final IS NOT NULL
+              AND ai.threshold_frozen_at IS NOT NULL
 
             ORDER BY ai.id DESC
             LIMIT 1
