@@ -1,7 +1,9 @@
 # Estabilidad de la cámara — diagnóstico y prueba controlada
 
-**Proyecto:** Astrid & Beverly Fashion  
-**Fecha de la prueba:** 12 de octubre de 2026 (Guatemala; 13 de octubre UTC)  
+**Proyecto:** Astrid & Beverly Fashion
+
+**Fecha de la prueba:** 12 de octubre de 2026 (Guatemala; 13 de octubre UTC)
+
 **Entorno:** AWS EC2 `astrid-quality-thesis`, Dahua `192.168.0.5:554`, PC Windows Anthony y Tailscale.
 
 ## Arquitectura actual y su límite
@@ -43,6 +45,18 @@ python3 scripts/monitor_estabilidad_camara.py --duracion 120 --intervalo 5
 ```
 
 Se ejecuta en el host EC2, desde un directorio de diagnóstico separado. Revisa TCP 554, `127.0.0.1:5000/health` y la frecuencia de registros del `camera_capture_worker`. Una conexión TCP exitosa no sustituye una prueba de captura de imagen ni la comprobación visual del navegador.
+
+## Medición continua posterior (120 segundos)
+
+Se ejecutó el monitor de solo lectura en EC2 desde `2026-10-13T04:42:29Z`, con una muestra cada cinco segundos.
+
+- Muestras de conectividad y salud: **24**.
+- Fallos TCP contra `192.168.0.5:554`: **0**.
+- Fallos del endpoint local `/health`: **0**.
+- Actividad del lector registrada: **57 eventos**.
+- Separación máxima entre registros de actividad del lector: **5.6 segundos**.
+
+La prueba no generó inspecciones ni abrió sesiones RTSP adicionales. Estas mediciones no sustituyen un ensayo prolongado ni la verificación visual del video y la inferencia IA.
 
 ## Arquitectura recomendada para operación permanente
 
