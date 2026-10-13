@@ -8229,6 +8229,23 @@ def delete_accidental_batch(batch_id):
         conn.close()
 
 
+def ai_model_ready_for_batch(
+    ai_status,
+    ai_active,
+    checkpoint_path,
+    threshold_final,
+    threshold_frozen_at,
+):
+    """Evita iniciar un lote que no puede producir inferencia PatchCore."""
+    return (
+        str(ai_status or "").upper() == "ACTIVO"
+        and int(ai_active or 0) == 1
+        and bool(str(checkpoint_path or "").strip())
+        and threshold_final is not None
+        and threshold_frozen_at is not None
+    )
+
+
 @app.route("/lotes/<int:batch_id>/iniciar", methods=["POST"])
 @login_required
 @role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
@@ -8283,7 +8300,12 @@ def start_batch(batch_id):
                 ai.id AS linked_ai_id,
                 ai.garment_model_id AS ai_garment_model_id,
                 ai.version AS ai_version,
-                ai.model_type AS ai_model_type
+                ai.model_type AS ai_model_type,
+                ai.status AS ai_status,
+                ai.active AS ai_active,
+                ai.checkpoint_path AS ai_checkpoint_path,
+                ai.threshold_final AS ai_threshold_final,
+                ai.threshold_frozen_at AS ai_threshold_frozen_at
 
             FROM batches b
 
@@ -8385,6 +8407,34 @@ def start_batch(batch_id):
             return redirect(
                 url_for("batches")
             )
+
+        if not ai_model_ready_for_batch(
+            ai_status=batch["ai_status"],
+            ai_active=batch["ai_active"],
+            checkpoint_path=batch["ai_checkpoint_path"],
+            threshold_final=batch["ai_threshold_final"],
+            threshold_frozen_at=batch["ai_threshold_frozen_at"],
+        ):
+            conn.rollback()
+            flash(
+                "La versión de IA del lote no está lista para inspección. "
+                "Debe estar activa y contar con checkpoint y umbral definitivo.",
+                "error",
+            )
+            return redirect(url_for("batches"))
+
+        checkpoint = resolve_under_root(
+            get_ai_artifacts_root(),
+            batch["ai_checkpoint_path"],
+        )
+        if not checkpoint.is_file():
+            conn.rollback()
+            flash(
+                "No se encontró el checkpoint de IA asociado al lote. "
+                "Revise los archivos del modelo antes de iniciar.",
+                "error",
+            )
+            return redirect(url_for("batches"))
 
         cur.execute(
             """
