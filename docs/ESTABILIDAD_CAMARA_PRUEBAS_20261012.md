@@ -58,6 +58,20 @@ Se ejecutó el monitor de solo lectura en EC2 desde `2026-10-13T04:42:29Z`, con 
 
 La prueba no generó inspecciones ni abrió sesiones RTSP adicionales. Estas mediciones no sustituyen un ensayo prolongado ni la verificación visual del video y la inferencia IA.
 
+## Monitor automático del enlace (sin alteración de producción)
+
+El servidor dispone de un monitor de solo lectura que utiliza `scripts/monitor_estabilidad_camara.py`. Se definieron dos unidades versionadas en `ops/systemd/`: `astrid-camera-monitor.service` y `astrid-camera-monitor.timer`. La tarea comprueba una muestra cada cinco segundos durante 60 segundos y vuelve a programarse aproximadamente cada diez minutos después de finalizar. Consulta el puerto TCP 554, `/health` y los registros del lector RTSP; no abre una sesión de cámara adicional ni registra prendas.
+
+Comprobar en EC2:
+
+```bash
+systemctl list-timers --all astrid-camera-monitor.timer
+systemctl status astrid-camera-monitor.service --no-pager
+journalctl -u astrid-camera-monitor.service -n 40 --no-pager
+```
+
+Si el script detecta fallos, la unidad marca una ejecución fallida y registra los datos en `journald`. **No envía notificaciones a un teléfono ni reinicia servicios automáticamente**. Eso deberá configurarse aparte si se aprueba un mecanismo de alertas. La prueba demuestra disponibilidad del puerto y actividad reportada por el lector, no calidad de cada fotograma.
+
 ## Arquitectura recomendada para operación permanente
 
 1. Instalar un equipo Linux dedicado de bajo consumo (por ejemplo, Raspberry Pi 4 o mini-PC) conectado de forma estable a la LAN de la Dahua. Preferir Ethernet cableado y alimentación protegida.
