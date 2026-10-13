@@ -2546,6 +2546,8 @@ def camera_capture_worker():
     global CAMERA_FAILURE_COUNT
     global CAMERA_RECONNECTING
     global CAMERA_FORCE_REOPEN
+    global camera_capture
+    global CAMERA_LAST_CONNECT_ATTEMPT
 
     with CAMERA_RECONNECT_LOCK:
         CAMERA_RECONNECTING = True
@@ -2775,7 +2777,15 @@ def get_camera_status():
 
     technical = _camera_technical_details()
 
-    if CAMERA_CONNECTED:
+    with latest_frame_lock:
+        last_frame_at = latest_frame_timestamp_monotonic
+
+    frame_fresh = (
+        last_frame_at is not None
+        and (time.perf_counter() - last_frame_at) <= 5.0
+    )
+
+    if CAMERA_CONNECTED and frame_fresh:
         return {
             "connected": True,
             "reconnecting": False,
@@ -2794,6 +2804,21 @@ def get_camera_status():
 
     with CAMERA_RECONNECT_LOCK:
         reconnecting = CAMERA_RECONNECTING
+
+    if CAMERA_CONNECTED and not frame_fresh:
+        diagnostic = build_camera_diagnostic(
+            "CAMERA_STREAM_NO_FRAMES",
+            reconnecting=True,
+            technical=technical,
+        )
+        return {
+            "connected": False,
+            "reconnecting": True,
+            "state": "STALE",
+            "message": diagnostic["cause"],
+            "last_ok_at": CAMERA_LAST_OK_AT,
+            "diagnostic": diagnostic,
+        }
 
     diagnostic = build_camera_diagnostic(
         CAMERA_LAST_ERROR_CODE,
@@ -5921,6 +5946,15 @@ def get_batch_garments(batch_id, page=1, per_page=50):
 # ============================================================
 # RUTAS
 # ============================================================
+
+@app.route("/api/camera/status")
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def camera_status_api():
+    response = jsonify(get_camera_status())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 @app.route("/video_feed")
 @login_required
