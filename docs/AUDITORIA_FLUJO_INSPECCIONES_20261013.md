@@ -46,7 +46,7 @@ Pendiente: diseñar una respuesta de salud diferenciada para web, BD, cámara y 
 
 ## Seguridad, despliegue y UAT pendientes
 
-- Los arreglos todavía deben incorporarse a la imagen activa con despliegue aislado, respaldo previo, validación y reversión.
+- Los arreglos se incorporaron a la imagen activa mediante despliegue aislado con respaldo previo, validación y reversión disponible. Falta UAT funcional en navegador.
 - Probar sesión autenticada con una prenda NORMAL, una alerta pendiente y una revisada; comprobar resumen, detalle, historial e informes.
 - Intentar iniciar **solo en entorno de pruebas** un lote cuyo modelo no tiene checkpoint y verificar que permanece en preparación.
 - Verificar existencia de archivos de imágenes históricos mediante comprobación de solo lectura, sin exponerlos.
@@ -59,6 +59,19 @@ Pendiente: diseñar una respuesta de salud diferenciada para web, BD, cámara y 
 
 - `fix/historial-decisiones-finales`: clasificador y pruebas.
 - `fix/lotes-validar-modelo-ia`: guardia de inicio y pruebas.
-- `fix/auditoria-flujo-inspecciones`: integración conjunta para futura validación y despliegue.
+- `fix/auditoria-flujo-inspecciones`: integración conjunta publicada y desplegada en AWS.
 
-**Estado:** auditoría y correcciones locales completadas; despliegue y UAT de navegador pendientes hasta completar la verificación previa de producción.
+## Despliegue controlado confirmado
+
+- Imagen activada: `astrid-quality-control-app:hotfix-auditoria-d84ec7f`, SHA-256 de imagen `5a27fe46cbeeaeb0220bc0a8afe8d3573fa2a39c3879a2e3a39adf2712c59c46`.
+- Fuente versionada: `fix/auditoria-flujo-inspecciones` (commits `31b2ad3`, `de7f6e2`, `d84ec7f`).
+- Respaldo SQL previo: `astrid/production/snapshots/2026/10/13/20261013T064611Z-ip-172-31-2-214/` en S3 privado.
+- Imagen anterior etiquetada: `astrid-quality-control-app:rollback-before-audit-20261013`.
+- Se aplicaron `app.py` y `templates/records.html` sobre la imagen que estaba activa, sin reconstrucción de dependencias ni migración de BD.
+- Confirmados los hashes del código y la plantilla nueva dentro del contenedor. La comprobación `/health` devolvió `status=ok` y 539 inspecciones. Acceso no autenticado al historial redirige al inicio de sesión (HTTP 302).
+- MySQL conservó estado saludable; el trabajador IA no se reinició. Monitoreo RTSP y ambos timers de respaldo permanecen activos. Disco al 84 %, aproximadamente 8 GB disponibles.
+- No se detectaron nuevas excepciones de aplicación en la ventana de logs revisada.
+
+**Estado:** correcciones desplegadas y verificadas técnicamente. UAT en navegador pendiente para confirmar visualmente el historial y el rechazo del inicio de un lote con IA incompleta, sin manipular datos valiosos. Los indicadores de salud de YOLO/PatchCore siguen siendo un hallazgo independiente pendiente de corregir.
+
+**Nota de reversión:** si aparece una regresión confirmada, etiquetar `astrid-quality-control-app:rollback-before-audit-20261013` como `astrid-quality-control-app:latest`, recrear exclusivamente el servicio `app` mediante Docker Compose y repetir `/health`. No restaurar la base de datos por un error exclusivamente de presentación.
