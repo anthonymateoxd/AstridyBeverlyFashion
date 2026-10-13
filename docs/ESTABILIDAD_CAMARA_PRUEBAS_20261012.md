@@ -70,6 +70,8 @@ systemctl status astrid-camera-monitor.service --no-pager
 journalctl -u astrid-camera-monitor.service -n 40 --no-pager
 ```
 
+**Instalación confirmada en AWS:** 13 de octubre de 2026 a las 05:59 UTC. Se instaló a partir de los archivos de Git `61f413f`, sin reconstruir la aplicación web. El servicio `astrid-camera-monitor.timer` quedó `enabled` y `active`. La prueba previa de 10 segundos registró 5 muestras sin errores TCP ni HTTP y 6 eventos del lector (máximo 2.05 s entre registros). La primera ejecución automática de un minuto se completó con éxito entre las 05:59:40 y las 06:00:40 UTC: 12 muestras, 0 fallos RTSP, 0 fallos de salud de la web y 30 eventos del lector; separación máxima de 2.07 segundos. La siguiente ejecución quedó programada para las 06:10:40 UTC. Las mediciones se consultan con `journalctl`; por ahora no se envían notificaciones externas.
+
 Si el script detecta fallos, la unidad marca una ejecución fallida y registra los datos en `journald`. **No envía notificaciones a un teléfono ni reinicia servicios automáticamente**. Eso deberá configurarse aparte si se aprueba un mecanismo de alertas. La prueba demuestra disponibilidad del puerto y actividad reportada por el lector, no calidad de cada fotograma.
 
 ## Arquitectura recomendada para operación permanente
