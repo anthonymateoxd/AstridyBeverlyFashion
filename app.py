@@ -17387,22 +17387,101 @@ def logout():
     return redirect(url_for("login"))
 
 
+def summarize_patchcore_readiness(models, active_batch, artifacts_root):
+    """Diagnóstico ligero: configuración y archivo, no inferencia completa."""
+    readiness_by_id = {}
+    ready = 0
+    for item in models:
+        identifier = int(item["id"])
+        configured = (
+            str(item.get("status") or "").upper() == "ACTIVO"
+            and int(item.get("active") or 0) == 1
+            and bool(str(item.get("checkpoint_path") or "").strip())
+            and item.get("threshold_final") is not None
+            and item.get("threshold_frozen_at") is not None
+        )
+        available = False
+        if configured:
+            try:
+                path = resolve_under_root(
+                    artifacts_root,
+                    str(item["checkpoint_path"]).strip(),
+                )
+                available = path.is_file() and path.stat().st_size >= 1024
+            except (OSError, ValueError, AIDomainError):
+                available = False
+        readiness_by_id[identifier] = available
+        ready += int(available)
+
+    active_model_ready = None
+    if active_batch is not None:
+        ai_id = int(active_batch.get("ai_model_id") or 0)
+        garment_id = int(active_batch.get("garment_model_id") or 0)
+        linked_garment_id = int(active_batch.get("ai_garment_model_id") or 0)
+        active_model_ready = bool(
+            ai_id > 0
+            and garment_id > 0
+            and garment_id == linked_garment_id
+            and readiness_by_id.get(ai_id, False)
+        )
+
+    return {
+        "ai_engine": "patchcore",
+        "detection_mode": "patchcore",
+        "model_ready": (
+            active_model_ready
+            if active_model_ready is not None
+            else ready > 0
+        ),
+        "model_ready_scope": (
+            "active_batch" if active_batch is not None else "available_models"
+        ),
+        "active_patchcore_models": len(models),
+        "ready_patchcore_models": ready,
+        "active_batch_present": active_batch is not None,
+        "active_batch_model_ready": active_model_ready,
+        "readiness_check": "metadata_and_checkpoint_file_only",
+    }
+
+
 @app.route("/health")
 def health():
     try:
         row = fetch_one("SELECT COUNT(*) AS c FROM inspections")
-        model_ready = MODEL_PATH.exists() and MODEL_PATH.stat().st_size >= 1024
+        active_versions = fetch_all(
+            """
+            SELECT id, status, active, checkpoint_path,
+                   threshold_final, threshold_frozen_at
+            FROM garment_ai_models
+            WHERE active = 1
+            """
+        )
+        active_batch = fetch_one(
+            """
+            SELECT b.ai_model_id, b.garment_model_id,
+                   ai.garment_model_id AS ai_garment_model_id
+            FROM batches b
+            LEFT JOIN garment_ai_models ai ON ai.id = b.ai_model_id
+            WHERE b.status = 'EN_INSPECCION'
+            ORDER BY b.id DESC
+            LIMIT 1
+            """
+        )
+        ai_health = summarize_patchcore_readiness(
+            active_versions,
+            active_batch,
+            get_ai_artifacts_root(),
+        )
         return jsonify({
             "status": "ok",
             "database": DB_NAME,
             "inspections": row["c"],
             "camera_source": (
-            "RTSP configurado"
-            if CAMERA_SOURCE.lower().startswith("rtsp://")
-            else CAMERA_SOURCE
+                "RTSP configurado"
+                if CAMERA_SOURCE.lower().startswith("rtsp://")
+                else CAMERA_SOURCE
             ),
-            "model_ready": model_ready,
-            "detection_mode": "yolo" if model_ready else "prototype",
+            **ai_health,
         })
     except Exception as e:
         return jsonify({"status": "error", "detail": str(e)}), 500

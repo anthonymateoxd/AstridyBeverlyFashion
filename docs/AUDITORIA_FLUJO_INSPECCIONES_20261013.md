@@ -38,11 +38,15 @@ Flujo revisado: captura RTSP → selección de fotograma → inferencia PatchCor
 
 En la fecha revisada existía una meta de 100 prendas, 10 lotes y turno 08:00–17:00 (Guatemala). **No modificar esta regla sin acuerdo funcional.** Como mejora opcional, presentar por separado «Meta alcanzada» y «Jornada en curso».
 
-## Hallazgo 4 — endpoint de salud y modelo IA (pendiente)
+## Hallazgo 4 — salud informada por YOLO antiguo (corrección preparada)
 
-`/health` determina `model_ready` comprobando un archivo global `MODEL_PATH` de la integración antigua YOLO y produce `detection_mode='prototype'` si falta. **Eso no comprueba PatchCore**, cuyo runtime productivo carga por `batches.ai_model_id` y valida checkpoint, estado y umbral. `model_ready=false` no prueba que PatchCore esté fallando.
+El endpoint público `/health` confundía un archivo antiguo `models/best.pt` (YOLO) con la disponibilidad del motor productivo actual, PatchCore. Por ello mostraba `detection_mode=prototype` y `model_ready=false` aunque existían modelos PatchCore activos.
 
-Pendiente: diseñar una respuesta de salud diferenciada para web, BD, cámara y versión PatchCore seleccionada, sin cambiar por accidente el contrato usado por monitorización.
+La nueva función `summarize_patchcore_readiness()` calcula, sin cargar modelos ni procesar imágenes, cuántas versiones activas tienen checkpoint accesible y umbral definitivo congelado. Si existe un lote en inspección, el indicador principal corresponde a **su versión específica** y comprueba también la asociación del modelo de prenda. Se conservan `status=ok`, `database`, `inspections`, `camera_source`, `model_ready` y `detection_mode`; estos dos últimos pasan a describir PatchCore en lugar de YOLO heredado.
+
+La respuesta distingue `active_batch_model_ready=null` si no hay lote activo. `readiness_check=metadata_and_checkpoint_file_only` aclara que esto **no demuestra inferencia exitosa, precisión ni calidad óptica**.
+
+Se agregan seis pruebas unitarias para casos sin lote, lote válido, lote con modelo ausente, modelo de otra prenda y configuración incompleta, además del contrato de salud. Pruebas integradas de regresión: **25 correctas**.
 
 ## Seguridad, despliegue y UAT pendientes
 
