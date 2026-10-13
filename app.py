@@ -99,6 +99,11 @@ from ai_training import (
 )
 
 
+def utc_now_db():
+    """Devuelve UTC sin zona horaria para columnas DATETIME de MySQL."""
+    return datetime.now(ZoneInfo("UTC")).replace(tzinfo=None)
+
+
 load_dotenv()
 # RTSP mediante TCP: más estable que UDP para OpenCV
 os.environ.setdefault(
