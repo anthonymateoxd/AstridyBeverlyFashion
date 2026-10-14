@@ -7,6 +7,9 @@ RTSP y compartir el estado de la estación automática dentro del proceso.
 from app import app, ensure_camera_capture_worker, init_db
 
 
+# CAPÍTULO V — Inicio del servidor de aplicación.
+# Prepara la base de datos y el lector de cámara al iniciar el proceso
+# que atiende las solicitudes web mediante Gunicorn.
 def bootstrap_runtime() -> None:
     """Inicializa esquema y lector de cámara una sola vez por proceso."""
     init_db()

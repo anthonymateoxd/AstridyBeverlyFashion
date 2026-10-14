@@ -723,6 +723,9 @@ AI_MODEL_TRANSITIONS = {
 }
 
 
+# CAPÍTULO V — Control de estados de los modelos de inteligencia artificial.
+# Valida que una versión de IA solo cambie a un estado permitido,
+# por ejemplo, antes de activarla para su uso en inspecciones.
 def validate_ai_status_transition(current: str, new_status: str) -> None:
     """Valida la transición de estado de una versión de IA."""
     current_raw = str(current or "").strip().upper()
@@ -3999,6 +4002,9 @@ def transition_capture_session_status(
     }
 
 
+# CAPÍTULO V — Registro y trazabilidad de imágenes de entrenamiento.
+# Comprueba la ruta, la huella SHA-256 y la sesión de captura
+# antes de asociar la imagen al modelo de prenda correspondiente.
 def register_training_image(
     cur,
     *,

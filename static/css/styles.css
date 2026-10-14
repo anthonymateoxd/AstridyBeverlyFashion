@@ -1,3 +1,6 @@
+/* CAPÍTULO V — Estilos generales del sistema web.
+   Variables reutilizadas para colores, superficies y elementos comunes
+   en las pantallas construidas con HTML y CSS. */
 :root {
   --bg: #f5f2ec;
   --card: #fff;

@@ -1,3 +1,6 @@
+# CAPÍTULO V — Servicios de la solución.
+# Docker Compose define los contenedores de la aplicación y MySQL,
+# así como su configuración operativa y sus volúmenes persistentes.
 services:
   mysql:
     image: mysql:8.0

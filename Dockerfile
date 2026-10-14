@@ -1,3 +1,6 @@
+# CAPÍTULO V — Contenedor de la aplicación.
+# Instala Python y las dependencias necesarias para ejecutar Flask
+# y los módulos de visión artificial en el entorno Docker.
 FROM python:3.11.17-slim-trixie
 
 WORKDIR /app

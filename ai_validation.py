@@ -369,6 +369,9 @@ def build_validation_input(image_path, *, preprocessing_profile="PER_IMAGE") -> 
     return temp_path
 
 
+# CAPÍTULO V — Pruebas de validación de una versión de IA.
+# Analiza imágenes de prueba con los artefactos de la versión seleccionada,
+# sin reemplazar el modelo que esté activo en producción.
 def predict_with_ai_model(
     ai_model_id,
     image_path,
@@ -1689,6 +1692,9 @@ def compute_defect_breakdown(cases, threshold=None) -> dict:
     return breakdown
 
 
+# CAPÍTULO V — Evaluación de los resultados de IA.
+# Resume los casos clasificados como prendas buenas o defectuosas
+# y calcula métricas para analizar posibles umbrales de decisión.
 def compute_validation_metrics(
     cases,
     *,
