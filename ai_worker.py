@@ -55,6 +55,9 @@ def default_worker_id() -> str:
     return f"{socket.gethostname()}-{os.getpid()}"[:120]
 
 
+# CAPÍTULO V — Procesamiento de trabajos de entrenamiento.
+# Antes de solicitar un nuevo entrenamiento, el trabajador identifica
+# tareas interrumpidas para evitar que permanezcan en ejecución indefinidamente.
 def reclaim_stale_jobs(connect, stale_seconds: int) -> int:
     """Falla los jobs EN_CURSO sin heartbeat reciente (sin reanudar)."""
     conn = connect()

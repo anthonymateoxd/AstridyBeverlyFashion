@@ -35,6 +35,9 @@ _AI_CAPTURE_SESSION_ID: int | None = None
 _AI_CAPTURE_GARMENT_MODEL_ID: int | None = None
 
 
+# CAPÍTULO V — Preparación y captura de imágenes.
+# Esta operación controla cuándo la estación trabaja en modo de captura
+# para preparar imágenes de referencia, separado de la producción.
 def set_ai_capture_mode(
     active: bool,
     *,

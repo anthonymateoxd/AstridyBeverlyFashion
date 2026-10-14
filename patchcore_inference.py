@@ -69,6 +69,9 @@ class PatchCoreInspector:
         print(f"[PATCHCORE] Checkpoint configurado: {self.checkpoint_path}")
         print(f"[PATCHCORE] Resolución configurada: {self.image_size}")
 
+    # CAPÍTULO V — Inferencia de inteligencia artificial con PatchCore.
+    # Se analiza una imagen con el modelo entrenado y se obtienen
+    # la clasificación, la puntuación y el mapa de anomalías.
     def inspect(self, image_path: str) -> dict:
         image = Path(image_path).resolve()
 

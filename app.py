@@ -1,3 +1,6 @@
+# CAPÍTULO V — Backend de la aplicación web.
+# Flask recibe las solicitudes del navegador y conecta las pantallas
+# con los módulos de inspección, inteligencia artificial y persistencia.
 from flask import (
     Flask,
     render_template,
@@ -208,6 +211,9 @@ CAMERA_CAPTURE_WORKER_STARTED = False
 CAMERA_FORCE_REOPEN = False
 yolo_model = None
 
+# CAPÍTULO V — Configuración del servidor web.
+# Se crea la aplicación Flask y se preparan las opciones de seguridad
+# de las sesiones utilizadas por los usuarios del sistema.
 app = Flask(__name__)
 _secret_key = os.environ.get("SECRET_KEY")
 if not _secret_key:
@@ -250,6 +256,8 @@ def db_config(include_database=True):
     return config
 
 
+# CAPÍTULO V — Comunicación con la base de datos MySQL.
+# Esta función abre la conexión utilizando la configuración centralizada.
 def db(include_database=True):
     return mysql.connector.connect(**db_config(include_database=include_database))
 
@@ -2517,6 +2525,9 @@ def _try_discover_camera_after_failures(direct_failures):
     return False
 
 
+# CAPÍTULO V — Captura continua de imágenes de la cámara.
+# Un solo trabajador obtiene fotogramas del flujo RTSP y mantiene
+# disponible la imagen más reciente para las operaciones del sistema.
 def camera_capture_worker():
     """
     ÚNICO lector continuo de RTSP.
@@ -3001,6 +3012,9 @@ def save_image(file_storage=None):
     return save_frame_to_static(frame)
 
 
+# CAPÍTULO V — Registro automático de inspecciones.
+# A partir de un fotograma, ejecuta el análisis y registra el resultado
+# junto con su evidencia y el lote de producción correspondiente.
 def register_inspection_from_frame(
     frame,
     notes="Registro generado por estación de inspección.",
@@ -5908,6 +5922,9 @@ def video_feed():
     )
 
 
+# CAPÍTULO V — Autenticación de usuarios.
+# La ruta recibe el formulario de acceso y comprueba las credenciales
+# antes de permitir el ingreso al panel del sistema.
 @app.route("/", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -5946,6 +5963,9 @@ def login():
     return render_template("login.html")
 
 
+# CAPÍTULO V — Panel principal de control.
+# Consulta los datos de producción y prepara los indicadores del día
+# respetando la zona horaria utilizada por la empresa.
 @app.route("/dashboard")
 @login_required
 def dashboard():
@@ -7652,6 +7672,9 @@ def get_today_production_plan():
     }
 
 
+# CAPÍTULO V — Gestión de lotes de inspección.
+# Presenta y administra los lotes vinculados con los modelos
+# de prendas y las versiones de inteligencia artificial disponibles.
 @app.route("/lotes", methods=["GET", "POST"])
 @login_required
 def batches():
@@ -9642,6 +9665,9 @@ def inspection():
     return render_template("inspection.html", result=result)
 
 
+# CAPÍTULO V — Historial de inspecciones.
+# Permite consultar registros y filtrar las inspecciones por fechas,
+# lote, modelo de prenda, responsable y resultado.
 @app.route("/registros")
 @login_required
 def records():
@@ -11758,6 +11784,9 @@ def get_goal_history_data(start_date, end_date):
     return {"rows": rows, "summary": summarize_goal_history(rows)}
 
 
+# CAPÍTULO V — Informes de control de calidad.
+# Reúne los datos de inspección y el historial de metas de producción
+# para presentar la información consolidada en la interfaz de informes.
 @app.route("/informes")
 @login_required
 def informes():
@@ -16002,6 +16031,9 @@ def save_garment_reference_images(model_id, images, *, cur):
         raise
 
 
+# CAPÍTULO V — Administración de modelos de prenda.
+# Consulta los modelos registrados y determina cuáles puede visualizar
+# cada usuario según su rol y el estado de aprobación.
 @app.route("/modelos-prenda")
 @login_required
 def garment_models_page():
@@ -21634,6 +21666,7 @@ GUIDED_REVIEW_DECISIONS = {
     "repeat": ("RECHAZADA", "MANUAL_REPEAT"),
     "discard": ("RECHAZADA", "MANUAL_DISCARD"),
 }
+# Inicializa la aplicación web utilizando el framework Flask.
 
 
 @app.route("/api/ai/capture/guide/review", methods=["POST"])
