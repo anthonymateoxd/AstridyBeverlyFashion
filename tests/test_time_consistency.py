@@ -23,14 +23,13 @@ class TimeConsistencyTests(unittest.TestCase):
 
     def test_utc_now_db_uses_utc_independent_of_host_timezone(self):
         before = datetime.now(ZoneInfo("UTC")).replace(tzinfo=None)
-        value = datetime.strptime(
-            self.A.utc_now_db(),
-            self.A.DB_DATETIME_FORMAT,
-        )
+        value = self.A.utc_now_db()
         after = datetime.now(ZoneInfo("UTC")).replace(tzinfo=None)
 
-        self.assertLessEqual(before.replace(microsecond=0), value)
-        self.assertLessEqual(value, after.replace(microsecond=0))
+        self.assertIsInstance(value, datetime)
+        self.assertIsNone(value.tzinfo)
+        self.assertLessEqual(before, value)
+        self.assertLessEqual(value, after)
 
     def test_database_writes_do_not_use_local_naive_now(self):
         source = (ROOT / "app.py").read_text(encoding="utf-8")

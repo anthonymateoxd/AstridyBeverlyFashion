@@ -34,6 +34,7 @@ def construir_worker(captura, *, forzar=False):
         "CAMERA_CONNECTED": True,
         "CAMERA_LAST_OK_AT": None,
         "CAMERA_LAST_ERROR": None,
+        "CAMERA_LAST_ERROR_CODE": None,
         "CAMERA_FAILURE_COUNT": 0,
         "CAMERA_RECONNECTING": False,
         "CAMERA_FORCE_REOPEN": forzar,
@@ -51,7 +52,7 @@ def construir_worker(captura, *, forzar=False):
         "app": SimpleNamespace(logger=SimpleNamespace(info=lambda *a: None)),
         "get_camera": lambda: entorno["camera_capture"],
         "_clear_latest_frame": lambda: None,
-        "_note_camera_signal_lost": lambda error: None,
+        "_note_camera_signal_lost": lambda *args, **kwargs: None,
         "_try_discover_camera_after_failures": lambda count: False,
         "time": SimpleNamespace(sleep=lambda _: (_ for _ in ()).throw(StopWorker())),
     }
@@ -98,6 +99,9 @@ class PruebasEstadoCamara(unittest.TestCase):
             "CAMERA_RECONNECT_LOCK": threading.Lock(),
             "CAMERA_RECONNECTING": False,
             "CAMERA_LAST_ERROR": None,
+            "CAMERA_LAST_ERROR_CODE": None,
+            "_camera_technical_details": lambda: {},
+            "build_camera_diagnostic": lambda code, **kwargs: {"code": code, "cause": "Sin video"},
             "time": SimpleNamespace(perf_counter=lambda: 20.0),
         }
         arbol = ast.fix_missing_locations(ast.Module(body=[funcion], type_ignores=[]))

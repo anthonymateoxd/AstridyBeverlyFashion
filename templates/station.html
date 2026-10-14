@@ -179,6 +179,50 @@
     display: none;
   }
 
+  .station-camera-alert.checking {
+    background: #fff8e8;
+    color: #6f5312;
+    border-color: #ead39a;
+    border-left-color: #c99a2e;
+  }
+
+  .camera-alert-action {
+    margin: 9px 0 0;
+    font-size: 13px;
+  }
+
+  .camera-alert-action strong {
+    display: inline;
+    margin: 0;
+    font-size: inherit;
+  }
+
+  .camera-technical-details {
+    margin-top: 10px;
+    font-size: 12px;
+  }
+
+  .camera-technical-details summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  .camera-technical-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 10px;
+    margin: 8px 0 0;
+  }
+
+  .camera-technical-grid dt {
+    font-weight: 600;
+  }
+
+  .camera-technical-grid dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
   .quality-alarm {
     position: fixed;
     top: 18px;
@@ -426,6 +470,22 @@
         <span id="cameraAlertMessage">
           Verificando conexión con la cámara de inspección.
         </span>
+
+        <p
+          id="cameraAlertAction"
+          class="camera-alert-action"
+        ></p>
+
+        <details
+          id="cameraTechnicalDetails"
+          class="camera-technical-details"
+        >
+          <summary>Ver detalles técnicos</summary>
+          <dl
+            id="cameraTechnicalGrid"
+            class="camera-technical-grid"
+          ></dl>
+        </details>
       </div>
 
 
@@ -542,6 +602,9 @@
   const cameraAlert = document.getElementById('cameraAlert');
   const cameraAlertTitle = document.getElementById('cameraAlertTitle');
   const cameraAlertMessage = document.getElementById('cameraAlertMessage');
+  const cameraAlertAction = document.getElementById('cameraAlertAction');
+  const cameraTechnicalDetails = document.getElementById('cameraTechnicalDetails');
+  const cameraTechnicalGrid = document.getElementById('cameraTechnicalGrid');
   const cameraFeed = document.getElementById('cameraFeed');
   const cameraReconnectBtn = document.getElementById('cameraReconnectBtn');
 
@@ -650,9 +713,80 @@
   }
 
 
+  function renderCameraTechnicalDetails(camera) {
+    if (!cameraTechnicalGrid || !cameraTechnicalDetails) {
+      return;
+    }
+
+    const diagnostic = camera?.diagnostic || {};
+    const technical = diagnostic.technical || {};
+
+    const labels = {
+      code: 'Código',
+      ip: 'IP',
+      rtsp_port: 'Puerto RTSP',
+      channel: 'Canal',
+      stream: 'Stream',
+      rtsp_transport: 'Transporte',
+      discovery_enabled: 'Descubrimiento IP',
+      failure_count: 'Fallos consecutivos',
+      open_timeout_ms: 'Timeout apertura',
+      read_timeout_ms: 'Timeout lectura',
+      last_ok_at: 'Último frame correcto',
+    };
+
+    const rows = [
+      ['code', diagnostic.code || '-'],
+      ['ip', technical.ip || '-'],
+      ['rtsp_port', technical.rtsp_port ?? '-'],
+      ['channel', technical.channel ?? '-'],
+      ['stream', technical.stream || '-'],
+      ['rtsp_transport', technical.rtsp_transport || '-'],
+      [
+        'discovery_enabled',
+        technical.discovery_enabled === true
+          ? 'Activo'
+          : technical.discovery_enabled === false
+            ? 'Desactivado'
+            : '-',
+      ],
+      ['failure_count', technical.failure_count ?? '0'],
+      [
+        'open_timeout_ms',
+        technical.open_timeout_ms
+          ? technical.open_timeout_ms + ' ms'
+          : '-',
+      ],
+      [
+        'read_timeout_ms',
+        technical.read_timeout_ms
+          ? technical.read_timeout_ms + ' ms'
+          : '-',
+      ],
+      ['last_ok_at', camera?.last_ok_at || technical.last_ok_at || '-'],
+    ];
+
+    cameraTechnicalGrid.textContent = '';
+
+    rows.forEach(([key, value]) => {
+      const dt = document.createElement('dt');
+      dt.textContent = labels[key] || key;
+
+      const dd = document.createElement('dd');
+      dd.textContent = String(value);
+
+      cameraTechnicalGrid.appendChild(dt);
+      cameraTechnicalGrid.appendChild(dd);
+    });
+
+    cameraTechnicalDetails.classList.remove('hidden');
+  }
+
+
   function updateCameraState(camera) {
     const connected = Boolean(camera && camera.connected);
     const state = camera ? camera.state : 'DISCONNECTED';
+    const diagnostic = camera?.diagnostic || {};
 
     cameraText.classList.remove(
       'connected',
@@ -660,11 +794,17 @@
       'checking',
     );
 
+    cameraAlert.classList.remove('checking');
+
     if (connected) {
       cameraText.textContent = '● CÁMARA CONECTADA';
       cameraText.classList.add('connected');
 
       cameraAlert.classList.add('hidden');
+
+      if (cameraAlertAction) {
+        cameraAlertAction.textContent = '';
+      }
 
       manualBtn.disabled = !hasActiveBatch;
       autoStartBtn.disabled = !hasActiveBatch;
@@ -676,15 +816,30 @@
     autoStartBtn.disabled = true;
 
     cameraAlert.classList.remove('hidden');
+    renderCameraTechnicalDetails(camera);
+
+    if (cameraAlertAction) {
+      cameraAlertAction.textContent = '';
+      if (diagnostic.action) {
+        const strong = document.createElement('strong');
+        strong.textContent = 'Qué hacer: ';
+        cameraAlertAction.appendChild(strong);
+        cameraAlertAction.appendChild(
+          document.createTextNode(diagnostic.action),
+        );
+      }
+    }
 
     if (state === 'CHECKING') {
       cameraText.textContent = '● COMPROBANDO';
       cameraText.classList.add('checking');
+      cameraAlert.classList.add('checking');
 
       cameraAlertTitle.textContent =
-        'Comprobando cámara';
+        diagnostic.title || 'Comprobando cámara';
 
       cameraAlertMessage.textContent =
+        diagnostic.cause ||
         camera?.message ||
         'Verificando conexión con la cámara.';
 
@@ -695,15 +850,17 @@
     cameraText.classList.add('disconnected');
 
     cameraAlertTitle.textContent =
-      'Cámara no disponible';
+      diagnostic.title || 'Cámara no disponible';
 
     cameraAlertMessage.textContent =
+      diagnostic.cause ||
       camera?.message ||
       'No se recibe video de la cámara de inspección.';
 
     autoStateText.textContent =
       'Cámara desconectada';
   }
+
 
   function setMessage(text, type = 'normal') {
     stationMessage.textContent = text;

@@ -108,6 +108,7 @@ class BatchRuntimeTests(unittest.TestCase):
                 "fetch_one",
                 return_value=self.user,
             ) as fetch_one,
+            patch.object(self.A, "db") as connect_db,
         ):
             response = self.client.post(
                 "/lotes",
@@ -121,6 +122,89 @@ class BatchRuntimeTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 302)
         fetch_one.assert_called_once()
+        connect_db.assert_not_called()
+
+    def test_goal_completely_planned_rejects_without_database(self):
+        with (
+            patch.object(
+                self.A, "get_today_production_plan",
+                return_value=plan(has_goal=True, remaining=0, suggested=0),
+            ),
+            patch.object(self.A, "fetch_all", return_value=[]),
+            patch.object(self.A, "get_inspection_lines", return_value=[]),
+            patch.object(self.A, "fetch_one", return_value=self.user) as auth,
+            patch.object(self.A, "db") as connect_db,
+        ):
+            response = self.client.post(
+                "/lotes",
+                data={
+                    "garment_model_id": "1735",
+                    "inspection_line_id": "1",
+                    "planned_quantity": "10",
+                    "quantity_override": "0",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        auth.assert_called_once()
+        connect_db.assert_not_called()
+
+    def test_explicit_override_skips_goal_guard_but_still_checks_line(self):
+        with (
+            patch.object(
+                self.A, "get_today_production_plan",
+                return_value=plan(has_goal=True, remaining=40, suggested=40),
+            ),
+            patch.object(self.A, "fetch_all", return_value=[]),
+            patch.object(self.A, "get_inspection_lines", return_value=[]),
+            patch.object(
+                self.A, "fetch_one",
+                side_effect=[self.user, None],
+            ) as fetch_one,
+            patch.object(self.A, "db") as connect_db,
+        ):
+            response = self.client.post(
+                "/lotes",
+                data={
+                    "garment_model_id": "1735",
+                    "inspection_line_id": "1",
+                    "planned_quantity": "30",
+                    "quantity_override": "1",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        # Al superar la guarda, se consulta la línea (ficticia, no válida).
+        self.assertEqual(fetch_one.call_count, 2)
+        connect_db.assert_not_called()
+
+    def test_no_goal_skips_guard_but_still_checks_line(self):
+        with (
+            patch.object(
+                self.A, "get_today_production_plan",
+                return_value=plan(has_goal=False),
+            ),
+            patch.object(self.A, "fetch_all", return_value=[]),
+            patch.object(self.A, "get_inspection_lines", return_value=[]),
+            patch.object(
+                self.A, "fetch_one",
+                side_effect=[self.user, None],
+            ) as fetch_one,
+            patch.object(self.A, "db") as connect_db,
+        ):
+            response = self.client.post(
+                "/lotes",
+                data={
+                    "garment_model_id": "1735",
+                    "inspection_line_id": "1",
+                    "planned_quantity": "30",
+                    "quantity_override": "0",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(fetch_one.call_count, 2)
+        connect_db.assert_not_called()
 
     def test_batch_model_query_requires_production_ready_ai(self):
         captured = []

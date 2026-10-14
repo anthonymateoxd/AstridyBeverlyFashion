@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import importlib
 import sys
 import unittest
@@ -115,8 +116,16 @@ class GarmentModelDeleteIncompleteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertTrue(cursor.update_called)
-        self.assertEqual(cursor.update_params, (77,))
-        self.assertNotIn("updated_at", cursor.update_sql.lower())
+        # El borrado lógico mantiene una marca temporal UTC para auditoría.
+        self.assertEqual(cursor.update_params[1], 77)
+        updated_at = cursor.update_params[0]
+        self.assertIsInstance(updated_at, datetime)
+        self.assertIsNone(updated_at.tzinfo)
+        self.assertLess(
+            abs((datetime.now(timezone.utc).replace(tzinfo=None) - updated_at).total_seconds()),
+            60,
+        )
+        self.assertIn("updated_at = %s", cursor.update_sql.lower())
         self.assertEqual(conn.commits, 1)
         self.assertEqual(conn.rollbacks, 0)
         self.assertTrue(cursor.closed)

@@ -1118,19 +1118,9 @@
    <strong>Decisi&oacute;n final</strong>
 
    <small>
-    {% if row.ai_decision == 'NORMAL' or row.status == 'Aprobado' %}
-    <span class="result-badge passed">
-     Aceptada
-    </span>
-    {% elif row.review_status == 'ALERTA_DESCARTADA' %}
-    <span class="result-badge passed">
-     Aceptada - alerta descartada
-    </span>
-    {% else %}
     <span class="result-badge {{ row.decision_class }}">
      {{ row.decision_label }}
     </span>
-    {% endif %}
    </small>
 
   </div>
@@ -1148,6 +1138,9 @@
      {{ row.reviewed_at_gt.strftime('%d/%m/%Y %H:%M') }}
     </small>
     {% endif %}
+
+   {% elif row.ai_decision == 'NORMAL' or row.review_status == 'NO_REQUIERE_REVISION' %}
+    <small>No requiere revisi&oacute;n humana</small>
 
    {% elif row.decision_class == 'pending' %}
     <small>Pendiente de revisi&oacute;n</small>

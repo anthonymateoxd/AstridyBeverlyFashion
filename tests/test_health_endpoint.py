@@ -1,3 +1,4 @@
+"""Contrato de salud compatible con AWS: disponibilidad web separada de cámara e IA."""
 from __future__ import annotations
 
 import importlib
@@ -21,49 +22,59 @@ class HealthEndpointTests(unittest.TestCase):
         cls.A = importlib.import_module("app")
         cls.client = cls.A.app.test_client()
 
-    def test_health_reports_connected_camera_without_sensitive_details(self):
+    def _consultar(self, *, connected):
         with (
-            patch.object(self.A, "fetch_one", return_value={"ok": 1}),
-            patch.object(self.A, "latest_camera_frame", object()),
+            patch.object(
+                self.A,
+                "fetch_one",
+                side_effect=[{"c": 539}, None],
+            ) as fetch_one,
+            patch.object(self.A, "fetch_all", return_value=[]),
+            patch.object(
+                self.A,
+                "summarize_patchcore_readiness",
+                return_value={
+                    "detection_mode": "patchcore",
+                    "model_ready": False,
+                    "ready_patchcore_models": 0,
+                },
+            ),
+            patch.object(
+                self.A,
+                "latest_camera_frame",
+                object() if connected else None,
+            ),
             patch.object(
                 self.A,
                 "latest_frame_timestamp_monotonic",
-                100.0,
+                100.0 if connected else None,
             ),
-            patch.object(
-                self.A.time,
-                "monotonic",
-                return_value=101.0,
-            ),
+            patch.object(self.A.time, "monotonic", return_value=101.0),
         ):
             response = self.client.get("/health")
+        self.assertEqual(fetch_one.call_count, 2)
+        return response
 
+    def test_health_reports_patchcore_and_connected_camera(self):
+        response = self._consultar(connected=True)
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["database"], "ok")
+        self.assertEqual(payload["database"], self.A.DB_NAME)
         self.assertEqual(payload["camera"], "connected")
+        self.assertEqual(payload["detection_mode"], "patchcore")
+        self.assertEqual(payload["inspections"], 539)
         self.assertNotIn("detail", payload)
-        self.assertNotIn("camera_source", payload)
-        self.assertNotIn("detection_mode", payload)
+        self.assertNotIn("rtsp://", response.get_data(as_text=True).lower())
 
-    def test_health_is_degraded_when_camera_has_no_recent_frame(self):
-        with (
-            patch.object(self.A, "fetch_one", return_value={"ok": 1}),
-            patch.object(self.A, "latest_camera_frame", None),
-            patch.object(
-                self.A,
-                "latest_frame_timestamp_monotonic",
-                None,
-            ),
-        ):
-            response = self.client.get("/health")
-
+    def test_camera_disconnected_does_not_mean_web_failure(self):
+        response = self._consultar(connected=False)
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["status"], "degraded")
-        self.assertEqual(payload["database"], "ok")
+        self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["camera"], "disconnected")
+        self.assertEqual(payload["detection_mode"], "patchcore")
+        self.assertFalse(payload["model_ready"])
 
     def test_health_database_failure_is_generic_and_returns_503(self):
         with patch.object(

@@ -1,0 +1,12 @@
+[Unit]
+Description=Astrid - monitorear cámara Dahua y lector RTSP (sin capturar imágenes)
+After=network-online.target docker.service tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/astrid-camera-diagnostics/monitor_estabilidad_camara.py --duracion 60 --intervalo 5
+TimeoutStartSec=100
+Nice=10
+StandardOutput=journal
+StandardError=journal

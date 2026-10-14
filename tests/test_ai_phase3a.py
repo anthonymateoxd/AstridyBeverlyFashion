@@ -1049,6 +1049,7 @@ class TrainingExecutionDbTests(_TrainingDbCase):
         "TEST-PH3W-FAIL",
         "TEST-PH3W-ORPH",
         "TEST-PH3W-STAT",
+        "TEST-PH3W-DEMO",
     )
     USERS = (("ph3w_admin", "ADMIN"),)
 
@@ -1180,6 +1181,57 @@ class TrainingExecutionDbTests(_TrainingDbCase):
             TRAINING_UI_COMPLETED,
         )
         self.assertEqual(status["training"]["ui_label"], "PENDIENTE DE VALIDACIÓN")
+
+    def test_demo_fast_track_activates_trained_model_without_manual_validation(self):
+        import ai_worker
+        from unittest import mock
+        from ai_training import execute_training_job
+
+        model_id = self.model_ids["TEST-PH3W-DEMO"]
+        job_id = self._request_job(model_id)
+
+        claimed = ai_worker.claim_job(self._connect, "ph3w-worker-demo")
+        self.assertIsNotNone(claimed)
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "AI_DEMO_FAST_TRACK": "true",
+                "AI_DEMO_FAST_TRACK_THRESHOLD": "55.20",
+            },
+            clear=False,
+        ):
+            result = execute_training_job(
+                job_id,
+                connect=self._connect,
+                trainer=self._FakeTrainer(),
+            )
+
+        self.assertTrue(result["ok"], result)
+
+        model = self._model_row(model_id)
+        self.assertEqual(model["status"], "ACTIVO")
+        self.assertEqual(int(model["active"]), 1)
+        self.assertAlmostEqual(float(model["threshold_final"]), 55.20, places=2)
+        self.assertIsNotNone(model["threshold_frozen_at"])
+        self.assertTrue(
+            str(model["threshold_provenance"]).startswith("MODO DEMOSTRACION")
+        )
+
+        self.conn.commit()
+        self.cur.execute(
+            "SELECT event_type FROM ai_events WHERE ai_model_id = %s",
+            (int(model["id"]),),
+        )
+        events = {row["event_type"] for row in self.cur.fetchall()}
+        self.assertIn("TRAINING_COMPLETED", events)
+        self.assertIn("THRESHOLD_FROZEN", events)
+        self.assertIn("VALIDATED", events)
+        self.assertIn("ACTIVATED", events)
+
+        training = self._json(self._status(model_id))["training"]
+        self.assertEqual(training["model_status"], "ACTIVO")
+        self.assertTrue(training["demo_fast_track_active"])
 
     def test_status_stays_pending_validation_without_job_row(self):
         """La versión ENTRENADO manda aunque no exista job asociado.

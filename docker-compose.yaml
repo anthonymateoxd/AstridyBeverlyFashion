@@ -73,7 +73,7 @@ services:
       CAMERA_READ_TIMEOUT_MS: '${CAMERA_READ_TIMEOUT_MS:-4000}'
       CAMERA_READ_FAIL_RELEASE_LIMIT: '${CAMERA_READ_FAIL_RELEASE_LIMIT:-3}'
       CAMERA_LATENCY_LOG_INTERVAL_S: '${CAMERA_LATENCY_LOG_INTERVAL_S:-2.0}'
-      CAMERA_DISCOVERY_ENABLED: '${CAMERA_DISCOVERY_ENABLED:-1}'
+      CAMERA_DISCOVERY_ENABLED: '${CAMERA_DISCOVERY_ENABLED:-0}'
       CAMERA_DISCOVERY_CIDR: '${CAMERA_DISCOVERY_CIDR:-}'
       CAMERA_DISCOVERY_TIMEOUT: '${CAMERA_DISCOVERY_TIMEOUT:-0.30}'
       CAMERA_DISCOVERY_WORKERS: '${CAMERA_DISCOVERY_WORKERS:-40}'
@@ -179,6 +179,11 @@ services:
       AI_WORKER_LOG_LEVEL: '${AI_WORKER_LOG_LEVEL:-INFO}'
       AI_WORKER_ONCE: '${AI_WORKER_ONCE:-0}'
       AI_CAPTURE_MIN_IMAGES: '${AI_CAPTURE_MIN_IMAGES:-20}'
+
+      # Flujo corto temporal para demostración de tesis. En false se
+      # conserva íntegro el proceso normal de validación y congelamiento.
+      AI_DEMO_FAST_TRACK: '${AI_DEMO_FAST_TRACK:-false}'
+      AI_DEMO_FAST_TRACK_THRESHOLD: '${AI_DEMO_FAST_TRACK_THRESHOLD:-55.20}'
 
       # Entrenamiento: input_size=256 = tamaño que la inferencia
       # productiva aplica hoy (Resize 256). Cambiar solo con análisis.

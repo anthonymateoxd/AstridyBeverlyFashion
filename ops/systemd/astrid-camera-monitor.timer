@@ -1,0 +1,12 @@
+[Unit]
+Description=Astrid - monitoreo periódico de cámara Dahua
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=10min
+AccuracySec=30s
+Persistent=true
+Unit=astrid-camera-monitor.service
+
+[Install]
+WantedBy=timers.target

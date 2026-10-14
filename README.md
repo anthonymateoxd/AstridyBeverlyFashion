@@ -60,6 +60,14 @@ Complete como mínimo las credenciales de MySQL, `SECRET_KEY`, las credenciales 
 
 Nunca suba el archivo `.env` al repositorio.
 
+### Cámara en producción
+
+La instalación de tesis usa una cámara RTSP con IP fija. Cuando la cámara se publica hacia AWS mediante una ruta Tailscale específica (por ejemplo, `/32`), mantenga `CAMERA_DISCOVERY_ENABLED=0`. Esto evita búsquedas innecesarias por una subred que el servidor no puede recorrer.
+
+La Estación incorpora diagnóstico operativo de cámara: distingue fallos de acceso RTSP, apertura del stream, autenticación, lectura de frames y reconexión; además muestra una acción recomendada y detalles técnicos sin exponer credenciales.
+
+Consulte [`docs/CAMERA_OPERATIONS.md`](docs/CAMERA_OPERATIONS.md) para la configuración, códigos de diagnóstico y procedimiento de recuperación.
+
 ## Ejecución con Docker
 
 ```bash

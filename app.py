@@ -26,6 +26,8 @@ from functools import wraps
 import io
 from zoneinfo import ZoneInfo
 
+from camera_diagnostics import build_camera_diagnostic, probe_tcp_port
+
 import mysql.connector
 
 from ai_domain import (
@@ -96,6 +98,11 @@ from ai_training import (
     request_training_job,
     training_status_payload,
 )
+
+
+def utc_now_db():
+    """Devuelve UTC sin zona horaria para columnas DATETIME de MySQL."""
+    return datetime.now(ZoneInfo("UTC")).replace(tzinfo=None)
 
 
 load_dotenv()
@@ -223,13 +230,6 @@ app.config["SESSION_COOKIE_SECURE"] = (
 
 DB_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 UTC_ZONE = ZoneInfo("UTC")
-
-
-def utc_now_db():
-    """Fecha UTC ingenua para columnas DATETIME de MySQL."""
-    return datetime.now(UTC_ZONE).replace(tzinfo=None).strftime(
-        DB_DATETIME_FORMAT
-    )
 
 
 # ============================================================
@@ -1840,6 +1840,7 @@ camera_capture = None
 CAMERA_CONNECTED = False
 CAMERA_LAST_OK_AT = None
 CAMERA_LAST_ERROR = "Comprobando conexión con la cámara."
+CAMERA_LAST_ERROR_CODE = "CAMERA_CHECKING"
 CAMERA_LAST_CONNECT_ATTEMPT = 0.0
 CAMERA_FAILURE_COUNT = 0
 
@@ -2281,10 +2282,31 @@ def _clear_latest_frame():
         latest_frame_timestamp_monotonic = None
 
 
-def _note_camera_signal_lost(error_message):
+
+def _set_camera_error(error_code, message):
+    global CAMERA_LAST_ERROR
+    global CAMERA_LAST_ERROR_CODE
+
+    CAMERA_LAST_ERROR_CODE = error_code
+    CAMERA_LAST_ERROR = message
+
+
+def _rtsp_port_is_reachable():
+    return probe_tcp_port(
+        CAMERA_CURRENT_IP or CAMERA_IP,
+        CAMERA_RTSP_PORT,
+        timeout=min(
+            max(float(CAMERA_OPEN_TIMEOUT_MS) / 1000.0, 0.2),
+            1.0,
+        ),
+    )
+
+
+def _note_camera_signal_lost(error_message, error_code=None):
     global CAMERA_CONNECTED
     global CAMERA_FAILURE_COUNT
     global CAMERA_LAST_ERROR
+    global CAMERA_LAST_ERROR_CODE
     global AUTO_INSPECTION_ENABLED
     global AUTO_LAST_ERROR
 
@@ -2293,6 +2315,8 @@ def _note_camera_signal_lost(error_message):
 
     if error_message:
         CAMERA_LAST_ERROR = error_message
+    if error_code:
+        CAMERA_LAST_ERROR_CODE = error_code
 
     if (
         AUTO_INSPECTION_ENABLED
@@ -2317,10 +2341,12 @@ def get_camera():
     global camera_capture
     global CAMERA_LAST_CONNECT_ATTEMPT
     global CAMERA_LAST_ERROR
+    global CAMERA_LAST_ERROR_CODE
 
     if cv2 is None:
-        CAMERA_LAST_ERROR = (
-            "OpenCV no esta disponible."
+        _set_camera_error(
+            "CAMERA_RUNTIME_UNAVAILABLE",
+            "OpenCV no esta disponible.",
         )
         return None
 
@@ -2398,13 +2424,23 @@ def get_camera():
 
             camera_capture = None
 
-            CAMERA_LAST_ERROR = (
-                "No se pudo establecer "
-                "conexion con la camara."
-            )
+            if _rtsp_port_is_reachable():
+                _set_camera_error(
+                    "CAMERA_RTSP_OPEN_FAILED",
+                    "La camara responde por RTSP, pero el stream no pudo abrirse.",
+                )
+            else:
+                _set_camera_error(
+                    "CAMERA_RTSP_UNREACHABLE",
+                    "La IP o el puerto RTSP de la camara no responden.",
+                )
 
             return None
 
+        _set_camera_error(
+            "CAMERA_CHECKING",
+            "Conexion RTSP abierta; esperando frames de video.",
+        )
         return camera_capture
 
     except Exception as error:
@@ -2416,9 +2452,10 @@ def get_camera():
 
         camera_capture = None
 
-        CAMERA_LAST_ERROR = (
+        _set_camera_error(
+            "CAMERA_OPEN_ERROR",
             "Error al conectar con "
-            f"la camara: {error}"
+            f"la camara: {error}",
         )
 
         return None
@@ -2468,8 +2505,9 @@ def reset_camera_connection():
     _clear_latest_frame()
 
     CAMERA_CONNECTED = False
-    CAMERA_LAST_ERROR = (
-        "Reconectando con la c\u00e1mara de inspecci\u00f3n."
+    _set_camera_error(
+        "CAMERA_RECONNECTING",
+        "Reconectando con la cámara de inspección.",
     )
     CAMERA_LAST_CONNECT_ATTEMPT = 0.0
     CAMERA_FAILURE_COUNT = 0
@@ -2532,6 +2570,7 @@ def camera_capture_worker():
     global CAMERA_CONNECTED
     global CAMERA_LAST_OK_AT
     global CAMERA_LAST_ERROR
+    global CAMERA_LAST_ERROR_CODE
     global CAMERA_FAILURE_COUNT
     global CAMERA_RECONNECTING
     global CAMERA_FORCE_REOPEN
@@ -2554,8 +2593,9 @@ def camera_capture_worker():
         while True:
             if cv2 is None:
                 CAMERA_CONNECTED = False
-                CAMERA_LAST_ERROR = (
-                    "OpenCV no esta disponible."
+                _set_camera_error(
+                    "CAMERA_RUNTIME_UNAVAILABLE",
+                    "OpenCV no esta disponible.",
                 )
                 time.sleep(1.0)
                 continue
@@ -2586,7 +2626,9 @@ def camera_capture_worker():
             if cap is None:
                 _note_camera_signal_lost(
                     CAMERA_LAST_ERROR
-                    or "Cámara sin señal."
+                    or "Camara sin senal.",
+                    CAMERA_LAST_ERROR_CODE
+                    or "CAMERA_RTSP_UNREACHABLE",
                 )
                 with CAMERA_RECONNECT_LOCK:
                     CAMERA_RECONNECTING = True
@@ -2608,8 +2650,9 @@ def camera_capture_worker():
             except Exception as error:
                 ok = False
                 frame = None
-                CAMERA_LAST_ERROR = (
-                    f"Error de lectura RTSP: {error}"
+                _set_camera_error(
+                    "CAMERA_STREAM_READ_ERROR",
+                    f"Error de lectura RTSP: {error}",
                 )
 
             if ok and frame is not None:
@@ -2620,6 +2663,7 @@ def camera_capture_worker():
                 CAMERA_CONNECTED = True
                 CAMERA_FAILURE_COUNT = 0
                 CAMERA_LAST_ERROR = None
+                CAMERA_LAST_ERROR_CODE = None
                 CAMERA_LAST_OK_AT = datetime.now().strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
@@ -2638,9 +2682,15 @@ def camera_capture_worker():
 
             # --- fallo de lectura ---
             read_failures += 1
+            read_error_code = (
+                CAMERA_LAST_ERROR_CODE
+                if CAMERA_LAST_ERROR_CODE == "CAMERA_STREAM_READ_ERROR"
+                else "CAMERA_STREAM_NO_FRAMES"
+            )
             _note_camera_signal_lost(
                 CAMERA_LAST_ERROR
-                or "No se está recibiendo video de la cámara."
+                or "No se esta recibiendo video de la camara.",
+                read_error_code,
             )
             _clear_latest_frame()
 
@@ -2717,12 +2767,43 @@ def ensure_camera_reconnect_worker():
     return ensure_camera_capture_worker()
 
 
+def _camera_technical_details():
+    transport_options = os.getenv(
+        "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+        "",
+    ).lower()
+
+    return {
+        "ip": CAMERA_CURRENT_IP or CAMERA_IP,
+        "rtsp_port": int(CAMERA_RTSP_PORT),
+        "channel": int(CAMERA_CHANNEL),
+        "subtype": int(CAMERA_SUBTYPE),
+        "stream": (
+            "Principal"
+            if int(CAMERA_SUBTYPE) == 0
+            else "Substream"
+        ),
+        "rtsp_transport": (
+            "TCP"
+            if "tcp" in transport_options
+            else "FFmpeg"
+        ),
+        "discovery_enabled": bool(CAMERA_DISCOVERY_ENABLED),
+        "failure_count": int(CAMERA_FAILURE_COUNT),
+        "open_timeout_ms": int(CAMERA_OPEN_TIMEOUT_MS),
+        "read_timeout_ms": int(CAMERA_READ_TIMEOUT_MS),
+        "last_ok_at": CAMERA_LAST_OK_AT,
+    }
+
+
 def get_camera_status():
     """
-    Estado operativo. Si no hay señal, asegura el capture worker
-    (que también reconecta). No abre RTSP por su cuenta.
+    Estado operativo y diagnostico entendible para la interfaz.
+    No abre RTSP por su cuenta: el capture worker mantiene la conexion.
     """
     ensure_camera_capture_worker()
+
+    technical = _camera_technical_details()
 
     with latest_frame_lock:
         last_frame_at = latest_frame_timestamp_monotonic
@@ -2737,47 +2818,61 @@ def get_camera_status():
             "connected": True,
             "reconnecting": False,
             "state": "CONNECTED",
-            "message": (
-                "Camara conectada y transmitiendo."
-            ),
+            "message": "Camara conectada y transmitiendo.",
             "last_ok_at": CAMERA_LAST_OK_AT,
+            "diagnostic": {
+                "code": "CAMERA_OK",
+                "severity": "ok",
+                "title": "Camara conectada",
+                "cause": "El sistema esta recibiendo video correctamente.",
+                "action": None,
+                "technical": technical,
+            },
         }
 
     with CAMERA_RECONNECT_LOCK:
         reconnecting = CAMERA_RECONNECTING
 
     if CAMERA_CONNECTED and not frame_fresh:
+        diagnostic = build_camera_diagnostic(
+            "CAMERA_STREAM_NO_FRAMES",
+            reconnecting=True,
+            technical=technical,
+        )
         return {
             "connected": False,
             "reconnecting": True,
             "state": "STALE",
-            "message": "No se reciben imágenes recientes de la cámara.",
+            "message": diagnostic["cause"],
             "last_ok_at": CAMERA_LAST_OK_AT,
+            "diagnostic": diagnostic,
         }
+
+    diagnostic = build_camera_diagnostic(
+        CAMERA_LAST_ERROR_CODE,
+        last_error=CAMERA_LAST_ERROR,
+        reconnecting=reconnecting,
+        technical=technical,
+    )
 
     if reconnecting:
         return {
             "connected": False,
             "reconnecting": True,
             "state": "CHECKING",
-            "message": (
-                "Reconectando automaticamente "
-                "con la camara."
-            ),
+            "message": diagnostic["cause"],
             "last_ok_at": CAMERA_LAST_OK_AT,
+            "diagnostic": diagnostic,
         }
 
     return {
         "connected": False,
         "reconnecting": False,
         "state": "DISCONNECTED",
-        "message": (
-            CAMERA_LAST_ERROR
-            or "No se recibe senal de la camara."
-        ),
+        "message": diagnostic["cause"],
         "last_ok_at": CAMERA_LAST_OK_AT,
+        "diagnostic": diagnostic,
     }
-
 
 
 def make_camera_error_frame(message="CAMARA NO DISPONIBLE"):
@@ -3995,6 +4090,22 @@ def _guided_adaptive_mask(sub_roi, roi_area, diagnostics, scale):
         255,
         cv2.FILLED,
     )
+
+    # Los bordes LAB se convierten en barreras durante la selección de
+    # la isla interior. Eso recorta unos píxeles de una silueta válida,
+    # especialmente cuando su cobertura real está cerca del mínimo.
+    # Recuperar únicamente esa franja ANTES de aplicar el límite de
+    # cobertura; no se modifica el umbral de 20 % ni se aceptan islas
+    # sin contorno. El tamaño acompaña la escala de trabajo.
+    recovery_size = max(3, int(9 * scale) | 1)
+    garment = cv2.dilate(
+        garment,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (recovery_size, recovery_size),
+        ),
+    )
+    diagnostics["edge_recovery_kernel"] = recovery_size
 
     coverage = float(cv2.countNonZero(garment)) / float(roi_area)
     diagnostics["adaptive_coverage"] = round(coverage, 4)
@@ -7697,6 +7808,9 @@ def batches():
               WHERE ai2.garment_model_id = gm.id
                 AND ai2.status = 'ACTIVO'
                 AND ai2.active = 1
+                AND NULLIF(TRIM(ai2.checkpoint_path), '') IS NOT NULL
+                AND ai2.threshold_final IS NOT NULL
+                AND ai2.threshold_frozen_at IS NOT NULL
               ORDER BY ai2.id DESC
               LIMIT 1
           )
@@ -7772,60 +7886,37 @@ def batches():
                 url_for("batches")
             )
 
+        # Validar la meta antes de abrir una transacción o crear el lote.
+        # El código anterior ejecutaba esta guarda tras el retorno POST.
         quantity_override = (
-            request.form.get(
-                "quantity_override",
-                "0",
-            )
-            == "1"
+            request.form.get("quantity_override", "0") == "1"
         )
 
-        if production_plan["has_goal"]:
+        if production_plan["has_goal"] and not quantity_override:
             remaining = int(
-                production_plan[
-                    "remaining_garments"
-                ]
-                or 0
+                production_plan["remaining_garments"] or 0
             )
-
             suggested = int(
-                production_plan[
-                    "suggested_quantity"
-                ]
-                or 0
+                production_plan["suggested_quantity"] or 0
             )
 
-            if (
-                remaining <= 0
-                and not quantity_override
-            ):
+            if remaining <= 0:
                 flash(
-                    "El objetivo de producci\u00f3n ya est\u00e1 "
+                    "El objetivo de producción ya está "
                     "completamente planificado. "
                     "No es necesario crear otro lote.",
                     "error",
                 )
+                return redirect(url_for("batches"))
 
-                return redirect(
-                    url_for("batches")
-                )
-
-            if (
-                remaining > 0
-                and not quantity_override
-                and planned_quantity != suggested
-            ):
+            if planned_quantity != suggested:
                 flash(
-                    "La planificaci\u00f3n cambi\u00f3. "
-                    f"El sistema recomienda "
-                    f"{suggested} prendas para el "
-                    "siguiente lote.",
+                    "La planificación cambió. "
+                    f"El sistema recomienda {suggested} "
+                    "prendas para el siguiente lote.",
                     "error",
                 )
-
-                return redirect(
-                    url_for("batches")
-                )
+                return redirect(url_for("batches"))
 
         selected_line = fetch_one(
             """
@@ -7895,7 +7986,7 @@ def batches():
         if selected_model is None:
             flash(
                 "Seleccione un modelo aprobado "
-                "que tenga una IA activa y lista para producci\u00f3n.",
+                "que tenga una IA activa.",
                 "error",
             )
 
@@ -8172,6 +8263,23 @@ def delete_accidental_batch(batch_id):
         conn.close()
 
 
+def ai_model_ready_for_batch(
+    ai_status,
+    ai_active,
+    checkpoint_path,
+    threshold_final,
+    threshold_frozen_at,
+):
+    """Evita iniciar un lote que no puede producir inferencia PatchCore."""
+    return (
+        str(ai_status or "").upper() == "ACTIVO"
+        and int(ai_active or 0) == 1
+        and bool(str(checkpoint_path or "").strip())
+        and threshold_final is not None
+        and threshold_frozen_at is not None
+    )
+
+
 @app.route("/lotes/<int:batch_id>/iniciar", methods=["POST"])
 @login_required
 @role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
@@ -8334,63 +8442,33 @@ def start_batch(batch_id):
                 url_for("batches")
             )
 
-        checkpoint_relative = str(
-            batch.get("ai_checkpoint_path")
-            or ""
-        ).strip()
-
-        if (
-            str(batch.get("ai_status") or "").upper()
-            != "ACTIVO"
-            or int(batch.get("ai_active") or 0) != 1
-            or not checkpoint_relative
-            or batch.get("ai_threshold_final") is None
-            or batch.get("ai_threshold_frozen_at") is None
+        if not ai_model_ready_for_batch(
+            ai_status=batch["ai_status"],
+            ai_active=batch["ai_active"],
+            checkpoint_path=batch["ai_checkpoint_path"],
+            threshold_final=batch["ai_threshold_final"],
+            threshold_frozen_at=batch["ai_threshold_frozen_at"],
         ):
             conn.rollback()
-
             flash(
-                "La versi\u00f3n de IA asociada al lote "
-                "no est\u00e1 lista para producci\u00f3n. "
-                "Debe tener checkpoint y threshold "
-                "definitivo congelado.",
+                "La versión de IA del lote no está lista para inspección. "
+                "Debe estar activa y contar con checkpoint y umbral definitivo.",
                 "error",
             )
+            return redirect(url_for("batches"))
 
-            return redirect(
-                url_for("batches")
-            )
-
-        try:
-            checkpoint_abs = resolve_under_root(
-                get_ai_artifacts_root(),
-                checkpoint_relative,
-            )
-        except (AIDomainError, ValueError, OSError):
+        checkpoint = resolve_under_root(
+            get_ai_artifacts_root(),
+            batch["ai_checkpoint_path"],
+        )
+        if not checkpoint.is_file():
             conn.rollback()
-
             flash(
-                "El checkpoint de la versi\u00f3n de IA "
-                "no tiene una ruta de producci\u00f3n v\u00e1lida.",
+                "No se encontró el checkpoint de IA asociado al lote. "
+                "Revise los archivos del modelo antes de iniciar.",
                 "error",
             )
-
-            return redirect(
-                url_for("batches")
-            )
-
-        if not checkpoint_abs.is_file():
-            conn.rollback()
-
-            flash(
-                "No se encontr\u00f3 el checkpoint de la "
-                "versi\u00f3n de IA asociada al lote.",
-                "error",
-            )
-
-            return redirect(
-                url_for("batches")
-            )
+            return redirect(url_for("batches"))
 
         cur.execute(
             """
@@ -9642,6 +9720,34 @@ def inspection():
     return render_template("inspection.html", result=result)
 
 
+
+def classify_record_final_decision(
+    ai_decision,
+    status,
+    review_status,
+    human_validation,
+):
+    """Clasifica el resultado final sin confundir normalidad con revisión pendiente."""
+    unresolved = review_status in (None, "", "PENDIENTE")
+
+    if review_status == "DEFECTO_CONFIRMADO" or (
+        unresolved and human_validation == "Correcto"
+    ):
+        return "Rechazada por defecto", "rejected"
+
+    if review_status == "ALERTA_DESCARTADA" or (
+        unresolved and human_validation == "Incorrecto"
+    ):
+        return "Aceptada - alerta descartada", "passed"
+
+    if ai_decision == "NORMAL" or (
+        ai_decision is None and status == "Aprobado"
+    ):
+        return "Aceptada", "passed"
+
+    return "Pendiente de revisión", "pending"
+
+
 @app.route("/registros")
 @login_required
 def records():
@@ -10239,48 +10345,15 @@ def records():
             row.get("reviewed_at")
         )
 
-        review_status = row.get("review_status")
-        human_validation = row.get(
-            "human_validation"
+        (
+            row["decision_label"],
+            row["decision_class"],
+        ) = classify_record_final_decision(
+            ai_decision=row.get("ai_decision"),
+            status=row.get("status"),
+            review_status=row.get("review_status"),
+            human_validation=row.get("human_validation"),
         )
-
-        if (
-            review_status == "DEFECTO_CONFIRMADO"
-            or (
-                review_status in (
-                    None,
-                    "",
-                    "PENDIENTE",
-                )
-                and human_validation == "Correcto"
-            )
-        ):
-            row["decision_label"] = (
-                "Rechazada por defecto"
-            )
-            row["decision_class"] = "rejected"
-
-        elif (
-            review_status == "ALERTA_DESCARTADA"
-            or (
-                review_status in (
-                    None,
-                    "",
-                    "PENDIENTE",
-                )
-                and human_validation == "Incorrecto"
-            )
-        ):
-            row["decision_label"] = (
-                "Apta - alerta descartada"
-            )
-            row["decision_class"] = "passed"
-
-        else:
-            row["decision_label"] = (
-                "Pendiente de revision"
-            )
-            row["decision_class"] = "pending"
 
     batches_options = fetch_all(
         """
@@ -16034,15 +16107,6 @@ def garment_models_page():
                   AND ai.active = 1
                   AND ai.status = 'ACTIVO'
             ) AS ai_ready,
-            EXISTS(
-                SELECT 1
-                FROM garment_ai_models ai
-                WHERE ai.garment_model_id = gm.id
-                  AND (
-                      ai.status = 'ACTIVO'
-                      OR ai.active = 1
-                  )
-            ) AS has_active_ai,
             (
                 SELECT ai.version
                 FROM garment_ai_models ai
@@ -16175,11 +16239,12 @@ def garment_model_delete_incomplete(model_id):
         cur.execute(
             """
             UPDATE garment_models
-            SET active = 0
+            SET active = 0,
+                updated_at = %s
             WHERE id = %s
               AND active = 1
             """,
-            (model_id,),
+            (utc_now_db(), model_id),
         )
 
         if cur.rowcount != 1:
@@ -17470,40 +17535,114 @@ def logout():
     return redirect(url_for("login"))
 
 
+def summarize_patchcore_readiness(models, active_batch, artifacts_root):
+    """Diagnóstico ligero: configuración y archivo, no inferencia completa."""
+    readiness_by_id = {}
+    ready = 0
+    for item in models:
+        identifier = int(item["id"])
+        configured = (
+            str(item.get("status") or "").upper() == "ACTIVO"
+            and int(item.get("active") or 0) == 1
+            and bool(str(item.get("checkpoint_path") or "").strip())
+            and item.get("threshold_final") is not None
+            and item.get("threshold_frozen_at") is not None
+        )
+        available = False
+        if configured:
+            try:
+                path = resolve_under_root(
+                    artifacts_root,
+                    str(item["checkpoint_path"]).strip(),
+                )
+                available = path.is_file() and path.stat().st_size >= 1024
+            except (OSError, ValueError, AIDomainError):
+                available = False
+        readiness_by_id[identifier] = available
+        ready += int(available)
+
+    active_model_ready = None
+    if active_batch is not None:
+        ai_id = int(active_batch.get("ai_model_id") or 0)
+        garment_id = int(active_batch.get("garment_model_id") or 0)
+        linked_garment_id = int(active_batch.get("ai_garment_model_id") or 0)
+        active_model_ready = bool(
+            ai_id > 0
+            and garment_id > 0
+            and garment_id == linked_garment_id
+            and readiness_by_id.get(ai_id, False)
+        )
+
+    return {
+        "ai_engine": "patchcore",
+        "detection_mode": "patchcore",
+        "model_ready": (
+            active_model_ready
+            if active_model_ready is not None
+            else ready > 0
+        ),
+        "model_ready_scope": (
+            "active_batch" if active_batch is not None else "available_models"
+        ),
+        "active_patchcore_models": len(models),
+        "ready_patchcore_models": ready,
+        "active_batch_present": active_batch is not None,
+        "active_batch_model_ready": active_model_ready,
+        "readiness_check": "metadata_and_checkpoint_file_only",
+    }
+
+
 @app.route("/health")
 def health():
     """Estado mínimo del servicio sin exponer configuración sensible."""
     try:
-        fetch_one("SELECT 1 AS ok")
-
+        row = fetch_one("SELECT COUNT(*) AS c FROM inspections")
+        active_versions = fetch_all(
+            """
+            SELECT id, status, active, checkpoint_path,
+                   threshold_final, threshold_frozen_at
+            FROM garment_ai_models
+            WHERE active = 1
+            """
+        )
+        active_batch = fetch_one(
+            """
+            SELECT b.ai_model_id, b.garment_model_id,
+                   ai.garment_model_id AS ai_garment_model_id
+            FROM batches b
+            LEFT JOIN garment_ai_models ai ON ai.id = b.ai_model_id
+            WHERE b.status = 'EN_INSPECCION'
+            ORDER BY b.id DESC
+            LIMIT 1
+            """
+        )
+        ai_health = summarize_patchcore_readiness(
+            active_versions,
+            active_batch,
+            get_ai_artifacts_root(),
+        )
         with latest_frame_lock:
             frame_available = latest_camera_frame is not None
             frame_timestamp = latest_frame_timestamp_monotonic
-
         frame_age_seconds = None
         if frame_timestamp is not None:
-            frame_age_seconds = max(
-                0.0,
-                time.monotonic() - float(frame_timestamp),
-            )
-
+            frame_age_seconds = max(0.0, time.monotonic() - float(frame_timestamp))
         camera_connected = (
             frame_available
             and frame_age_seconds is not None
-            and frame_age_seconds <= max(
-                5.0,
-                float(CAMERA_RETRY_SECONDS) * 2.0,
-            )
+            and frame_age_seconds <= max(5.0, float(CAMERA_RETRY_SECONDS) * 2.0)
         )
-
         return jsonify({
-            "status": "ok" if camera_connected else "degraded",
-            "database": "ok",
-            "camera": (
-                "connected"
-                if camera_connected
-                else "disconnected"
+            "status": "ok",
+            "database": DB_NAME,
+            "inspections": row["c"],
+            "camera": "connected" if camera_connected else "disconnected",
+            "camera_source": (
+                "RTSP configurado"
+                if CAMERA_SOURCE.lower().startswith("rtsp://")
+                else CAMERA_SOURCE
             ),
+            **ai_health,
         })
     except Exception:
         app.logger.exception(
@@ -20536,6 +20675,7 @@ def ai_validation_final_test_evaluate():
     return jsonify({"ok": True, "metrics": _json_sanitize(metrics), "final_test": _json_sanitize(state), "active": 0}), 200
 
 
+
 @app.route("/api/ai/validation/activate", methods=["POST"])
 @login_required
 @role_required(ROLE_ADMIN)
@@ -20664,6 +20804,9 @@ def ai_validation_activate():
                 "garment_model_id": int(garment_model_id),
                 "final_test_session_id": int(final_state["id"]),
                 "final_test_metrics": final_state.get("metrics"),
+                "rebound_batch_id": (
+                    int(active_batch["id"]) if active_batch is not None else None
+                ),
             },
         )
 

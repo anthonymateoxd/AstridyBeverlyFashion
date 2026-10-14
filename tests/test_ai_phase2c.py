@@ -1990,6 +1990,99 @@ class GuidedSegmentationTests(unittest.TestCase):
         self.assertLessEqual(abs(right - exp_right), 40)
         self.assertLessEqual(abs(bottom - exp_bottom), 40)
 
+    def test_guided_segmentation_recovers_edges_without_lowering_threshold(self):
+        frame = synthetic_garment_frame()
+        if frame is None:
+            self.skipTest("Sin fotograma de calibración.")
+
+        diagnostics = {}
+        mask = self.A.create_guided_garment_mask(frame, diagnostics)
+        self.assertEqual(self.A.GUIDED_COVERAGE_MIN, 0.20)
+        self.assertEqual(diagnostics["method"], "adaptativo")
+        self.assertGreaterEqual(diagnostics["mask_pct"], 0.20)
+        self.assertLessEqual(diagnostics["mask_pct"], 0.75)
+        self.assertEqual(diagnostics["adaptive"]["edge_recovery_kernel"], 5)
+        self.assertIsNotNone(self.A.mask_bbox(mask, self.A.cv2))
+
+    def test_guided_segmentation_handles_contrasting_garment_colors(self):
+        for name, color in (
+            ("verde", (60, 150, 60)),
+            ("azul", (255, 0, 0)),
+            ("rojo", (0, 0, 255)),
+            ("blanco", (240, 240, 240)),
+            ("negro", (10, 10, 10)),
+        ):
+            frame = synthetic_garment_frame(color)
+            if frame is None:
+                self.skipTest("Sin fotograma de calibración.")
+            with self.subTest(color=name):
+                diagnostics = {}
+                mask = self.A.create_guided_garment_mask(frame, diagnostics)
+                self.assertIn(
+                    diagnostics["method"], ("semilla", "adaptativo")
+                )
+                self.assertGreaterEqual(diagnostics["mask_pct"], 0.20)
+                self.assertIsNotNone(self.A.mask_bbox(mask, self.A.cv2))
+
+    def test_guided_synthetic_mask_matches_known_silhouette(self):
+        if not BACKGROUND_FRAME_PATH.exists():
+            self.skipTest("Sin fotograma de calibración.")
+
+        import cv2
+        import numpy as np
+
+        background = cv2.imread(str(BACKGROUND_FRAME_PATH))
+        if background is None:
+            self.skipTest("Sin fotograma de fondo legible.")
+        expected = np.zeros(background.shape[:2], dtype=np.uint8)
+        cv2.ellipse(
+            expected, SYNTH_ELLIPSE_CENTER, SYNTH_ELLIPSE_AXES,
+            0, 0, 360, 255, -1,
+        )
+        roi = self.A.get_roi_bounds(background)
+        x1, y1, x2, y2 = roi
+        truth = expected[y1:y2, x1:x2] > 0
+
+        for name, color in (
+            ("verde", (60, 150, 60)),
+            ("azul", (255, 0, 0)),
+            ("rojo", (0, 0, 255)),
+            ("blanco", (240, 240, 240)),
+            ("negro", (10, 10, 10)),
+        ):
+            with self.subTest(color=name):
+                frame = synthetic_garment_frame(color)
+                prediction = self.A.create_guided_garment_mask(frame)
+                region = prediction[y1:y2, x1:x2] > 0
+                intersection = np.count_nonzero(region & truth)
+                union = np.count_nonzero(region | truth)
+                self.assertGreater(union, 0)
+                self.assertGreaterEqual(intersection / union, 0.95)
+
+    def test_guided_segmentation_rejects_small_object_below_coverage(self):
+        if not BACKGROUND_FRAME_PATH.exists():
+            self.skipTest("Sin fotograma de fondo real.")
+        import cv2
+        frame = cv2.imread(str(BACKGROUND_FRAME_PATH))
+        if frame is None:
+            self.skipTest("Sin fotograma de fondo legible.")
+
+        cv2.ellipse(
+            frame,
+            SYNTH_ELLIPSE_CENTER,
+            (270, 215),
+            0,
+            0,
+            360,
+            (60, 150, 60),
+            -1,
+        )
+        diagnostics = {}
+        mask = self.A.create_guided_garment_mask(frame, diagnostics)
+        self.assertEqual(diagnostics["method"], "ninguno")
+        self.assertIsNone(diagnostics["mask_bbox"])
+        self.assertEqual(self.A.cv2.countNonZero(mask), 0)
+
     def test_guided_segment_uses_a_single_mask(self):
         frame = synthetic_garment_frame()
         if frame is None:
