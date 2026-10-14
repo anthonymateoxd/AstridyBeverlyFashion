@@ -46,7 +46,10 @@ services:
       ADMIN_USERNAME: '${ADMIN_USERNAME:-admin}'
       ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
       FLASK_DEBUG: '${FLASK_DEBUG:-0}'
+      SESSION_COOKIE_SECURE: '${SESSION_COOKIE_SECURE:-0}'
       APP_PORT: '${APP_PORT:-5000}'
+      GUNICORN_THREADS: '${GUNICORN_THREADS:-8}'
+      GUNICORN_TIMEOUT: '${GUNICORN_TIMEOUT:-180}'
 
       MYSQL_HOST: mysql
       MYSQL_PORT: '3306'
@@ -121,6 +124,7 @@ services:
     volumes:
       - ./static/captures:/app/static/captures
       - ./static/results:/app/static/results
+      - ./static/garment_models:/app/static/garment_models
       - ./models:/app/models
       - ./patchcore_results:/app/patchcore_results:ro
       - ./ai_artifacts:/app/ai_artifacts
@@ -128,6 +132,19 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   # FASE 3A: worker asíncrono de entrenamiento PatchCore.
   # Proceso separado de la app: nunca entrena dentro de una petición

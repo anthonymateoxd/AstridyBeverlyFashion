@@ -1111,6 +1111,7 @@
         stationModeBadge.textContent = '● Modo automático';
         stationModeBadge.classList.remove('offline');
         autoStateText.textContent = 'Automático activo';
+        manualBtn.disabled = true;
         setMessage(data.message, 'success');
         connectAlertStream();
       } else {
@@ -1138,6 +1139,7 @@
         stationModeBadge.textContent = '● Modo manual';
         stationModeBadge.classList.remove('offline');
         autoStateText.textContent = 'Automático detenido';
+        manualBtn.disabled = false;
         setMessage(data.message, 'success');
       } else {
         setMessage(
@@ -1164,10 +1166,12 @@
         stationModeBadge.textContent = '● Modo automático';
         stationModeBadge.classList.remove('offline');
         autoStateText.textContent = 'Automático activo';
+        manualBtn.disabled = true;
       } else {
         stationModeBadge.textContent = '● Modo manual';
         stationModeBadge.classList.remove('offline');
         autoStateText.textContent = 'Automático detenido';
+        manualBtn.disabled = false;
       }
 
       if (data.last_result) {

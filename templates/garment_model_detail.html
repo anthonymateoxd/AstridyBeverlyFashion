@@ -929,6 +929,53 @@
   margin-top: 20px;
 }
 
+
+.detail-ai-meta-simple {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.detail-ai-history {
+  margin-top: 12px;
+  border-top: 1px solid #e4e9f1;
+  padding-top: 12px;
+}
+
+.detail-ai-history summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #344b72;
+  list-style: none;
+}
+
+.detail-ai-history summary::-webkit-details-marker {
+  display: none;
+}
+
+.detail-ai-history summary::after {
+  content: " +";
+}
+
+.detail-ai-history[open] summary::after {
+  content: " −";
+}
+
+.detail-ai-history-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.detail-ai-history-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f7f9fc;
+  color: #5c6b82;
+  font-size: 14px;
+}
+
 @media (max-width: 1180px) {
   .detail-content-grid { grid-template-columns: 1fr; }
   .detail-images-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1261,13 +1308,13 @@
           MODO PREPARACIÓN DE IA
         </span>
 
-        {% if can_prepare_ai %}
+        {% if can_prepare_ai and ai_versions and ai_versions[0].status == 'PREPARACION' %}
         <a
           class="detail-button success"
           id="startGuidedPreparation"
           href="{{ url_for('guided_capture_page', model_id=model.id) }}"
         >
-          Iniciar preparación · Abrir estación guiada
+          Continuar captura
         </a>
         {% endif %}
 
@@ -1350,7 +1397,7 @@
     ></div>
     {% endif %}
 
-    {% if can_prepare_ai and ai_training %}
+    {% if can_prepare_ai and ai_training and not model.ai_ready %}
     <section
       class="ai-train-panel"
       id="aiTrainingPanel"
@@ -1384,93 +1431,87 @@
     {% endif %}
 
     {% if ai_versions %}
+    {% set current_ai = ai_versions[0] %}
     <div class="detail-ai-list">
-      {% for ai in ai_versions %}
-      <article class="detail-ai-item">
+      <article class="detail-ai-item ai-current-version">
         <div class="detail-ai-item-head">
-          <h3>{{ ai.version }} · {{ ai.model_type }}</h3>
+          <h3>Versión de IA</h3>
 
-          {% if ai.technically_invalidated %}
-            <span class="detail-badge detail-badge-history">
-              Histórica · no apta para validación
-            </span>
-          {% elif ai.active and ai.status == 'ACTIVO' %}
-            <span class="detail-badge detail-badge-success">Activa</span>
-          {% elif ai.status == 'PREPARACION' %}
-            <span class="detail-badge detail-badge-warning">En preparación</span>
-          {% elif ai.status == 'ENTRENANDO' %}
-            <span class="detail-badge detail-badge-warning">En entrenamiento</span>
-          {% elif ai.status == 'VALIDADO' %}
-            <span class="detail-badge detail-badge-success">Validado · pendiente de prueba final</span>
-          {% elif ai.status in ['ENTRENADO', 'VALIDACION'] %}
+          {% if current_ai.active and current_ai.status == 'ACTIVO' %}
+            <span class="detail-badge detail-badge-success">Lista para inspección</span>
+          {% elif current_ai.status == 'PREPARACION' %}
+            <span class="detail-badge detail-badge-warning">Preparación en curso</span>
+          {% elif current_ai.status == 'ENTRENANDO' %}
+            <span class="detail-badge detail-badge-warning">Entrenando</span>
+          {% elif current_ai.status == 'VALIDADO' %}
+            <span class="detail-badge detail-badge-success">Validada</span>
+          {% elif current_ai.status in ['ENTRENADO', 'VALIDACION'] %}
             <span class="detail-badge detail-badge-warning">Pendiente de validación</span>
+          {% elif current_ai.status == 'RETIRADO' %}
+            <span class="detail-badge detail-badge-neutral">No activa</span>
           {% else %}
-            <span class="detail-badge detail-badge-neutral">{{ ai.status }}</span>
+            <span class="detail-badge detail-badge-neutral">{{ current_ai.status }}</span>
           {% endif %}
         </div>
 
-        <div class="detail-ai-meta">
+        <div class="detail-ai-meta detail-ai-meta-simple">
+          <div>
+            <span class="detail-label">Versión</span>
+            <span class="detail-value">{{ current_ai.model_type }} {{ current_ai.version }}</span>
+          </div>
+
           <div>
             <span class="detail-label">Estado</span>
             <span class="detail-value">
-              {% if ai.technically_invalidated %}
-                {{ ai.status }} · versión histórica
-              {% elif loop.first and ai_training and ai_training.ui_status == 'ENTRENADO' %}
-                {{ ai.status }} · {{ ai_training.ui_label }}
-              {% elif ai.status == 'PREPARACION' %}
-                Pendiente de entrenamiento
-              {% elif ai.status == 'ACTIVO' %}
-                Lista para inspección
-              {% elif ai.status == 'ENTRENANDO' %}
-                En proceso
-              {% elif ai.status == 'VALIDACION' %}
-                En proceso
-              {% elif ai.status == 'VALIDADO' %}
-                Validado · listo para prueba final
+              {% if current_ai.status == 'ACTIVO' %}
+                En uso para las inspecciones
+              {% elif current_ai.status == 'PREPARACION' %}
+                Falta completar las capturas para entrenar
+              {% elif current_ai.status == 'ENTRENANDO' %}
+                Entrenamiento en proceso
+              {% elif current_ai.status == 'VALIDADO' %}
+                Lista para la prueba final
+              {% elif current_ai.status in ['ENTRENADO', 'VALIDACION'] %}
+                Debe continuar con la validación
               {% else %}
-                {{ ai.status }}
+                {{ current_ai.status }}
               {% endif %}
             </span>
           </div>
 
+          {% if current_ai.status == 'PREPARACION' and ai_training %}
           <div>
-            <span class="detail-label">Imágenes normales</span>
-            <span class="detail-value">{{ ai.normal_images_count if ai.normal_images_count is not none else 'Sin registro' }}</span>
-          </div>
-
-          {% if loop.first and ai_training %}
-          <div>
-            <span class="detail-label">Dataset</span>
-            <span class="detail-value">{{ ai_training.image_count }} imágenes</span>
-          </div>
-
-          <div>
-            <span class="detail-label">Entrenamiento</span>
+            <span class="detail-label">Capturas válidas</span>
             <span class="detail-value">
-              {% if ai_training.ui_status == 'HISTORICA' %}
-                Completado · versión histórica
-              {% elif ai_training.ui_status == 'ENTRENADO' %}
-                Completado
-              {% elif ai_training.ui_status == 'ENTRENANDO' %}
-                En proceso
-              {% elif ai_training.ui_status == 'FALLIDO' %}
-                Fallido
-              {% elif ai_training.ui_status == 'DISPONIBLE' %}
-                Pendiente de entrenamiento
-              {% else %}
-                No disponible
-              {% endif %}
+              {{ ai_training.accepted_count or 0 }} / {{ ai_training.min_count or 20 }} mínimas
             </span>
+          </div>
+          {% elif current_ai.normal_images_count is not none %}
+          <div>
+            <span class="detail-label">Imágenes preparadas</span>
+            <span class="detail-value">{{ current_ai.normal_images_count }}</span>
           </div>
           {% endif %}
-
-          <div>
-            <span class="detail-label">Responsable</span>
-            <span class="detail-value">{{ ai.creator_name or 'Histórico' }}</span>
-          </div>
         </div>
       </article>
-      {% endfor %}
+
+      {% if ai_versions|length > 1 %}
+      <details class="detail-ai-history">
+        <summary>Ver versiones anteriores ({{ ai_versions|length - 1 }})</summary>
+        <div class="detail-ai-history-list">
+          {% for ai in ai_versions[1:] %}
+          <div class="detail-ai-history-row">
+            <span><strong>{{ ai.version }}</strong> · {{ ai.model_type }}</span>
+            <span>
+              {% if ai.status == 'RETIRADO' %}Retirada
+              {% elif ai.technically_invalidated %}Histórica
+              {% else %}{{ ai.status }}{% endif %}
+            </span>
+          </div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
     </div>
     {% endif %}
   </section>
@@ -2270,25 +2311,14 @@
 
   function metaHtml() {
     const items = [
-      ["Imágenes del dataset", `${Number(state.image_count || 0)}`],
-      ["Mínimo requerido", `${Number(state.min_count || 0)}`],
-      ["Imágenes aceptadas", `${Number(state.accepted_count || 0)}`]
+      ["Capturas válidas", `${Number(state.accepted_count || 0)}`],
+      ["Mínimo necesario", `${Number(state.min_count || 0)}`]
     ];
 
-    if (state.version) {
-      items.push(["Versión", String(state.version)]);
-    }
-
-    if (state.ui_status === "HISTORICA" && state.next_version) {
-      items.push(["Próxima versión", String(state.next_version)]);
-    }
-
-    if (state.ui_status === "HISTORICA" && state.retrain_image_count) {
-      items.push(["Imágenes disponibles", `${Number(state.retrain_image_count)}`]);
-    }
-
-    if (state.elapsed_seconds !== null && state.elapsed_seconds !== undefined) {
-      items.push(["Tiempo transcurrido", elapsedLabel(state.elapsed_seconds)]);
+    if (state.ui_status === "ENTRENANDO" &&
+        state.elapsed_seconds !== null &&
+        state.elapsed_seconds !== undefined) {
+      items.push(["Tiempo", elapsedLabel(state.elapsed_seconds)]);
     }
 
     return `
@@ -2468,7 +2498,15 @@
     panel.innerHTML = `
       <div class="ai-capture-top">
         <span class="ai-state-badge ai-state-${esc(state.ui_status)}">
-          ${esc(state.ui_label || state.ui_status)}
+          ${esc(
+            state.ui_status === "NO_DISPONIBLE" ? "Preparación pendiente" :
+            state.ui_status === "DISPONIBLE" ? "Lista para entrenar" :
+            state.ui_status === "ENTRENANDO" ? "Entrenando" :
+            state.ui_status === "ENTRENADO" ? (state.model_status === "VALIDADO" ? "Validada" : "Validación pendiente") :
+            state.ui_status === "FALLIDO" ? "Requiere atención" :
+            state.ui_status === "HISTORICA" ? "Versión anterior" :
+            (state.ui_label || state.ui_status)
+          )}
         </span>
         ${
           state.job_status

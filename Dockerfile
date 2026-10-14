@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11.17-slim-trixie
 
 WORKDIR /app
 
@@ -19,8 +19,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p static/captures static/results models ai_artifacts
+RUN mkdir -p static/captures static/results static/garment_models models ai_artifacts
 
 EXPOSE 5000
 
-CMD ["python", "app.py"]
+CMD ["gunicorn", "--config", "gunicorn.conf.py", "wsgi:app"]

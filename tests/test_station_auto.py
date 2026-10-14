@@ -26,6 +26,8 @@ class AutomaticStationTests(unittest.TestCase):
         A = self.A
         self.saved = {
             "AUTO_INSPECTION_ENABLED": A.AUTO_INSPECTION_ENABLED,
+            "AUTO_THREAD": A.AUTO_THREAD,
+            "MANUAL_INSPECTION_IN_PROGRESS": A.MANUAL_INSPECTION_IN_PROGRESS,
             "AUTO_LAST_RESULT": A.AUTO_LAST_RESULT,
             "AUTO_LAST_ERROR": A.AUTO_LAST_ERROR,
             "AUTO_LAST_CAPTURE_TIME": A.AUTO_LAST_CAPTURE_TIME,
@@ -39,6 +41,8 @@ class AutomaticStationTests(unittest.TestCase):
             "FRAME_SELECTION_BENCHMARK": A.FRAME_SELECTION_BENCHMARK,
         }
         A.AUTO_INSPECTION_ENABLED = True
+        A.AUTO_THREAD = None
+        A.MANUAL_INSPECTION_IN_PROGRESS = False
         A.AUTO_LAST_RESULT = None
         A.AUTO_LAST_ERROR = None
         A.AUTO_LAST_CAPTURE_TIME = 0.0
@@ -132,6 +136,171 @@ class AutomaticStationTests(unittest.TestCase):
             registrations[1][1]["garment_token"],
         )
 
+    def test_manual_inspection_is_blocked_while_automatic_mode_is_active(self):
+        A = self.A
+        client = A.app.test_client()
+
+        with client.session_transaction() as session:
+            session["user_id"] = 1
+            session["username"] = "audit-admin"
+            session["role"] = A.ROLE_ADMIN
+
+        user = {
+            "id": 1,
+            "username": "audit-admin",
+            "role": A.ROLE_ADMIN,
+            "active": 1,
+        }
+
+        A.AUTO_INSPECTION_ENABLED = True
+
+        with (
+            patch.object(A, "fetch_one", return_value=user),
+            patch.object(A, "read_camera_frame") as read_camera_frame,
+            patch.object(A, "register_inspection_from_frame") as register,
+        ):
+            response = client.post("/api/station/manual")
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.get_json()
+        self.assertFalse(payload["ok"])
+        self.assertIn("modo automático", payload["message"].lower())
+        read_camera_frame.assert_not_called()
+        register.assert_not_called()
+
+    def test_start_does_not_create_second_worker_when_already_active(self):
+        A = self.A
+        client = A.app.test_client()
+
+        with client.session_transaction() as session:
+            session["user_id"] = 1
+            session["username"] = "audit-admin"
+            session["role"] = A.ROLE_ADMIN
+
+        user = {
+            "id": 1,
+            "username": "audit-admin",
+            "role": A.ROLE_ADMIN,
+            "active": 1,
+        }
+        batch = {
+            "id": 1,
+            "processed_quantity": 0,
+            "planned_quantity": 5,
+        }
+
+        class FakeThread:
+            def __init__(self, *args, **kwargs):
+                self.started = False
+
+            def start(self):
+                self.started = True
+
+            def is_alive(self):
+                return self.started
+
+        A.AUTO_INSPECTION_ENABLED = False
+        A.AUTO_THREAD = None
+
+        with (
+            patch.object(A, "fetch_one", return_value=user),
+            patch.object(A, "get_active_batch", return_value=batch),
+            patch.object(A, "is_ai_capture_mode_active", return_value=False),
+            patch.object(A, "CAMERA_CONNECTED", True),
+            patch.object(A.threading, "Thread", wraps=FakeThread) as thread_cls,
+        ):
+            first = client.post("/api/station/auto/start")
+            second = client.post("/api/station/auto/start")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertTrue(first.get_json()["ok"])
+        self.assertTrue(second.get_json()["ok"])
+        self.assertEqual(thread_cls.call_count, 1)
+
+    def test_start_waits_for_previous_worker_to_finish(self):
+        A = self.A
+        client = A.app.test_client()
+
+        with client.session_transaction() as session:
+            session["user_id"] = 1
+            session["username"] = "audit-admin"
+            session["role"] = A.ROLE_ADMIN
+
+        user = {
+            "id": 1,
+            "username": "audit-admin",
+            "role": A.ROLE_ADMIN,
+            "active": 1,
+        }
+        batch = {
+            "id": 1,
+            "processed_quantity": 0,
+            "planned_quantity": 5,
+        }
+
+        class StillStoppingThread:
+            def is_alive(self):
+                return True
+
+        A.AUTO_INSPECTION_ENABLED = False
+        A.AUTO_THREAD = StillStoppingThread()
+
+        with (
+            patch.object(A, "fetch_one", return_value=user),
+            patch.object(A, "get_active_batch", return_value=batch),
+            patch.object(A, "is_ai_capture_mode_active", return_value=False),
+            patch.object(A, "CAMERA_CONNECTED", True),
+            patch.object(A.threading, "Thread") as thread_cls,
+        ):
+            response = client.post("/api/station/auto/start")
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.get_json()
+        self.assertFalse(payload["ok"])
+        self.assertIn("deteniendo", payload["message"].lower())
+        thread_cls.assert_not_called()
+
+    def test_start_is_blocked_while_manual_inspection_is_in_progress(self):
+        A = self.A
+        client = A.app.test_client()
+
+        with client.session_transaction() as session:
+            session["user_id"] = 1
+            session["username"] = "audit-admin"
+            session["role"] = A.ROLE_ADMIN
+
+        user = {
+            "id": 1,
+            "username": "audit-admin",
+            "role": A.ROLE_ADMIN,
+            "active": 1,
+        }
+        batch = {
+            "id": 1,
+            "processed_quantity": 0,
+            "planned_quantity": 5,
+        }
+
+        A.AUTO_INSPECTION_ENABLED = False
+        A.AUTO_THREAD = None
+        A.MANUAL_INSPECTION_IN_PROGRESS = True
+
+        with (
+            patch.object(A, "fetch_one", return_value=user),
+            patch.object(A, "get_active_batch", return_value=batch),
+            patch.object(A, "is_ai_capture_mode_active", return_value=False),
+            patch.object(A, "CAMERA_CONNECTED", True),
+            patch.object(A.threading, "Thread") as thread_cls,
+        ):
+            response = client.post("/api/station/auto/start")
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.get_json()
+        self.assertFalse(payload["ok"])
+        self.assertIn("manual", payload["message"].lower())
+        thread_cls.assert_not_called()
+
 
 class DeploymentEnvironmentTests(unittest.TestCase):
     def test_automatic_and_guided_runtime_settings_are_forwarded(self):
@@ -157,6 +326,74 @@ class DeploymentEnvironmentTests(unittest.TestCase):
             if f"{key}:" not in compose
         )
         self.assertEqual(missing, [])
+
+    def test_runtime_image_directories_are_persistent(self):
+        compose = (ROOT / "docker-compose.yaml").read_text(
+            encoding="utf-8"
+        )
+        required_mounts = {
+            "./static/captures:/app/static/captures",
+            "./static/results:/app/static/results",
+            "./static/garment_models:/app/static/garment_models",
+            "./ai_artifacts:/app/ai_artifacts",
+        }
+
+        missing = sorted(
+            mount for mount in required_mounts
+            if mount not in compose
+        )
+        self.assertEqual(missing, [])
+
+    def test_container_runtime_versions_are_pinned(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        requirements = (ROOT / "requirements.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "FROM python:3.11.17-slim-trixie",
+            dockerfile,
+        )
+        for dependency in (
+            "anomalib==2.5.0",
+            "torch==2.14.0",
+            "torchvision==0.29.0",
+            "timm==1.0.29",
+            "gunicorn==23.0.0",
+        ):
+            self.assertIn(dependency, requirements)
+
+    def test_container_uses_single_worker_production_wsgi_server(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        gunicorn_config = (ROOT / "gunicorn.conf.py").read_text(
+            encoding="utf-8"
+        )
+        wsgi = (ROOT / "wsgi.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'CMD ["gunicorn", "--config", "gunicorn.conf.py", "wsgi:app"]',
+            dockerfile,
+        )
+        self.assertIn("workers = 1", gunicorn_config)
+        self.assertIn("worker_class = \"gthread\"", gunicorn_config)
+        self.assertIn("ensure_camera_capture_worker()", wsgi)
+        self.assertIn("init_db()", wsgi)
+
+    def test_app_has_container_healthcheck(self):
+        compose = (ROOT / "docker-compose.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("healthcheck:", compose)
+        self.assertIn(
+            "http://127.0.0.1:5000/health",
+            compose,
+        )
 
 
 if __name__ == "__main__":

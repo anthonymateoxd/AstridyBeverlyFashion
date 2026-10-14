@@ -60,6 +60,7 @@ from ai_domain import (
     sha256_bytes,
     start_ai_capture_session,
     stop_ai_capture_session,
+    transition_ai_model_status,
     resolve_validation_category,
     VALIDATION_CATEGORIES,
     VALIDATION_DEFECT_TYPES,
@@ -213,6 +214,22 @@ if not _secret_key:
     raise RuntimeError("SECRET_KEY environment variable is required")
 app.secret_key = _secret_key
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = (
+    os.getenv("SESSION_COOKIE_SECURE", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+DB_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+UTC_ZONE = ZoneInfo("UTC")
+
+
+def utc_now_db():
+    """Fecha UTC ingenua para columnas DATETIME de MySQL."""
+    return datetime.now(UTC_ZONE).replace(tzinfo=None).strftime(
+        DB_DATETIME_FORMAT
+    )
 
 
 # ============================================================
@@ -742,6 +759,23 @@ def init_db():
         ("L\u00ednea 2",),
     )
 
+    # Normaliza nombres de líneas creados por versiones antiguas con
+    # problemas de codificación. Al actualizar el catálogo, también se
+    # corrige su visualización en lotes históricos porque estos lo consultan
+    # por relación.
+    cur.execute(
+        """
+        UPDATE inspection_lines
+        SET name = CASE code
+            WHEN 'LINEA-1' THEN %s
+            WHEN 'LINEA-2' THEN %s
+            ELSE name
+        END
+        WHERE code IN ('LINEA-1', 'LINEA-2')
+        """,
+        ("L\u00ednea 1", "L\u00ednea 2"),
+    )
+
     admin_username = os.getenv("ADMIN_USERNAME", "admin").strip() or "admin"
 
     cur.execute("SELECT id FROM users WHERE username = %s", (admin_username,))
@@ -777,33 +811,48 @@ def init_db():
 
 def fetch_one(sql, params=None):
     conn = db()
-    cur = conn.cursor(dictionary=True)
-    cur.execute(sql, params or ())
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row
+    cur = None
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, params or ())
+        return cur.fetchone()
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
 
 
 def fetch_all(sql, params=None):
     conn = db()
-    cur = conn.cursor(dictionary=True)
-    cur.execute(sql, params or ())
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    cur = None
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, params or ())
+        return cur.fetchall()
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
 
 
 def execute(sql, params=None):
     conn = db()
-    cur = conn.cursor()
-    cur.execute(sql, params or ())
-    conn.commit()
-    last_id = cur.lastrowid
-    cur.close()
-    conn.close()
-    return last_id
+    cur = None
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, params or ())
+        conn.commit()
+        return cur.lastrowid
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
 
 
 def get_inspection_lines(
@@ -1312,6 +1361,8 @@ print(
 
 AUTO_INSPECTION_ENABLED = False
 AUTO_THREAD = None
+AUTO_THREAD_LOCK = threading.Lock()
+MANUAL_INSPECTION_IN_PROGRESS = False
 AUTO_LAST_RESULT = None
 AUTO_LAST_ERROR = None
 AUTO_LAST_CAPTURE_TIME = 0
@@ -2484,6 +2535,8 @@ def camera_capture_worker():
     global CAMERA_FAILURE_COUNT
     global CAMERA_RECONNECTING
     global CAMERA_FORCE_REOPEN
+    global camera_capture
+    global CAMERA_LAST_CONNECT_ATTEMPT
 
     with CAMERA_RECONNECT_LOCK:
         CAMERA_RECONNECTING = True
@@ -2671,7 +2724,15 @@ def get_camera_status():
     """
     ensure_camera_capture_worker()
 
-    if CAMERA_CONNECTED:
+    with latest_frame_lock:
+        last_frame_at = latest_frame_timestamp_monotonic
+
+    frame_fresh = (
+        last_frame_at is not None
+        and (time.perf_counter() - last_frame_at) <= 5.0
+    )
+
+    if CAMERA_CONNECTED and frame_fresh:
         return {
             "connected": True,
             "reconnecting": False,
@@ -2684,6 +2745,15 @@ def get_camera_status():
 
     with CAMERA_RECONNECT_LOCK:
         reconnecting = CAMERA_RECONNECTING
+
+    if CAMERA_CONNECTED and not frame_fresh:
+        return {
+            "connected": False,
+            "reconnecting": True,
+            "state": "STALE",
+            "message": "No se reciben imágenes recientes de la cámara.",
+            "last_ok_at": CAMERA_LAST_OK_AT,
+        }
 
     if reconnecting:
         return {
@@ -3012,7 +3082,7 @@ def register_inspection_from_frame(
             time.perf_counter() - total_start
         ) * 1000.0
 
-    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    created_at = utc_now_db()
     code = (
         f"INS-{datetime.now().strftime('%H%M%S')}-"
         f"{uuid.uuid4().hex[:4].upper()}"
@@ -3306,6 +3376,7 @@ def auto_inspection_worker():
     6. No vuelve a registrar hasta que esa blusa haya salido.
     """
     global AUTO_INSPECTION_ENABLED
+    global AUTO_THREAD
     global AUTO_LAST_RESULT
     global AUTO_LAST_ERROR
     global AUTO_LAST_CAPTURE_TIME
@@ -3664,6 +3735,9 @@ def auto_inspection_worker():
 
         time.sleep(0.20)
 
+    with AUTO_THREAD_LOCK:
+        if AUTO_THREAD is threading.current_thread():
+            AUTO_THREAD = None
 
 
 def normalize_for_json(value):
@@ -5132,6 +5206,11 @@ def resolve_active_production_ai_runtime():
         }
 
         inspector = ai_validation.get_model_inspector(bundle)
+        if inspector is None:
+            raise RuntimeError(
+                "La versión de IA activa no pudo cargar su motor "
+                "de inferencia PatchCore."
+            )
 
         return {
             "batch_id": int(row["batch_id"]),
@@ -5809,6 +5888,15 @@ def get_batch_garments(batch_id, page=1, per_page=50):
 # ============================================================
 # RUTAS
 # ============================================================
+
+@app.route("/api/camera/status")
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def camera_status_api():
+    response = jsonify(get_camera_status())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 @app.route("/video_feed")
 @login_required
@@ -8007,15 +8095,29 @@ def delete_accidental_batch(batch_id):
                 url_for("batches")
             )
 
-        if (
-            batch["status"] != "PREPARACION"
-            or batch["started_at"] is not None
-            or int(
-                batch["inspection_count"]
-                or 0
-            ) != 0
-        ):
+        inspection_count = int(
+            batch["inspection_count"]
+            or 0
+        )
+
+        can_delete = (
+            inspection_count == 0
+            and (
+                (
+                    batch["status"] == "PREPARACION"
+                    and batch["started_at"] is None
+                )
+                or batch["status"] == "REVISION_PENDIENTE"
+            )
+        )
+
+        if not can_delete:
             conn.rollback()
+            flash(
+                "Este lote no puede eliminarse porque ya tiene "
+                "inspecciones registradas o no está en un estado eliminable.",
+                "error",
+            )
             return redirect(
                 url_for("batches")
             )
@@ -8024,8 +8126,12 @@ def delete_accidental_batch(batch_id):
             """
             DELETE FROM batches
             WHERE id = %s
-              AND status = 'PREPARACION'
-              AND started_at IS NULL
+              AND status IN ('PREPARACION', 'REVISION_PENDIENTE')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM inspections i
+                  WHERE i.batch_id = batches.id
+              )
             """,
             (batch_id,),
         )
@@ -8037,6 +8143,11 @@ def delete_accidental_batch(batch_id):
             )
 
         conn.commit()
+
+        flash(
+            "Lote accidental eliminado correctamente.",
+            "success",
+        )
 
         return redirect(
             url_for("batches")
@@ -8322,9 +8433,7 @@ def start_batch(batch_id):
               AND status = 'PREPARACION'
             """,
             (
-                datetime.now().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
+                utc_now_db(),
                 batch_id,
             ),
         )
@@ -8459,9 +8568,7 @@ def finish_batch_manual(batch_id):
             cur.fetchone()["total"] or 0
         )
 
-        finished_at = datetime.now().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        finished_at = utc_now_db()
 
         cur.execute(
             """
@@ -8736,9 +8843,7 @@ def complete_batch_review(batch_id):
             )
 
         closed_at = (
-            datetime.utcnow().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
+            utc_now_db()
         )
 
         cur.execute(
@@ -8919,11 +9024,7 @@ def review_batch_alert(
         "user_id"
     )
 
-    reviewed_at = (
-        datetime.utcnow().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-    )
+    reviewed_at = utc_now_db()
 
     execute(
         """
@@ -8978,6 +9079,33 @@ def station():
 def station_manual_inspect():
     global AUTO_LAST_RESULT
     global AUTO_LAST_ERROR
+    global MANUAL_INSPECTION_IN_PROGRESS
+
+    with AUTO_THREAD_LOCK:
+        auto_worker_alive = (
+            AUTO_THREAD is not None
+            and AUTO_THREAD.is_alive()
+        )
+        if AUTO_INSPECTION_ENABLED or auto_worker_alive:
+            return jsonify({
+                "ok": False,
+                "message": (
+                    "El modo automático está activo o terminando. "
+                    "Espere a que se detenga antes de ejecutar "
+                    "una inspección manual."
+                ),
+            }), 409
+
+        if MANUAL_INSPECTION_IN_PROGRESS:
+            return jsonify({
+                "ok": False,
+                "message": (
+                    "Ya hay una inspección manual en curso. "
+                    "Espere a que finalice."
+                ),
+            }), 409
+
+        MANUAL_INSPECTION_IN_PROGRESS = True
 
     try:
         if get_active_batch() is None:
@@ -9060,7 +9188,9 @@ def station_manual_inspect():
             ),
         }), 500
 
-
+    finally:
+        with AUTO_THREAD_LOCK:
+            MANUAL_INSPECTION_IN_PROGRESS = False
 
 
 @app.route("/api/station/camera/reconnect", methods=["POST"])
@@ -9131,15 +9261,39 @@ def station_auto_start():
             "message": "El lote ya completó todas sus prendas.",
         }), 409
 
-    if AUTO_INSPECTION_ENABLED:
-        return jsonify({
-            "ok": True,
-            "message": "El modo automático ya está activo.",
-        })
+    with AUTO_THREAD_LOCK:
+        if MANUAL_INSPECTION_IN_PROGRESS:
+            return jsonify({
+                "ok": False,
+                "message": (
+                    "Hay una inspección manual en curso. "
+                    "Espere a que finalice antes de iniciar "
+                    "el modo automático."
+                ),
+            }), 409
 
-    AUTO_INSPECTION_ENABLED = True
-    AUTO_THREAD = threading.Thread(target=auto_inspection_worker, daemon=True)
-    AUTO_THREAD.start()
+        if AUTO_INSPECTION_ENABLED:
+            return jsonify({
+                "ok": True,
+                "message": "El modo automático ya está activo.",
+            })
+
+        if AUTO_THREAD is not None and AUTO_THREAD.is_alive():
+            return jsonify({
+                "ok": False,
+                "message": (
+                    "El modo automático anterior todavía se está "
+                    "deteniendo. Intente de nuevo en unos segundos."
+                ),
+            }), 409
+
+        AUTO_INSPECTION_ENABLED = True
+        AUTO_THREAD = threading.Thread(
+            target=auto_inspection_worker,
+            daemon=True,
+            name="astrid-auto-inspection",
+        )
+        AUTO_THREAD.start()
 
     return jsonify({
         "ok": True,
@@ -9153,7 +9307,8 @@ def station_auto_start():
 def station_auto_stop():
     global AUTO_INSPECTION_ENABLED
 
-    AUTO_INSPECTION_ENABLED = False
+    with AUTO_THREAD_LOCK:
+        AUTO_INSPECTION_ENABLED = False
 
     return jsonify({
         "ok": True,
@@ -9461,7 +9616,7 @@ def inspection():
             """,
             (
                 code,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                utc_now_db(),
                 garment,
                 size,
                 status,
@@ -15785,7 +15940,8 @@ def prepare_garment_reference_images(files):
     return prepared
 
 
-def save_garment_reference_images(model_id, images):
+def save_garment_reference_images(model_id, images, *, cur):
+    """Guarda archivos y filas usando la transacción del modelo."""
     from uuid import uuid4
 
     directory = (
@@ -15794,36 +15950,56 @@ def save_garment_reference_images(model_id, images):
         / "garment_models"
         / str(model_id)
     )
-
     directory.mkdir(parents=True, exist_ok=True)
 
-    for position, (suffix, data) in enumerate(images, start=1):
-        filename = f"{uuid4().hex}{suffix}"
-        full_path = directory / filename
-        full_path.write_bytes(data)
+    saved_paths = []
 
-        relative_path = (
-            f"garment_models/{model_id}/{filename}"
-        )
+    try:
+        for position, (suffix, data) in enumerate(
+            images,
+            start=1,
+        ):
+            filename = f"{uuid4().hex}{suffix}"
+            full_path = directory / filename
+            full_path.write_bytes(data)
+            saved_paths.append(full_path)
 
-        execute(
-            """
-            INSERT INTO garment_model_images (
-                garment_model_id,
-                image_path,
-                image_type,
-                sort_order,
-                created_by
+            relative_path = (
+                f"garment_models/{model_id}/{filename}"
             )
-            VALUES (%s, %s, 'REFERENCIA', %s, %s)
-            """,
-            (
-                model_id,
-                relative_path,
-                position,
-                session.get("user_id"),
-            ),
-        )
+
+            cur.execute(
+                """
+                INSERT INTO garment_model_images (
+                    garment_model_id,
+                    image_path,
+                    image_type,
+                    sort_order,
+                    created_by
+                )
+                VALUES (%s, %s, 'REFERENCIA', %s, %s)
+                """,
+                (
+                    model_id,
+                    relative_path,
+                    position,
+                    session.get("user_id"),
+                ),
+            )
+
+        return saved_paths
+
+    except Exception:
+        for path in reversed(saved_paths):
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+        raise
 
 
 @app.route("/modelos-prenda")
@@ -16125,46 +16301,95 @@ def garment_model_create():
                 "garment_model_form.html"
             )
 
-        model_id = execute(
-            """
-            INSERT INTO garment_models (
-                code,
-                name,
-                garment_type,
-                color,
-                size,
-                inspection_side,
-                description,
-                status,
-                created_by,
-                active
-            )
-            VALUES (
-                %s,
-                %s,
-                'Blusa',
-                %s,
-                'S',
-                'Frente',
-                %s,
-                'BORRADOR',
-                %s,
-                1
-            )
-            """,
-            (
-                code,
-                name,
-                color,
-                description or None,
-                session.get("user_id"),
-            ),
-        )
+        conn = db()
+        cur = conn.cursor()
+        saved_paths = []
 
-        save_garment_reference_images(
-            model_id,
-            images,
-        )
+        try:
+            conn.start_transaction()
+
+            cur.execute(
+                """
+                INSERT INTO garment_models (
+                    code,
+                    name,
+                    garment_type,
+                    color,
+                    size,
+                    inspection_side,
+                    description,
+                    status,
+                    created_by,
+                    active
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    'Blusa',
+                    %s,
+                    'S',
+                    'Frente',
+                    %s,
+                    'BORRADOR',
+                    %s,
+                    1
+                )
+                """,
+                (
+                    code,
+                    name,
+                    color,
+                    description or None,
+                    session.get("user_id"),
+                ),
+            )
+            model_id = int(cur.lastrowid)
+
+            saved_paths = save_garment_reference_images(
+                model_id,
+                images,
+                cur=cur,
+            )
+
+            conn.commit()
+
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+
+            for path in reversed(saved_paths):
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            model_directory = (
+                Path(app.root_path)
+                / "static"
+                / "garment_models"
+                / str(locals().get("model_id", ""))
+            )
+            try:
+                model_directory.rmdir()
+            except OSError:
+                pass
+
+            app.logger.exception(
+                "No se pudo crear el modelo de prenda con "
+                "sus imágenes de referencia."
+            )
+            flash(
+                "No se pudo crear el modelo de prenda. "
+                "No se guardaron cambios parciales.",
+                "error",
+            )
+            return render_template(
+                "garment_model_form.html"
+            )
+
+        finally:
+            cur.close()
+            conn.close()
 
         flash(
             "Modelo de prenda creado correctamente. "
@@ -17247,23 +17472,47 @@ def logout():
 
 @app.route("/health")
 def health():
+    """Estado mínimo del servicio sin exponer configuración sensible."""
     try:
-        row = fetch_one("SELECT COUNT(*) AS c FROM inspections")
-        model_ready = MODEL_PATH.exists() and MODEL_PATH.stat().st_size >= 1024
+        fetch_one("SELECT 1 AS ok")
+
+        with latest_frame_lock:
+            frame_available = latest_camera_frame is not None
+            frame_timestamp = latest_frame_timestamp_monotonic
+
+        frame_age_seconds = None
+        if frame_timestamp is not None:
+            frame_age_seconds = max(
+                0.0,
+                time.monotonic() - float(frame_timestamp),
+            )
+
+        camera_connected = (
+            frame_available
+            and frame_age_seconds is not None
+            and frame_age_seconds <= max(
+                5.0,
+                float(CAMERA_RETRY_SECONDS) * 2.0,
+            )
+        )
+
         return jsonify({
-            "status": "ok",
-            "database": DB_NAME,
-            "inspections": row["c"],
-            "camera_source": (
-            "RTSP configurado"
-            if CAMERA_SOURCE.lower().startswith("rtsp://")
-            else CAMERA_SOURCE
+            "status": "ok" if camera_connected else "degraded",
+            "database": "ok",
+            "camera": (
+                "connected"
+                if camera_connected
+                else "disconnected"
             ),
-            "model_ready": model_ready,
-            "detection_mode": "yolo" if model_ready else "prototype",
         })
-    except Exception as e:
-        return jsonify({"status": "error", "detail": str(e)}), 500
+    except Exception:
+        app.logger.exception(
+            "Fallo la comprobacion de salud del servicio."
+        )
+        return jsonify({
+            "status": "error",
+            "database": "unavailable",
+        }), 503
 
 
 
@@ -20285,6 +20534,167 @@ def ai_validation_final_test_evaluate():
         cur.close()
         conn.close()
     return jsonify({"ok": True, "metrics": _json_sanitize(metrics), "final_test": _json_sanitize(state), "active": 0}), 200
+
+
+@app.route("/api/ai/validation/activate", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def ai_validation_activate():
+    """Activa una versión VALIDADA únicamente después de FINAL_TEST EVALUADA."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+
+    _, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+    if guard_error is not None:
+        return guard_error
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+
+        validation_state = ai_validation.get_validation_state(cur, resolved)
+        if validation_state.get("model_status") != "VALIDADO":
+            raise AIDomainError(
+                "Solo una versión VALIDADA puede activarse."
+            )
+        if int(validation_state.get("active") or 0) == 1:
+            raise AIDomainError("Esta versión ya está activa.")
+
+        final_state = ai_validation.get_final_test_state(
+            cur,
+            ai_model_id=resolved,
+        )
+        if (
+            not final_state.get("started")
+            or str(final_state.get("status") or "").upper() != "EVALUADA"
+            or not final_state.get("metrics")
+            or not final_state.get("integrity_ok")
+        ):
+            raise AIDomainError(
+                "Debe completar y evaluar la PRUEBA FINAL antes de activar esta versión."
+            )
+
+        cur.execute(
+            """
+            SELECT
+                b.id,
+                b.code,
+                b.ai_model_id,
+                (
+                    SELECT COUNT(*)
+                    FROM inspections i
+                    WHERE i.batch_id = b.id
+                ) AS inspection_count
+            FROM batches b
+            WHERE b.garment_model_id = %s
+              AND b.status = 'EN_INSPECCION'
+            ORDER BY b.id DESC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (garment_model_id,),
+        )
+        active_batch = cur.fetchone()
+        if (
+            active_batch is not None
+            and int(active_batch.get("inspection_count") or 0) > 0
+        ):
+            raise AIDomainError(
+                "Finalice el lote activo "
+                f"{active_batch.get('code') or active_batch.get('id')} "
+                "antes de cambiar la versión de IA, porque ya contiene inspecciones."
+            )
+
+        cur.execute(
+            """
+            SELECT id, version
+            FROM garment_ai_models
+            WHERE garment_model_id = %s
+              AND status = 'ACTIVO'
+              AND id <> %s
+            FOR UPDATE
+            """,
+            (garment_model_id, resolved),
+        )
+        previous_active = cur.fetchall()
+
+        result = transition_ai_model_status(
+            cur,
+            int(resolved),
+            "ACTIVO",
+            actor_id,
+        )
+
+        if active_batch is not None:
+            cur.execute(
+                "UPDATE batches SET ai_model_id = %s WHERE id = %s",
+                (int(resolved), int(active_batch["id"])),
+            )
+
+        for previous in previous_active:
+            record_ai_event(
+                cur,
+                "RETIRED",
+                actor_id=actor_id,
+                ai_model_id=int(previous["id"]),
+                payload={
+                    "reason": "REPLACED_BY_VALIDATED_VERSION",
+                    "replacement_ai_model_id": int(resolved),
+                },
+            )
+
+        record_ai_event(
+            cur,
+            "ACTIVATED",
+            actor_id=actor_id,
+            ai_model_id=int(resolved),
+            payload={
+                "garment_model_id": int(garment_model_id),
+                "final_test_session_id": int(final_state["id"]),
+                "final_test_metrics": final_state.get("metrics"),
+            },
+        )
+
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo activar ai_model_id=%s después de FINAL_TEST.",
+            resolved,
+        )
+        return jsonify({
+            "ok": False,
+            "error": "No se pudo activar la versión de IA. Intente de nuevo.",
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": (
+            f"La versión {result.get('version')} quedó ACTIVA y la versión anterior fue retirada."
+        ),
+        "result": _json_sanitize(result),
+        "redirect_url": url_for("garment_model_detail", model_id=garment_model_id),
+    }), 200
 
 
 @app.route("/api/ai/validation/threshold/freeze", methods=["POST"])

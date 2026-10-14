@@ -4,7 +4,7 @@
     <h1>Inspección en vivo</h1>
     <p>Captura, análisis y registro individual de prendas</p>
   </div>
-  <span class="live-badge">● Cámara activa</span>
+  <span id="inspection-camera-status" class="live-badge" role="status" aria-live="polite">● Comprobando cámara</span>
 </header>
 <section class="grid-2">
   <article class="card">
@@ -77,5 +77,39 @@
     {% endif %}
   </article>
 </section>
+<script>
+  (() => {
+    const badge = document.getElementById('inspection-camera-status');
+    if (!badge) return;
+
+    function actualizar(texto, color) {
+      badge.textContent = '● ' + texto;
+      badge.style.color = color;
+    }
+
+    async function consultarCamara() {
+      try {
+        const respuesta = await fetch("{{ url_for('camera_status_api') }}", {
+          cache: 'no-store',
+          credentials: 'same-origin'
+        });
+        if (!respuesta.ok) throw new Error('No se pudo consultar el estado');
+        const estado = await respuesta.json();
+        if (estado.connected) {
+          actualizar('Cámara conectada', '#00d17b');
+        } else if (estado.reconnecting || estado.state === 'STALE') {
+          actualizar('Reconectando cámara', '#ffc36e');
+        } else {
+          actualizar('Cámara desconectada', '#ff8585');
+        }
+      } catch (error) {
+        actualizar('Estado no disponible', '#ff8585');
+      }
+    }
+
+    consultarCamara();
+    setInterval(consultarCamara, 4000);
+  })();
+</script>
 {% endblock %}
 
