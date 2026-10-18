@@ -1,382 +1,296 @@
 ﻿{% extends "base.html" %}
 
+{% block body_class %}users-layout-page{% endblock %}
+
 {% block content %}
 
 <style>
+/* Keep main column within viewport without altering other modules. */
+body.users-layout-page .main { box-sizing: border-box; min-width: 0; }
+/* USERS_SYMMETRIC_LAYOUT_V2: shared navy colors, fixed rhythm, container-aware cards. */
 .users-page {
-    max-width: 1250px;
+    width: 100%;
+    max-width: 1440px;
+    min-width: 0;
     margin: 0 auto;
+    box-sizing: border-box;
+    container: users-page / inline-size;
+    color: var(--ui-text, #10275a);
 }
-
-.users-header {
-    margin-bottom: 24px;
+.users-page *, .users-page *::before, .users-page *::after {
+    box-sizing: border-box;
 }
-
-.users-header h1 {
-    margin-bottom: 6px;
-}
-
-.users-header p {
-    margin: 0;
-    opacity: .72;
-}
-
+.users-header { margin: 0 0 24px; }
+.users-header h1 { margin: 0 0 7px; line-height: 1.2; }
+.users-header p { margin: 0; max-width: 70ch; color: #627795; line-height: 1.55; }
 .users-grid {
     display: grid;
-    grid-template-columns: 360px 1fr;
-    gap: 24px;
+    grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
     align-items: start;
+    gap: 22px;
 }
-
 .users-card {
+    min-width: 0;
     background: #fff;
+    border: 1px solid #e0e8f3;
     border-radius: 14px;
     padding: 22px;
-    box-shadow: 0 3px 18px rgba(0,0,0,.08);
+    box-shadow: 0 5px 20px rgba(15, 40, 83, .05);
 }
-
+.users-list-card { container: users-list / inline-size; }
 .users-card h2 {
-    margin-top: 0;
-    font-size: 1.2rem;
+    margin: 0 0 18px;
+    color: var(--ui-text, #10275a);
+    font-size: 20px;
+    line-height: 1.25;
+    font-weight: 800;
 }
-
-.user-field {
-    margin-bottom: 16px;
-}
-
+.user-field { margin: 0 0 17px; }
 .user-field label {
     display: block;
-    font-weight: 600;
-    margin-bottom: 6px;
+    margin: 0 0 7px;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .9px;
+    text-transform: uppercase;
+    color: #647892;
 }
-
-.user-field input,
-.user-field select {
+.user-field input, .user-field select {
     width: 100%;
-    box-sizing: border-box;
+    min-width: 0;
+    min-height: 42px;
     padding: 10px 12px;
-    border: 1px solid #d7d7d7;
-    border-radius: 8px;
+    border: 1px solid #d8e1ee;
+    border-radius: 9px;
+    background: #fff;
+    color: var(--ui-text, #10275a);
     font: inherit;
+    font-size: 14px;
 }
-
+.user-field input:focus-visible, .user-field select:focus-visible,
+.users-page button:focus-visible, .users-page summary:focus-visible {
+    outline: 2px solid #2b83df;
+    outline-offset: 2px;
+}
+.user-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 36px;
+    max-width: 100%;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 8px 12px;
+    background: #edf3fc;
+    color: #173c72;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 750;
+    line-height: 1.25;
+    letter-spacing: 0;
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: normal;
+    transition: background .15s ease;
+}
+.user-button.primary { min-height: 43px; background: #112c64; color: #fff; }
+.user-button.primary:hover { background: #23467f; }
+.user-button.secondary { background: #edf3fc; border-color: #d9e4f2; color: #173c72; }
+.user-button.secondary:hover { background: #e1ebfa; }
+.user-button.danger { background: #fff1f1; border-color: #f2d8d8; color: #a13a43; }
+.user-button.activate { background: #e9f7ef; border-color: #ccebd9; color: #206b45; }
 .users-table {
     width: 100%;
+    border-spacing: 0;
     border-collapse: collapse;
+    table-layout: fixed;
 }
-
-.users-table th,
-.users-table td {
-    padding: 12px 10px;
-    border-bottom: 1px solid #ececec;
-    text-align: left;
+.users-table th, .users-table td {
+    min-width: 0;
+    padding: 14px 9px;
+    border-bottom: 1px solid #e8edf5;
     vertical-align: middle;
+    text-align: left;
+    overflow-wrap: anywhere;
 }
-
 .users-table th {
-    font-size: .82rem;
+    padding-top: 0;
+    padding-bottom: 12px;
+    color: #687b95;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .7px;
     text-transform: uppercase;
-    opacity: .7;
 }
-
+.users-table tr:last-child td { border-bottom: 0; }
+.users-table td { color: #234266; font-size: 12px; line-height: 1.45; }
+.users-table td:first-child strong {
+    display: block;
+    color: #10275a;
+    font-size: 13px;
+    line-height: 1.4;
+    font-weight: 800;
+}
+.users-table td:nth-child(2) { color: #365077; font-size: 12px; }
+.users-table td:nth-child(5) .user-button { width: 100%; }
+.users-table td:nth-child(5) small { color: #6b809b; }
 .role-form {
+    width: 100%;
     display: flex;
-    gap: 8px;
-    align-items: center;
+    flex-direction: column;
+    gap: 7px;
+    align-items: stretch;
+    margin: 0;
 }
-
 .role-form select {
-    min-width: 165px;
-    padding: 7px;
-}
-
-.user-status {
-    display: inline-block;
-    padding: 5px 9px;
-    border-radius: 20px;
-    font-size: .82rem;
-    font-weight: 700;
-}
-
-.user-status.active {
-    background: #e8f6ed;
-    color: #216b39;
-}
-
-.user-status.inactive {
-    background: #f6eaea;
-    color: #9d3030;
-}
-
-.user-button {
-    border: 0;
-    border-radius: 8px;
-    padding: 9px 13px;
-    cursor: pointer;
-    font-weight: 600;
-}
-
-.user-button.primary {
-    background: #202020;
-    color: #fff;
-}
-
-.user-button.secondary {
-    background: #eeeeee;
-    color: #202020;
-}
-
-.user-button.danger {
-    background: #f4dddd;
-    color: #8a2222;
-}
-
-.user-button.activate {
-    background: #dff2e5;
-    color: #216b39;
-}
-
-@media (max-width: 950px) {
-    .users-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .users-table {
-        font-size: .9rem;
-    }
-}
-
-
-/* USERS_MOBILE_CARDS_V1 */
-
-@media (max-width: 700px) {
-
-  .users-page {
     width: 100%;
-    max-width: 100%;
     min-width: 0;
-  }
-
-  .users-header h1 {
-    font-size: 30px;
-    line-height: 1.05;
-    overflow-wrap: anywhere;
-  }
-
-  .users-card {
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-
-    box-sizing: border-box;
-
-    padding: 16px;
-    overflow: hidden;
-  }
-
-  .users-table {
-    display: block !important;
-    width: 100% !important;
-    border-collapse: initial !important;
-  }
-
-  .users-table thead {
-    display: none !important;
-  }
-
-  .users-table tbody {
-    display: grid !important;
-    grid-template-columns: 1fr !important;
-    gap: 12px;
-
-    width: 100%;
-  }
-
-  .users-table tr {
-    display: block !important;
-
-    width: 100%;
-    box-sizing: border-box;
-
-    padding: 14px;
-
-    border: 1px solid #ececec;
+    min-height: 36px;
+    padding: 7px 8px;
+    border: 1px solid #d8e1ee;
     border-radius: 8px;
-
     background: #fff;
-  }
+    color: #193e74;
+    font: inherit;
+    font-size: 12px;
+}
+.role-form .user-button { width: 100%; }
+.user-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 800;
+    white-space: nowrap;
+}
+.user-status.active { background: #e6f6ed; color: #216b45; }
+.user-status.inactive { background: #f9e9e9; color: #a33d43; }
 
-  .users-table td {
-    display: grid !important;
-
-    grid-template-columns:
-      minmax(82px, 32%)
-      minmax(0, 1fr) !important;
-
-    gap: 10px;
-
-    width: 100%;
-    box-sizing: border-box;
-
-    padding: 7px 0 !important;
-
-    border: 0 !important;
-
-    overflow-wrap: anywhere;
-  }
-
-  .users-table td::before {
-    color: #82766b;
-
-    font-size: 9px;
+/* Keep the name editor closed until explicitly requested. */
+.user-name-editor { margin-top: 8px; min-width: 0; }
+.user-name-editor > summary {
+    display: inline-flex;
+    align-items: center;
+    width: auto;
+    min-height: 30px;
+    border: 1px solid #d7e3f2;
+    border-radius: 7px;
+    padding: 5px 9px;
+    background: #eef4fc;
+    color: #173c72;
+    font-size: 12px;
     font-weight: 700;
-    line-height: 1.2;
-
-    letter-spacing: .8px;
-    text-transform: uppercase;
-  }
-
-  .users-table td:nth-child(1)::before {
-    content: "Persona";
-  }
-
-  .users-table td:nth-child(2)::before {
-    content: "Usuario";
-  }
-
-  .users-table td:nth-child(3)::before {
-    content: "Rol";
-  }
-
-  .users-table td:nth-child(4)::before {
-    content: "Estado";
-  }
-
-  .users-table td:nth-child(5)::before {
-    content: "Accion";
-  }
-
-  .role-form {
+    line-height: 1.25;
+    cursor: pointer;
+    list-style: none;
+    white-space: nowrap;
+}
+.user-name-editor > summary::-webkit-details-marker { display: none; }
+.user-name-editor[open] > summary { margin-bottom: 9px; }
+.user-name-edit {
     display: flex;
     flex-direction: column;
     align-items: stretch;
-
-    width: 100%;
     min-width: 0;
-  }
-
-  .role-form select {
-    width: 100%;
-    min-width: 0;
-    box-sizing: border-box;
-  }
-
-  .role-form .user-button {
-    width: 100%;
-  }
-
-  .users-table td > form {
-    max-width: 100%;
-  }
-
-  .users-table td:nth-child(5) form,
-  .users-table td:nth-child(5) .user-button {
-    width: 100%;
-  }
-}
-
-
-
-/* USERS_TABLET_FIX_V1 */
-
-@media (max-width: 1200px) and (min-width: 701px) {
-
-  .users-page {
-    max-width: 900px;
-  }
-
-  .users-grid {
-    grid-template-columns: 1fr !important;
-  }
-
-  .users-card {
-    width: 100%;
-    max-width: 100%;
-    box-sizing: border-box;
-  }
-
-  .users-table {
-    width: 100%;
-    table-layout: auto;
-  }
-
-  .role-form {
-    flex-wrap: wrap;
-  }
-
-  .role-form select {
-    min-width: 140px;
-    max-width: 100%;
-  }
-}
-
-.user-name-edit {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    flex-wrap: wrap;
-    margin-top: 8px;
+    gap: 7px;
+    margin: 0;
 }
 .user-name-edit input {
-    flex: 1 1 145px;
+    display: block;
     min-width: 0;
-    max-width: 300px;
     width: 100%;
-    box-sizing: border-box;
-    padding: 9px 10px;
+    min-height: 37px;
+    padding: 8px 9px;
     border: 1px solid #d7e2f0;
     border-radius: 8px;
+    color: #10275a;
+    background: #fff;
     font: inherit;
-    font-size: 13px;
-    color: #10275a;
+    font-size: 12px;
 }
-.user-name-edit .user-button {
-    background: #eef4fc;
-    color: #143365;
-    border: 1px solid #d7e2f0;
-}
+.user-name-edit .user-button { width: 100%; background: #eef4fc; border-color: #d7e2f0; }
 .user-profile-card {
-    margin: 0 0 18px;
-    background: #f6f9ff;
-    border: 1px solid #e0e9f7;
+    margin: 0 0 20px;
+    border: 1px solid #dde7f5;
     border-radius: 12px;
-    padding: 16px 18px;
+    padding: 18px 20px;
+    background: #f5f8fd;
 }
-.user-profile-card h2 {
-    margin: 0 0 5px;
-    color: #10275a;
-    font-size: 17px;
+.user-profile-card h2 { margin: 0 0 6px; font-size: 17px; color: #10275a; }
+.user-profile-card p { margin: 0 0 12px; font-size: 13px; line-height: 1.5; color: #5c7190; }
+.user-profile-card .user-name-edit {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) auto;
+    align-items: center;
+    max-width: 560px;
+    gap: 10px;
 }
-.user-profile-card p {
-    margin: 0 0 9px;
-    color: #5b6e8c;
-    font-size: 13px;
-    line-height: 1.5;
-}
-@media(max-width:700px) {
-  .users-table .user-name-edit {
-      display: flex;
-      flex-direction: column;
-      align-items: stretch;
-      width: 100%;
-  }
-  .users-table .user-name-edit input {
-      max-width: none;
-      flex: none;
-  }
-  .user-profile-card {padding: 14px;}
-}
+.user-profile-card .user-name-edit input { min-height: 42px; font-size: 14px; }
+.user-profile-card .user-name-edit button { width: auto; min-height: 42px; padding: 9px 18px; }
 
+/* The width of the actual content determines whether to stack the cards. */
+@container users-page (max-width: 1060px) {
+    .users-grid { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+}
+@container users-list (max-width: 780px) {
+    .users-table, .users-table tbody { display: block; width: 100%; }
+    .users-table thead { display: none; }
+    .users-table tbody {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+        gap: 14px;
+    }
+    .users-table tr {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        padding: 13px 16px;
+        border: 1px solid #e0e8f3;
+        border-radius: 11px;
+        background: #fff;
+    }
+    .users-table td {
+        display: grid;
+        grid-template-columns: 80px minmax(0, 1fr);
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 9px 0;
+        border-bottom: 1px solid #edf1f7;
+    }
+    .users-table tr:last-child td { border-bottom: 1px solid #edf1f7; }
+    .users-table td:last-child, .users-table tr:last-child td:last-child { border-bottom: 0; }
+    .users-table td::before {
+        content: attr(data-label);
+        align-self: center;
+        color: #6b809c;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: .65px;
+        text-transform: uppercase;
+    }
+    .users-table td:first-child { align-items: start; }
+    .users-table td:nth-child(5) .user-button { width: 100%; }
+    .user-name-editor { margin-top: 7px; }
+}
+@media (max-width: 700px) {
+    .users-page { max-width: 100%; }
+    .users-header h1 { font-size: clamp(24px, 7vw, 32px); }
+    .users-card { padding: 16px; }
+    .user-profile-card { padding: 15px; }
+    .user-profile-card .user-name-edit {
+        display: flex;
+        align-items: stretch;
+        flex-direction: column;
+        max-width: none;
+    }
+    .user-profile-card .user-name-edit button { width: 100%; }
+}
 </style>
 
 <div class="users-page">
@@ -407,7 +321,7 @@
 
     <div class="users-grid">
 
-        <section class="users-card">
+        <section class="users-card user-register-card">
             <h2>Nuevo usuario</h2>
 
             <form method="post">
@@ -473,11 +387,18 @@
             </form>
         </section>
 
-        <section class="users-card">
+        <section class="users-card users-list-card">
 
             <h2>Usuarios registrados</h2>
 
             <table class="users-table">
+                <colgroup>
+                    <col style="width:24%">
+                    <col style="width:18%">
+                    <col style="width:26%">
+                    <col style="width:14%">
+                    <col style="width:18%">
+                </colgroup>
                 <thead>
                     <tr>
                         <th>Persona</th>
@@ -494,18 +415,19 @@
                     {% if user.username|lower not in ['admin', 'juan', 'paco'] %}
                     <tr>
 
-                        <td>
-                            <strong>
-                                {{ user.full_name or "Sin nombre" }}
-                            </strong>
-                            <form method="post" class="user-name-edit"
-                                  action="{{ url_for('user_change_full_name', user_id=user.id) }}">
-                                <input name="full_name" type="text"
-                                       required minlength="2" maxlength="150"
-                                       value="{{ user.full_name or '' }}"
-                                       aria-label="Editar nombre de {{ user.username }}">
-                                <button class="user-button" type="submit">Editar nombre</button>
-                            </form>
+                        <td data-label="Persona">
+                            <strong>{{ user.full_name or "Sin nombre" }}</strong>
+                            <details class="user-name-editor">
+                                <summary>Editar nombre</summary>
+                                <form method="post" class="user-name-edit"
+                                      action="{{ url_for('user_change_full_name', user_id=user.id) }}">
+                                    <input name="full_name" type="text"
+                                           required minlength="2" maxlength="150"
+                                           value="{{ user.full_name or '' }}"
+                                           aria-label="Nuevo nombre de {{ user.username }}">
+                                    <button class="user-button" type="submit">Guardar nombre</button>
+                                </form>
+                            </details>
 
                             {% if user.id == session.get("user_id") %}
                             <div>
@@ -514,9 +436,9 @@
                             {% endif %}
                         </td>
 
-                        <td>{{ user.username }}</td>
+                        <td data-label="Usuario">{{ user.username }}</td>
 
-                        <td>
+                        <td data-label="Rol">
 
                             {% if user.id == session.get("user_id") %}
 
@@ -563,7 +485,7 @@
 
                         </td>
 
-                        <td>
+                        <td data-label="Estado">
 
                             {% if user.active %}
 
@@ -581,7 +503,7 @@
 
                         </td>
 
-                        <td>
+                        <td data-label="Acción">
 
                             {% if user.id != session.get("user_id") %}
 
