@@ -796,13 +796,17 @@ class CaptureSessionDbTests(unittest.TestCase):
         claim_frame_sequence(cur, sid, 102)
         conn.rollback()
 
+# Comprueba que el registro de imágenes requiere una sesión abierta.
     def test_register_requires_open_session(self):
+
+        # Importa las funciones necesarias para realizar la prueba.
         from ai_domain import (
             register_training_image,
             start_ai_capture_session,
             stop_ai_capture_session,
         )
 
+        # Prepara la conexión y la transacción de prueba.
         conn, cur = self._tx()
         opened = start_ai_capture_session(
             cur,

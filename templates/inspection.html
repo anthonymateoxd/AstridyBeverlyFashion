@@ -1,7 +1,7 @@
 ﻿{% extends "base.html" %} {% block content %}
 <header class="page-header">
   <div>
-    <h1>Inspección en vivo</h1>
+    <h1>Inspección en tiempo real</h1>
     <p>Captura, análisis y registro individual de prendas</p>
   </div>
   <span id="inspection-camera-status" class="live-badge" role="status" aria-live="polite">● Comprobando cámara</span>
@@ -13,9 +13,9 @@
     <div class="live-camera">
       <img
         src="{{ url_for('video_feed') }}"
-        alt="Cámara en vivo"
+        alt="Cámara en tiempo real"
       />
-      <div class="camera-label">Cámara en vivo · Estación de inspección</div>
+      <div class="camera-label">Cámara en tiempo real · Estación de inspección</div>
     </div>
 
     <form

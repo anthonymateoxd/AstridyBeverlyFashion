@@ -431,6 +431,37 @@
       grid-template-columns: minmax(0, 1fr);
     }
   }
+  .guide-occupied {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin: 0 0 18px;
+    padding: 16px 18px;
+    border: 1px solid #d7e5f8;
+    border-left: 4px solid var(--ui-blue, #1597dc);
+    border-radius: 12px;
+    background: #f2f7fd;
+    color: var(--ui-text, #10275a);
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  .guide-occupied-copy { flex: 1 1 300px; }
+  .guide-occupied-copy strong { display: block; font-size: 15px; }
+  .guide-occupied-copy p { margin: 7px 0 0; color: #506887; font-size: 13px; line-height: 1.55; }
+  .guide-occupied-button {
+    border: 0;
+    border-radius: 8px;
+    background: var(--ui-navy, #0d2a66);
+    color: white;
+    padding: 12px 16px;
+    font: 700 13px Arial, Helvetica, sans-serif;
+    cursor: pointer;
+  }
+  .guide-occupied-button:hover { background: #24487f; }
+  .guide-occupied-button:focus-visible { outline: 2px solid var(--ui-blue, #1597dc); outline-offset: 3px; }
+  .guide-occupied-help { margin: 0; color: #506887; font-size: 13px; }
+
 </style>
 
 <header class="page-header">
@@ -455,8 +486,30 @@
   </div>
 </header>
 
-{# CAPÍTULO V — Interfaz de captura guiada.
-   Muestra el video de la cámara y las instrucciones para capturar imágenes. #}
+{% if occupied_capture %}
+<section class="guide-occupied" role="alert">
+  <div class="guide-occupied-copy">
+    <strong>La cámara está ocupada por otra captura de IA</strong>
+    <p>
+      La sesión del modelo <b>{{ occupied_capture.model_code }}</b>
+      {% if occupied_capture.model_archived %}(modelo retirado del catálogo){% endif %}
+      sigue abierta. Pausar un lote de producción no pausa esta sesión.
+      Puede liberarla sin borrar las imágenes que se hayan guardado.
+    </p>
+  </div>
+  {% if session.get('role') == 'ADMIN' %}
+  <form method="post" action="{{ url_for('pause_busy_capture') }}"
+        onsubmit="return confirm('Pausar la captura anterior y conservar sus imágenes para liberar la cámara?');">
+    <input type="hidden" name="capture_session_id" value="{{ occupied_capture.session_id }}">
+    <input type="hidden" name="return_model_id" value="{{ model.id }}">
+    <input type="hidden" name="return_to_capture" value="1">
+    <button class="guide-occupied-button" type="submit">Pausar sesión anterior y continuar</button>
+  </form>
+  {% else %}
+  <p class="guide-occupied-help">Solicite al administrador que pause la sesión anterior.</p>
+  {% endif %}
+</section>
+{% endif %}
 <section class="guide-wrap">
   <figure class="guide-video">
     <img
@@ -577,6 +630,10 @@
         <strong id="guideMissing">20</strong>
       </div>
     </div>
+    <a class="guide-button neutral" style="display:inline-flex;margin:12px 0 4px;text-decoration:none"
+       href="{{ url_for('training_image_gallery', model_id=model.id) }}">
+      Revisar imagenes aceptadas
+    </a>
     <span id="guideRejected" hidden>0</span>
     <span id="guideTarget" hidden>40</span>
     <span id="guideSession" hidden>—</span>
@@ -599,6 +656,7 @@
     <div class="guide-training-note" id="guideTrainingNote" hidden></div>
 
     <div class="guide-actions">
+      {% if not occupied_capture %}
       <form
         method="post"
         action="{{ url_for('guided_capture_finish', model_id=model.id) }}"
@@ -614,6 +672,14 @@
         </button>
       </form>
 
+      <form method="post"
+            action="{{ url_for('guided_capture_pause', model_id=model.id) }}"
+            data-single-submit="true">
+        <button class="guide-button neutral" type="submit">
+          PAUSAR Y GUARDAR
+        </button>
+      </form>
+
       <form
         method="post"
         action="{{ url_for('guided_capture_cancel', model_id=model.id) }}"
@@ -624,6 +690,7 @@
         </button>
       </form>
 
+      {% endif %}
       <a
         class="guide-button neutral"
         href="{{ url_for('garment_model_detail', model_id=model.id) }}"
@@ -650,7 +717,8 @@
                          model_id=model.id,
                          image_id=0)
     },
-    'state': ai_capture
+    'state': ai_capture,
+    'stationBusy': occupied_capture is not none
   }|tojson }};
 </script>
 
@@ -962,7 +1030,10 @@
       if (total) total.textContent = Number(augmentation.total_available || 0);
     }
 
-    if (guide && guide.active) {
+    if (config.stationBusy) {
+      setStateLabel("ESTACI\u00d3N OCUPADA", null);
+      elMessage.textContent = "Primero pause la captura anterior para utilizar esta c\u00e1mara.";
+    } else if (guide && guide.active) {
       setStateLabel(guide.state_label, guide.state);
       elMessage.textContent = guide.ready
         ? (guide.ready_message || "Lista para capturar")
@@ -1063,6 +1134,11 @@
     clearError();
 
     try {
+      if (config.stationBusy) {
+        // No intentar iniciar otra sesión sobre una cámara ocupada.
+        started = false;
+        return;
+      }
       if (state.has_preparation_version === false) {
         showError(
           "Este modelo aún no tiene una versión de preparación. " +

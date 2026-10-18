@@ -151,7 +151,18 @@ body.app-body{
 .dashboard-user-name{
   color:var(--dash-navy);
   font-size:14px;
+  line-height:1.35;
   font-weight:800;
+  max-width:210px;
+  overflow-wrap:anywhere;
+}
+.dashboard-user-role {
+  display:block;
+  margin-top:4px;
+  color:#73829a;
+  font-size:11px;
+  line-height:1.3;
+  font-weight:600;
 }
 
 .dashboard-kpis{
@@ -414,14 +425,88 @@ body.app-body{
 .quality-item strong{display:block;color:var(--dash-navy);font-size:25px}
 .quality-item span{display:block;margin-top:6px;color:#75839a;font-size:10px;text-transform:uppercase;font-weight:700;line-height:1.25}
 
-.live-model-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}
-.live-model-card{padding:15px;border:1px solid #e8edf3;border-radius:9px;background:#fbfcfd}
-.live-model-name{color:var(--dash-navy);font-size:14px;font-weight:800}
-.live-model-size{margin-top:4px;color:#8290a4;font-size:11px}
-.live-model-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:12px}
-.live-model-stat{padding:8px;border-radius:7px;background:#fff;border:1px solid #edf0f4}
-.live-model-stat strong{display:block;color:var(--dash-navy);font-size:17px}
-.live-model-stat span{display:block;margin-top:4px;color:#7e8a9d;font-size:8px;line-height:1.15;text-transform:uppercase}
+/* Tarjetas por modelo: medidas constantes y estadisticas alineadas. */
+.live-model-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  align-items:stretch;
+  gap:14px;
+  margin-top:16px;
+}
+.live-model-card{
+  min-width:0;
+  min-height:216px;
+  display:flex;
+  flex-direction:column;
+  padding:16px;
+  border:1px solid #e5ebf3;
+  border-radius:12px;
+  background:#fafbfd;
+  container-type:inline-size;
+}
+.live-model-heading{
+  min-height:73px;
+  display:flex;
+  flex-direction:column;
+  justify-content:flex-start;
+  min-width:0;
+}
+.live-model-name{
+  color:var(--dash-navy);
+  font-size:13px;
+  font-weight:800;
+  line-height:1.4;
+  overflow-wrap:anywhere;
+}
+.live-model-size{
+  margin-top:6px;
+  color:#7889a4;
+  font-size:11px;
+  line-height:1.35;
+}
+.live-model-stats{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  grid-auto-rows:minmax(72px,auto);
+  gap:8px;
+  margin-top:auto;
+}
+.live-model-stat{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  min-width:0;
+  min-height:72px;
+  padding:9px 5px;
+  border:1px solid #e5ebf3;
+  border-radius:9px;
+  background:#fff;
+  text-align:center;
+}
+.live-model-stat strong{
+  display:block;
+  color:var(--dash-navy);
+  font-size:19px;
+  line-height:1.1;
+  font-weight:800;
+  font-variant-numeric:tabular-nums;
+}
+.live-model-stat span{
+  display:block;
+  margin-top:7px;
+  color:#6f8099;
+  font-size:9px;
+  line-height:1.3;
+  font-weight:700;
+  text-transform:uppercase;
+  overflow-wrap:anywhere;
+}
+/* En tarjetas angostas, dos columnas evitan textos amontonados. */
+@container (max-width:320px){
+  .live-model-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
 .live-empty{padding:22px;border:1px dashed #dbe2ea;border-radius:9px;color:#8290a4;text-align:center;background:#fbfcfd}
 
 .dashboard-footer{
@@ -475,7 +560,7 @@ body.app-body{
 
   <header class="dashboard-topbar">
     <div class="dashboard-greeting">
-      <h1>¡Hola, {{ session.get('username', 'Administrador') }}!</h1>
+      <h1>¡Hola, {{ session.get('display_name') or session.get('username', 'Usuario') }}!</h1>
       <p>Bienvenido al sistema de control de calidad</p>
     </div>
 
@@ -484,9 +569,10 @@ body.app-body{
         <strong>{{ now_gt.strftime('%d/%m/%Y') }}</strong>
         {{ now_gt.strftime('%I:%M:%S %p') }}
       </div>
-      <div class="dashboard-avatar">{{ session.get('username', 'A')[:1]|upper }}</div>
+      <div class="dashboard-avatar">{{ (session.get('display_name') or session.get('username') or 'U')[:1]|upper }}</div>
       <div class="dashboard-user-name">
-        {% if role == 'ADMIN' %}Administrador{% elif role == 'MODEL_MANAGER' %}Encargado de modelos{% else %}Gestor de calidad{% endif %}
+        {{ session.get('display_name') or session.get('username', 'Usuario') }}
+        <span class="dashboard-user-role">{% if role == 'ADMIN' %}Administrador{% elif role == 'MODEL_MANAGER' %}Encargado de modelos{% else %}Gestor de calidad{% endif %}</span>
       </div>
     </div>
   </header>
@@ -509,8 +595,8 @@ body.app-body{
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 7 4-7 4-7-4 7-4Z"/><path d="m5 7 7 4 7-4v8l-7 4-7-4V7Z"/></svg>
       </div>
       <div>
-        <strong id="dashReviewLots">0</strong>
-        <span>Lotes pendientes de revisión</span>
+        <strong id="dashGoalBatches">{% if goal %}{{ operational.remaining_batches }}{% else %}&mdash;{% endif %}</strong>
+        <span id="dashGoalBatchesLabel">{% if goal %}Lotes faltantes{% else %}Sin meta para hoy{% endif %}</span>
       </div>
     </article>
 
@@ -664,7 +750,7 @@ body.app-body{
           <div class="info-row"><span>Tiempo restante</span><strong>{{ operational.remaining_minutes // 60 }} h {{ operational.remaining_minutes % 60 }} min</strong></div>
           <div class="info-row"><span>Ritmo actual</span><strong>{{ operational.current_rate }} prendas/h</strong></div>
           <div class="info-row"><span>Ritmo necesario</span><strong>{{ operational.required_rate }} prendas/h</strong></div>
-          <div class="info-row"><span>Lotes pendientes</span><strong>{{ operational.remaining_batches }}</strong></div>
+          <div class="info-row"><span>Lotes faltantes para la meta</span><strong id="dashGoalBatchesDetail">{{ operational.remaining_batches }}</strong></div>
           {% if operational.estimated_finish %}<div class="info-row"><span>Finalización estimada</span><strong>{{ operational.estimated_finish.strftime('%H:%M') }}</strong></div>{% endif %}
         </div>
       </div>
@@ -1105,6 +1191,7 @@ document.addEventListener(
       return (
        '<div class="live-model-card">'
 
+       + '<div class="live-model-heading">'
        + '<div class="live-model-name">'
        + esc(m.model_code)
        + ' \u2014 '
@@ -1116,6 +1203,7 @@ document.addEventListener(
        + esc(m.size)
        + '</div>'
 
+       + '</div>'
        + '<div class="live-model-stats">'
 
        + '<div class="live-model-stat">'
@@ -1190,10 +1278,19 @@ document.addEventListener(
    }
 
 
-   if (get("dashReviewLots")) {
+   if (get("dashGoalBatches")) {
 
-    get("dashReviewLots").textContent =
-     data.batch_states.review_pending;
+    get("dashGoalBatches").textContent =
+     data.target_batches ? data.remaining_batches : "\u2014";
+   }
+
+   if (get("dashGoalBatchesLabel")) {
+    get("dashGoalBatchesLabel").textContent =
+     data.target_batches ? "Lotes faltantes" : "Sin meta para hoy";
+   }
+
+   if (get("dashGoalBatchesDetail")) {
+    get("dashGoalBatchesDetail").textContent = data.remaining_batches;
    }
 
 

@@ -63,6 +63,7 @@ from ai_domain import (
     sha256_bytes,
     start_ai_capture_session,
     stop_ai_capture_session,
+    transition_capture_session_status,
     transition_ai_model_status,
     resolve_validation_category,
     VALIDATION_CATEGORIES,
@@ -100,16 +101,24 @@ from ai_training import (
     training_status_payload,
 )
 
+# ============================================================
+# CONFIGURACIÓN DE CÁMARA E INTELIGENCIA ARTIFICIAL
+# ============================================================
 
+# Carga las variables de configuración desde el archivo .env.
 load_dotenv()
-# RTSP mediante TCP: más estable que UDP para OpenCV
+
+# Configura RTSP mediante TCP para recibir video de la cámara.
+# TCP permite una transmisión más estable ante pérdidas de red.
 os.environ.setdefault(
     "OPENCV_FFMPEG_CAPTURE_OPTIONS",
     "rtsp_transport;tcp"
 )
 
+# Obtiene la ruta global de referencia del modelo PatchCore.
 PATCHCORE_CKPT = os.getenv("PATCHCORE_CKPT", "").strip()
 
+# Establece el tamaño de imagen configurado, con valor inicial 384.
 PATCHCORE_IMAGE_SIZE = int(
     os.getenv("PATCHCORE_IMAGE_SIZE", "384")
 )
@@ -136,8 +145,7 @@ PATCHCORE_MAX_BOX_RATIO = float(
     os.getenv("PATCHCORE_MAX_BOX_RATIO", "0.15")
 )
 
-# Compatibilidad histórica: se conservan las variables globales para
-# utilidades y pruebas antiguas, pero la estación productiva ya NO carga
+# Compatibilidad histórica: se conservan las variables globales para utilidades y pruebas antiguas, pero la estación productiva ya NO carga
 # este checkpoint al iniciar. Cada lote resuelve su versión ACTIVA desde
 # garment_ai_models mediante resolve_active_production_ai_runtime().
 patchcore_inspector = None
@@ -179,11 +187,30 @@ FRAME_SELECTION_BENCHMARK = str(
 BENCHMARK_FRAMES_DIR = ROOT / "benchmark_frames"
 BENCHMARK_COVERAGE_LEVELS = (0.40, 0.45, 0.50)
 
+
+
+
+# ============================================================
+# CONFIGURACIÓN DE LA BASE DE DATOS MYSQL
+# ============================================================
+
+# Obtiene el nombre de la base de datos desde el entorno.
 DB_NAME = os.environ.get("MYSQL_DATABASE", "textile_quality_db")
+# Define la dirección del servidor donde se encuentra MySQL.
 DB_HOST = os.environ.get("MYSQL_HOST", "127.0.0.1")
+# Establece el puerto utilizado para conectarse a MySQL.
 DB_PORT = int(os.environ.get("MYSQL_PORT", "3306"))
+# Obtiene el usuario utilizado para establecer la conexión.
 DB_USER = os.environ.get("MYSQL_USER", "root")
+# Obtiene la contraseña de conexión desde las variables de entorno.
 DB_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
+
+
+
+
+
+
+
 
 DEFECT_TYPES = [
     "Mancha",
@@ -1249,13 +1276,16 @@ def has_role(*roles):
     allowed = {normalize_role(role) for role in roles}
     return current_role in allowed
 
-
+# Protege las funciones que requieren una sesión activa.
 def login_required(fn):
+    # Conserva la información original de la función protegida.
     @wraps(fn)
     def wrapper(*args, **kwargs):
+        # Obtiene el identificador del usuario desde la sesión.
         user_id = session.get("user_id")
-
+        # Comprueba si el usuario ha iniciado sesión.
         if not user_id:
+            # Devuelve un error JSON si la solicitud pertenece a la API.
             if request.path.startswith("/api/"):
                 return jsonify({
                     "ok": False,
@@ -1266,31 +1296,38 @@ def login_required(fn):
 
         user = fetch_one(
             """
-            SELECT id, username, role, active
+            SELECT id, username, full_name, role, active
             FROM users
             WHERE id = %s
             """,
             (user_id,),
         )
-
+        # Verifica que la cuenta exista y se encuentre activa.
         if not user or int(user.get("active") or 0) != 1:
-            session.clear()
 
+            # Elimina los datos de la sesión no autorizada.
+            session.clear()
+            # Informa a la API que el acceso ya no está autorizado.
             if request.path.startswith("/api/"):
                 return jsonify({
                     "ok": False,
                     "error": "La sesion ya no esta autorizada."
                 }), 401
-
+            # Muestra un mensaje explicando el problema de acceso.
             flash(
                 "La cuenta esta desactivada o ya no se encuentra disponible.",
                 "error",
             )
+            # Envía nuevamente al usuario al inicio de sesión.
             return redirect(url_for("login"))
 
         role = normalize_role(user.get("role"))
 
         session["username"] = user["username"]
+        session["display_name"] = (
+            str(user.get("full_name") or "").strip()
+            or user["username"]
+        )
         session["role"] = role
 
         return fn(*args, **kwargs)
@@ -1416,13 +1453,27 @@ AI_GUIDED_RUNTIME = {
 
 set_production_probe(lambda: bool(AUTO_INSPECTION_ENABLED))
 
+
+
+
+# Define una espera de 4 segundos entre capturas automáticas.
 AUTO_COOLDOWN_SECONDS = float(os.getenv("AUTO_COOLDOWN_SECONDS", "4"))
+
+# Establece el valor de referencia para detectar movimiento.
 AUTO_MOTION_THRESHOLD = int(os.getenv("AUTO_MOTION_THRESHOLD", "18000"))
+
+# Define una espera de 0.6 segundos para estabilizar la prenda.
 AUTO_STABILIZATION_SECONDS = float(os.getenv("AUTO_STABILIZATION_SECONDS", "0.6"))
 
 # ------------------------------------------------------------
 # Detección automática de presencia de la blusa.
-#
+# ------------------------------------------------------------
+
+
+
+
+
+
 # En la instalación de producción la blusa completa ocupa aproximadamente
 # 34-38 % del ROI. El automático espera que entre suficientemente antes
 # de capturar, dejando margen para variaciones de talla y posición.
@@ -2041,6 +2092,8 @@ def validate_camera_ip(ip_address):
     cap = None
 
     try:
+# Abre la fuente de video utilizando OpenCV y FFmpeg.
+# Si existen parámetros adicionales, los aplica a la captura.
         if capture_params:
             cap = cv2.VideoCapture(
                 source,
@@ -2048,11 +2101,14 @@ def validate_camera_ip(ip_address):
                 capture_params,
             )
         else:
+
+# Abre la fuente con la configuración predeterminada.
             cap = cv2.VideoCapture(
                 source,
                 cv2.CAP_FFMPEG,
             )
 
+# Verifica que la fuente de video se haya abierto.
         if not cap.isOpened():
             return False
 
@@ -2727,22 +2783,26 @@ def ensure_camera_reconnect_worker():
 
     return ensure_camera_capture_worker()
 
-
+# Verifica el estado operativo de la cámara de inspección.
 def get_camera_status():
     """
     Estado operativo. Si no hay señal, asegura el capture worker
     (que también reconecta). No abre RTSP por su cuenta.
     """
+# Asegura que el proceso encargado de capturar imágenes esté activo.
     ensure_camera_capture_worker()
 
+# Consulta de forma segura el momento de la última imagen recibida.
     with latest_frame_lock:
         last_frame_at = latest_frame_timestamp_monotonic
 
+# Comprueba que la última imagen tenga como máximo 5 segundos.
     frame_fresh = (
         last_frame_at is not None
         and (time.perf_counter() - last_frame_at) <= 5.0
     )
 
+# Confirma que la cámara está conectada y transmitiendo.
     if CAMERA_CONNECTED and frame_fresh:
         return {
             "connected": True,
@@ -3016,12 +3076,12 @@ def save_image(file_storage=None):
 # A partir de un fotograma, ejecuta el análisis y registra el resultado
 # junto con su evidencia y el lote de producción correspondiente.
 def register_inspection_from_frame(
-    frame,
+    frame, # Imagen capturada por la cámara.
     notes="Registro generado por estación de inspección.",
-    garment_token=None,
-    decision_start=None,
-    frame_selection_ms=None,
-    source="auto",
+    garment_token=None, # Identificador de seguimiento de la prenda.
+    decision_start=None, # Inicio del proceso de decisión.
+    frame_selection_ms=None, # Tiempo de selección del fotograma.
+    source="auto", # Indica el origen de la captura.
 ):
     """
     Ejecuta la detección, guarda la evidencia y registra la blusa
@@ -3191,8 +3251,10 @@ def register_inspection_from_frame(
                 "El lote ya alcanz? la cantidad planificada."
             )
 
+# Calcula la posición de la prenda dentro del lote.
         batch_position = processed_before + 1
 
+# Guarda los datos y resultados de la inspección en MySQL.
         cur.execute(
             """
             INSERT INTO inspections (
@@ -3318,12 +3380,18 @@ def register_inspection_from_frame(
         ) * 1000.0
 
     except Exception:
+        # Comprueba si existe una transacción pendiente
         if conn.in_transaction:
+
+            # Deshace los cambios si ocurre un error.
             conn.rollback()
+        # Propaga el error para que pueda ser gestionado.
         raise
 
     finally:
+        # Cierra el cursor de la base de datos.
         cur.close()
+        # Cierra la conexión con MySQL.
         conn.close()
 
     metrics["total_complete_ms"] = (
@@ -4099,7 +4167,9 @@ def create_guided_garment_mask(image, diagnostics=None):
     else:
         diagnostics["seed"] = dict(seed_diagnostics)
 
+# Define el factor de escala para procesar la imagen.
     scale = float(GUIDED_SEGMENTATION_SCALE)
+# Redimensiona la región de interés para su análisis.
     working = cv2.resize(
         roi,
         None,
@@ -4107,9 +4177,15 @@ def create_guided_garment_mask(image, diagnostics=None):
         fy=scale,
         interpolation=cv2.INTER_AREA,
     )
+
+# Calcula el área total de la imagen redimensionada.
     working_area = float(working.shape[0] * working.shape[1])
+# Prepara el registro de información del proceso.
     adaptive_diagnostics = diagnostics.setdefault("adaptive", {})
 
+
+# Convierte la imagen a escala de grises y busca
+# los límites de la región que contiene la prenda.
     panel = _guided_panel_bounds(
         cv2.cvtColor(working, cv2.COLOR_BGR2GRAY),
         adaptive_diagnostics,
@@ -5902,22 +5978,32 @@ def get_batch_garments(batch_id, page=1, per_page=50):
 # ============================================================
 # RUTAS
 # ============================================================
-
+# Define la ruta que consulta el estado actual de la cámara.
 @app.route("/api/camera/status")
+# Comprueba que el usuario haya iniciado sesión.
 @login_required
+# Permite el acceso al administrador y al gestor de calidad.
 @role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
 def camera_status_api():
+    # Obtiene el estado de la cámara y lo devuelve en formato JSON.
     response = jsonify(get_camera_status())
+    # Evita almacenar en caché información que puede cambiar.
     response.headers["Cache-Control"] = "no-store"
+    # Envía la respuesta HTTP al navegador.
     return response
+# Define la ruta utilizada para transmitir video al navegador.
 
 
 @app.route("/video_feed")
+# Verifica que exista una sesión autenticada.
 @login_required
+# Restringe el acceso a los roles autorizados.
 @role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
 def video_feed():
+    # Genera una respuesta HTTP con imágenes sucesivas de la cámara.
     return Response(
         generate_video_feed(),
+        # Especifica el formato de transmisión de imágenes.
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
@@ -5954,6 +6040,10 @@ def login():
             session.clear()
             session["user_id"] = user["id"]
             session["username"] = user["username"]
+            session["display_name"] = (
+                str(user.get("full_name") or "").strip()
+                or user["username"]
+            )
             session["role"] = role
 
             return redirect(url_for("dashboard"))
@@ -5966,21 +6056,28 @@ def login():
 # CAPÍTULO V — Panel principal de control.
 # Consulta los datos de producción y prepara los indicadores del día
 # respetando la zona horaria utilizada por la empresa.
+# Panel principal: consulta de producción e indicadores del día.
 @app.route("/dashboard")
+# Permite acceder únicamente a usuarios autenticados.
 @login_required
 def dashboard():
+
+# Importa herramientas para trabajar con fechas y horarios.
     from datetime import date, time, timedelta
     from zoneinfo import ZoneInfo
 
+# Define las zonas horarias de Guatemala y UTC.
     timezone_gt = ZoneInfo("America/Guatemala")
     timezone_utc = ZoneInfo("UTC")
 
+# Obtiene la fecha y hora actuales en Guatemala.
     now_gt = datetime.now(timezone_gt)
     today = now_gt.date()
 
     # La base almacena los tiempos operativos usando UTC.
     # Convertimos el inicio y fin del día de Guatemala a UTC
     # antes de consultar los registros.
+    # Establece el inicio del día según la hora de Guatemala.
     day_start_gt = datetime.combine(
         today,
         time.min,
@@ -6124,11 +6221,8 @@ def dashboard():
             target_garments - inspected,
             0,
         )
-        remaining_batches = (
-            (remaining_garments + 99) // 100
-            if remaining_garments > 0
-            else 0
-        )
+        # Los lotes faltantes dependen de la meta, no de las prendas restantes.
+        remaining_batches = max(target_batches - completed, 0)
 
         progress = (
             min(inspected / target_garments * 100, 100)
@@ -6624,7 +6718,8 @@ def dashboard_live_api():
     goal = fetch_one(
         """
         SELECT
-            target_garments
+            target_garments,
+            target_batches
         FROM daily_production_goals
         WHERE goal_date = %s
         LIMIT 1
@@ -6663,6 +6758,25 @@ def dashboard_live_api():
         ),
     )
 
+
+    # Mantiene la misma definicion de lote completado que el panel principal.
+    completed_batches = 0
+    if goal:
+        completed_batches = int(fetch_one(
+            """
+            SELECT COUNT(*) AS c
+            FROM batches b
+            WHERE b.inspection_completed_at >= %s
+              AND b.inspection_completed_at < %s
+              AND EXISTS (
+                  SELECT 1 FROM inspections i
+                  WHERE i.batch_id = b.id
+                    AND i.created_at >= %s
+                    AND i.created_at < %s
+              )
+            """,
+            (day_start, day_end, day_start, day_end),
+        )["c"] or 0)
 
     batch_states = fetch_one(
         """
@@ -6847,6 +6961,8 @@ def dashboard_live_api():
         goal["target_garments"]
         or 0
     ) if goal else 0
+    target_batches = int(goal["target_batches"] or 0) if goal else 0
+    remaining_batches = max(target_batches - completed_batches, 0)
 
     remaining = max(
         target - inspected,
@@ -6977,6 +7093,12 @@ def dashboard_live_api():
 
         "target_garments":
             target,
+
+        "target_batches":
+            target_batches,
+
+        "remaining_batches":
+            remaining_batches,
 
         "inspected":
             inspected,
@@ -7936,13 +8058,16 @@ def batches():
         )
 
         try:
+# Inicia una transacción para registrar el lote de forma segura.
             conn.start_transaction()
 
+# Genera un código temporal mientras se crea el lote.
             temporary_code = (
                 "PENDING-"
                 + uuid.uuid4().hex.upper()
             )
 
+# Inserta el nuevo lote en la base de datos.
             cur.execute(
                 """
                 INSERT INTO batches (
@@ -7967,6 +8092,7 @@ def batches():
                 )
                 """,
                 (
+# Código temporal del lote.
                     temporary_code,
                     selected_model["id"],
                     selected_model[
@@ -8057,15 +8183,33 @@ def batches():
         today_batches
     )
 
-    visible_batches = (
-        today_batches[:8]
-    )
+    paused_batches = [
+        b for b in all_batches
+        if b.get("status") == "PAUSADO" and b not in today_batches
+    ]
+    visible_batches = (paused_batches + today_batches)[:16]
+
+    # La captura de entrenamiento puede reservar la misma camara incluso
+    # cuando todos los lotes de produccion estan pausados.
+    occupied_capture = None
+    if can_create:
+        occupied_capture = fetch_one(
+            """SELECT s.id, s.garment_model_id,
+                      COALESCE(gm.code, 'Sin codigo') AS model_code,
+                      COALESCE(gm.name, 'Modelo sin nombre') AS model_name,
+                      COALESCE(gm.active,0) AS model_active
+               FROM ai_capture_sessions s
+               LEFT JOIN garment_models gm ON gm.id=s.garment_model_id
+               WHERE s.status='ABIERTA'
+               ORDER BY s.id DESC LIMIT 1"""
+        )
 
     return render_template(
         "batches.html",
         batches=visible_batches,
         today_batches_total=today_batches_total,
         active_batch=get_active_batch(),
+        occupied_capture=occupied_capture,
         available_models=available_models,
         available_lines=available_lines,
         production_plan=production_plan,
@@ -8193,6 +8337,119 @@ def delete_accidental_batch(batch_id):
     finally:
         cur.close()
         conn.close()
+
+
+@app.route("/lotes/<int:batch_id>/pausar", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def pause_batch(batch_id):
+    """Pausa la inspeccion sin borrar ni cerrar el lote."""
+    global AUTO_INSPECTION_ENABLED
+    with AUTO_THREAD_LOCK:
+        AUTO_INSPECTION_ENABLED = False
+        worker = AUTO_THREAD
+    if worker and worker.is_alive():
+        worker.join(timeout=8)
+        if worker.is_alive():
+            flash("La estacion sigue deteniendose. Intente de nuevo.", "error")
+            return redirect(url_for("batches"))
+    if MANUAL_INSPECTION_IN_PROGRESS:
+        flash("Espere a que termine la captura manual.", "error")
+        return redirect(url_for("batches"))
+    conn=db()
+    cur=conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute("SELECT id,code,status FROM batches WHERE id=%s FOR UPDATE",(batch_id,))
+        batch=cur.fetchone()
+        if not batch or batch["status"]!="EN_INSPECCION":
+            conn.rollback()
+            flash("El lote no esta en inspeccion.", "error")
+            return redirect(url_for("batches"))
+        cur.execute("UPDATE batches SET status='PAUSADO' WHERE id=%s AND status='EN_INSPECCION'",(batch_id,))
+        if cur.rowcount!=1:
+            conn.rollback()
+            flash("El lote ha cambiado de estado.", "error")
+            return redirect(url_for("batches"))
+        conn.commit()
+        flash(f"Lote {batch['code']} pausado. Se conservaron las inspecciones.", "success")
+        return redirect(url_for("batches"))
+    except Exception:
+        if conn.in_transaction: conn.rollback()
+        app.logger.exception("Error al pausar lote %s",batch_id)
+        flash("No se pudo pausar el lote.","error")
+        return redirect(url_for("batches"))
+    finally:
+        cur.close();conn.close()
+
+
+@app.route("/lotes/<int:batch_id>/reanudar", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def resume_batch(batch_id):
+    """Reanuda el mismo lote sin duplicar inspecciones."""
+    with AUTO_THREAD_LOCK:
+        busy=(AUTO_INSPECTION_ENABLED or
+              (AUTO_THREAD is not None and AUTO_THREAD.is_alive()) or
+              MANUAL_INSPECTION_IN_PROGRESS)
+    if busy:
+        flash("La estacion esta ocupada. Intente mas tarde.","error")
+        return redirect(url_for("batches"))
+    conn=db();cur=conn.cursor(dictionary=True);locked=False
+    try:
+        cur.execute("SELECT GET_LOCK(%s, 10) AS acquired",("astrid_quality_start_batch",))
+        locked=int((cur.fetchone() or {}).get("acquired") or 0)==1
+        if not locked:
+            flash("La estacion esta ocupada.","error")
+            return redirect(url_for("batches"))
+        conn.start_transaction()
+        cur.execute("""
+            SELECT b.id,b.code,b.status,gm.active AS model_active,
+                   ai.active AS ai_active,ai.status AS ai_status
+            FROM batches b
+            LEFT JOIN garment_models gm ON gm.id=b.garment_model_id
+            LEFT JOIN garment_ai_models ai ON ai.id=b.ai_model_id
+            WHERE b.id=%s FOR UPDATE""",(batch_id,))
+        batch=cur.fetchone()
+        if not batch or batch["status"]!="PAUSADO":
+            conn.rollback()
+            flash("Este lote no esta pausado.","error")
+            return redirect(url_for("batches"))
+        if (int(batch.get("model_active") or 0)!=1 or
+            int(batch.get("ai_active") or 0)!=1 or
+            batch.get("ai_status")!="ACTIVO"):
+            conn.rollback()
+            flash("El modelo o su IA ya no estan disponibles.","error")
+            return redirect(url_for("batches"))
+        cur.execute("SELECT id FROM batches WHERE status='EN_INSPECCION' AND id<>%s LIMIT 1 FOR UPDATE",(batch_id,))
+        if cur.fetchone():
+            conn.rollback()
+            flash("Existe otro lote en inspeccion. Pauselo antes.","error")
+            return redirect(url_for("batches"))
+        cur.execute("SELECT id FROM ai_capture_sessions WHERE status='ABIERTA' LIMIT 1")
+        if cur.fetchone():
+            conn.rollback()
+            flash("Hay una captura de IA activa. Pausela antes.","error")
+            return redirect(url_for("batches"))
+        cur.execute("UPDATE batches SET status='EN_INSPECCION' WHERE id=%s AND status='PAUSADO'",(batch_id,))
+        if cur.rowcount!=1:
+            conn.rollback();flash("El lote cambio de estado.","error")
+            return redirect(url_for("batches"))
+        conn.commit()
+        flash(f"Lote {batch['code']} reanudado con su progreso anterior.","success")
+        return redirect(url_for("station"))
+    except Exception:
+        if conn.in_transaction:conn.rollback()
+        app.logger.exception("Error al reanudar lote %s",batch_id)
+        flash("No se pudo reanudar el lote.","error")
+        return redirect(url_for("batches"))
+    finally:
+        if locked:
+            try:
+                cur.execute("SELECT RELEASE_LOCK(%s)",("astrid_quality_start_batch",))
+                cur.fetchone()
+            except Exception:pass
+        cur.close();conn.close()
 
 
 @app.route("/lotes/<int:batch_id>/iniciar", methods=["POST"])
@@ -8444,6 +8701,15 @@ def start_batch(batch_id):
             return redirect(
                 url_for("batches")
             )
+
+        # Una sola camara en la tesis: no iniciar lote si hay captura IA.
+        cur.execute(
+            "SELECT id FROM ai_capture_sessions WHERE status = 'ABIERTA' LIMIT 1"
+        )
+        if cur.fetchone() is not None:
+            conn.rollback()
+            flash("Hay una captura de IA activa. Pausela antes de iniciar el lote.", "error")
+            return redirect(url_for("batches"))
 
         AUTO_INSPECTION_ENABLED = False
 
@@ -9668,17 +9934,21 @@ def inspection():
 # CAPÍTULO V — Historial de inspecciones.
 # Permite consultar registros y filtrar las inspecciones por fechas,
 # lote, modelo de prenda, responsable y resultado.
+# Permite consultar el historial de inspecciones.
 @app.route("/registros")
 @login_required
 def records():
+# Importa las herramientas para trabajar con fechas.
     from datetime import datetime as dt_datetime
     from datetime import time as dt_time
     from datetime import timedelta as dt_timedelta
     from zoneinfo import ZoneInfo
 
+# Define las zonas horarias de Guatemala y UTC.
     timezone_gt = ZoneInfo("America/Guatemala")
     timezone_utc = ZoneInfo("UTC")
 
+# Obtiene la fecha actual de Guatemala.
     today_gt = dt_datetime.now(timezone_gt).date()
     today_text = today_gt.strftime("%Y-%m-%d")
 
@@ -10063,23 +10333,25 @@ def records():
                     ),
                     0
                 ) AS pending
-
+-- Aplica las tablas y los filtros de la consulta.
             {from_sql}
             {where_sql}
 
+-- Agrupa los resultados por lote y modelo de prenda.
             GROUP BY
                 b.id,
                 b.code,
                 gm.code,
                 gm.name
 
+-- Ordena los lotes y muestra primero los más recientes.
             ORDER BY
                 CASE
                     WHEN b.id IS NULL THEN 1
                     ELSE 0
                 END,
                 b.id DESC
-
+-- Limita la consulta a un máximo de 30 resultados.
             LIMIT 30
             """,
             tuple(params),
@@ -14476,16 +14748,14 @@ def informe_pdf():
         TA_CENTER,
         TA_LEFT,
     )
-    from reportlab.lib.pagesizes import (
-        letter,
-        landscape,
-    )
+    from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import (
         ParagraphStyle,
         getSampleStyleSheet,
     )
     from reportlab.lib.units import mm
     from reportlab.platypus import (
+        KeepTogether,
         LongTable,
         PageBreak,
         Paragraph,
@@ -14549,9 +14819,9 @@ def informe_pdf():
 
     buffer = io.BytesIO()
 
-    page_size = landscape(letter)
+    page_size = letter
 
-    margin_x = 22 * mm
+    margin_x = 16 * mm
 
     content_width = (
         page_size[0]
@@ -14571,8 +14841,8 @@ def informe_pdf():
         pagesize=page_size,
         rightMargin=margin_x,
         leftMargin=margin_x,
-        topMargin=25 * mm,
-        bottomMargin=16 * mm,
+        topMargin=31 * mm,
+        bottomMargin=17 * mm,
         title=(
             "Informe de producci\u00f3n y calidad"
         ),
@@ -14588,7 +14858,7 @@ def informe_pdf():
         parent=styles["Title"],
         alignment=TA_CENTER,
         fontName="Helvetica-Bold",
-        fontSize=19,
+        fontSize=18,
         leading=23,
         spaceAfter=4,
     )
@@ -14600,7 +14870,7 @@ def informe_pdf():
         fontSize=10,
         leading=13,
         textColor=colors.HexColor(
-            "#5F574F"
+            "#526783"
         ),
         spaceAfter=3,
     )
@@ -14612,7 +14882,7 @@ def informe_pdf():
         fontSize=7.5,
         leading=10,
         textColor=colors.HexColor(
-            "#82776D"
+            "#73829A"
         ),
         spaceAfter=10,
     )
@@ -14664,7 +14934,7 @@ def informe_pdf():
         fontSize=7.5,
         leading=9,
         textColor=colors.HexColor(
-            "#6B625A"
+            "#647691"
         ),
     )
 
@@ -14676,7 +14946,7 @@ def informe_pdf():
         fontSize=9,
         leading=12,
         textColor=colors.HexColor(
-            "#6B625A"
+            "#647691"
         ),
     )
 
@@ -14686,7 +14956,7 @@ def informe_pdf():
         fontSize=7.5,
         leading=10,
         textColor=colors.HexColor(
-            "#5F574F"
+            "#526783"
         ),
     )
 
@@ -14737,7 +15007,7 @@ def informe_pdf():
                     (0, 0),
                     (-1, -1),
                     colors.HexColor(
-                        "#F2EEE8"
+                        "#EEF4FC"
                     ),
                 ),
                 (
@@ -14746,7 +15016,7 @@ def informe_pdf():
                     (-1, -1),
                     0.4,
                     colors.HexColor(
-                        "#D8D0C6"
+                        "#D5E0EF"
                     ),
                 ),
                 (
@@ -14809,7 +15079,7 @@ def informe_pdf():
                     (0, 0),
                     (-1, -1),
                     colors.HexColor(
-                        "#FAF8F5"
+                        "#F8FAFE"
                     ),
                 ),
                 (
@@ -14818,7 +15088,7 @@ def informe_pdf():
                     (-1, -1),
                     0.4,
                     colors.HexColor(
-                        "#DDD5CB"
+                        "#E2E9F3"
                     ),
                 ),
                 (
@@ -14870,7 +15140,7 @@ def informe_pdf():
             (0, 0),
             (-1, 0),
             colors.HexColor(
-                "#111111"
+                "#10224A"
             ),
         ),
         (
@@ -14885,7 +15155,7 @@ def informe_pdf():
             (-1, -1),
             0.35,
             colors.HexColor(
-                "#DDD5CB"
+                "#E2E9F3"
             ),
         ),
         (
@@ -14895,7 +15165,7 @@ def informe_pdf():
             [
                 colors.white,
                 colors.HexColor(
-                    "#FAF8F5"
+                    "#F8FAFE"
                 ),
             ],
         ),
@@ -15113,7 +15383,7 @@ def informe_pdf():
                 (-1, -1),
                 0.5,
                 colors.HexColor(
-                    "#D8D0C6"
+                    "#D5E0EF"
                 ),
             ),
             (
@@ -15264,81 +15534,50 @@ def informe_pdf():
         Spacer(1, 5)
     )
 
+    # Tarjetas uniformes evitan tablas de ocho columnas ilegibles en vertical.
     if insights["models"]:
-        rows = [[
-            header("Modelo"),
-            header("Nombre"),
-            header("Inspeccionadas"),
-            header("Aptas"),
-            header("Rechazadas"),
-            header("Pendientes"),
-            header("Estado"),
-            header("Lectura r\u00e1pida"),
-        ]]
-
-        for model in insights[
-            "models"
-        ][:10]:
-            rows.append([
-                paragraph(
-                    model["code"]
-                ),
-                paragraph(
-                    model["name"]
-                ),
-                centered(
-                    model["inspected"]
-                ),
-                centered(
-                    model["passed"]
-                ),
-                centered(
-                    model["rejected"]
-                ),
-                centered(
-                    model["pending"]
-                ),
-                paragraph(
-                    model["state"]
-                ),
-                paragraph(
-                    model["reading"]
-                ),
-            ])
-
-        table = LongTable(
-            rows,
-            repeatRows=1,
-            colWidths=[
-                27 * mm,
-                42 * mm,
-                26 * mm,
-                18 * mm,
-                23 * mm,
-                22 * mm,
-                38 * mm,
-                73 * mm,
-            ],
-        )
-
-        table.setStyle(
-            data_table_style
-        )
-
-        elements.append(
-            table
-        )
-
-    else:
-        elements.append(
-            Paragraph(
-                (
-                    "No existen modelos con "
-                    "actividad en el per\u00edodo."
-                ),
-                note_style,
+        for model in insights["models"][:10]:
+            label = str(model["code"]) + " - " + str(model["name"])
+            model_table = Table(
+                [
+                    [paragraph(label, section_style), "", "", ""],
+                    [
+                        paragraph(model["inspected"], metric_value_style),
+                        paragraph(model["passed"], metric_value_style),
+                        paragraph(model["rejected"], metric_value_style),
+                        paragraph(model["pending"], metric_value_style),
+                    ],
+                    [
+                        paragraph("Inspeccionadas", metric_label_style),
+                        paragraph("Aptas", metric_label_style),
+                        paragraph("Rechazadas", metric_label_style),
+                        paragraph("Pendientes", metric_label_style),
+                    ],
+                    [paragraph("Estado: " + str(model["state"]), note_style), "", "", ""],
+                    [paragraph("Lectura: " + str(model["reading"]), note_style), "", "", ""],
+                ],
+                colWidths=[content_width / 4] * 4,
+                hAlign="CENTER",
             )
-        )
+            model_table.setStyle(TableStyle([
+                ("SPAN", (0, 0), (-1, 0)),
+                ("SPAN", (0, 3), (-1, 3)),
+                ("SPAN", (0, 4), (-1, 4)),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEF4FC")),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.white),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#D5E0EF")),
+                ("LINEBELOW", (0, 2), (-1, 2), 0.4, colors.HexColor("#E2E9F3")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]))
+            elements.append(KeepTogether([model_table, Spacer(1, 11)]))
+    else:
+        elements.append(paragraph(
+            "No existen modelos con actividad en el período.", note_style
+        ))
 
     elements.append(
         Spacer(1, 8)
@@ -15412,95 +15651,53 @@ def informe_pdf():
     )
 
     if data["lot_summary"]:
-        rows = [[
-            header("Lote"),
-            header("Modelo"),
-            header("Avance"),
-            header("Inspeccionadas"),
-            header("Aptas"),
-            header("Rechazadas"),
-            header("% rechazo"),
-            header("Pendientes"),
-        ]]
-
-        for row in data[
-            "lot_summary"
-        ][:20]:
-            model_label = (
-                (
-                    str(
-                        row[
-                            "garment_model_code"
-                        ]
-                    )
-                    + " - "
-                    + str(
-                        row[
-                            "garment_model_name"
-                        ]
-                    )
-                )
-                if row[
-                    "garment_model_code"
-                ]
-                else "Sin modelo"
+        for row in data["lot_summary"][:20]:
+            model_name = (
+                str(row["garment_model_code"]) + " - "
+                + str(row["garment_model_name"])
+                if row["garment_model_code"] else "Sin modelo"
             )
-
-            rows.append([
-                paragraph(
-                    row["code"]
-                ),
-                paragraph(
-                    model_label
-                ),
-                centered(
-                    (
-                        f"{row['total_processed']}/"
-                        f"{row['planned_quantity']} "
-                        f"({float(row['progress_rate'] or 0):.1f}%)"
-                    )
-                ),
-                centered(
-                    row["inspected"]
-                ),
-                centered(
-                    row["passed"]
-                ),
-                centered(
-                    row["rejected"]
-                ),
-                centered(
-                    (
-                        f"{float(row['rejection_rate'] or 0):.1f}%"
-                    )
-                ),
-                centered(
-                    row["pending"]
-                ),
-            ])
-
-        table = LongTable(
-            rows,
-            repeatRows=1,
-            colWidths=[
-                38 * mm,
-                58 * mm,
-                40 * mm,
-                31 * mm,
-                24 * mm,
-                28 * mm,
-                27 * mm,
-                23 * mm,
-            ],
-        )
-
-        table.setStyle(
-            data_table_style
-        )
-
-        elements.append(
-            table
-        )
+            lot_header = str(row["code"]) + " | " + model_name
+            progress = (
+                f"{row['total_processed']}/{row['planned_quantity']}"
+                f" ({float(row['progress_rate'] or 0):.1f}%)"
+            )
+            rejection = f"{float(row['rejection_rate'] or 0):.1f}%"
+            lot_table = Table(
+                [
+                    [paragraph(lot_header, section_style), "", "", ""],
+                    [
+                        paragraph(row["inspected"], metric_value_style),
+                        paragraph(row["passed"], metric_value_style),
+                        paragraph(row["rejected"], metric_value_style),
+                        paragraph(row["pending"], metric_value_style),
+                    ],
+                    [
+                        paragraph("Inspeccionadas", metric_label_style),
+                        paragraph("Aptas", metric_label_style),
+                        paragraph("Rechazadas", metric_label_style),
+                        paragraph("Pendientes", metric_label_style),
+                    ],
+                    [paragraph("Avance: " + progress
+                               + " | Rechazo confirmado: " + rejection,
+                               note_style), "", "", ""],
+                ],
+                colWidths=[content_width / 4] * 4,
+                hAlign="CENTER",
+            )
+            lot_table.setStyle(TableStyle([
+                ("SPAN", (0, 0), (-1, 0)),
+                ("SPAN", (0, 3), (-1, 3)),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEF4FC")),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#D5E0EF")),
+                ("LINEBELOW", (0, 2), (-1, 2), 0.4, colors.HexColor("#E2E9F3")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]))
+            elements.append(KeepTogether([lot_table, Spacer(1, 11)]))
 
     if data["rejection_reasons"]:
         elements.append(
@@ -15628,7 +15825,7 @@ def informe_pdf():
 
         canvas.setStrokeColor(
             colors.HexColor(
-                "#D8D0C6"
+                "#D5E0EF"
             )
         )
 
@@ -15647,7 +15844,7 @@ def informe_pdf():
 
         canvas.setFillColor(
             colors.HexColor(
-                "#6B625A"
+                "#647691"
             )
         )
 
@@ -15686,14 +15883,14 @@ def informe_pdf():
                 str(logo_path),
                 margin_x,
                 page_size[1] - (22 * mm),
-                width=24 * mm,
-                height=18 * mm,
+                width=23 * mm,
+                height=17 * mm,
                 preserveAspectRatio=True,
                 mask="auto",
             )
 
         canvas.setFillColor(
-            colors.HexColor("#111111")
+            colors.HexColor("#10224A")
         )
 
         canvas.setFont(
@@ -15702,7 +15899,7 @@ def informe_pdf():
         )
 
         canvas.drawString(
-            margin_x + (29 * mm),
+            margin_x + (28 * mm),
             page_size[1] - (10 * mm),
             "Astrid y Beverly Fashion",
         )
@@ -15713,17 +15910,17 @@ def informe_pdf():
         )
 
         canvas.setFillColor(
-            colors.HexColor("#6B625A")
+            colors.HexColor("#647691")
         )
 
         canvas.drawString(
-            margin_x + (29 * mm),
+            margin_x + (28 * mm),
             page_size[1] - (15 * mm),
             "Informe de producci\u00f3n y control de calidad",
         )
 
         canvas.setStrokeColor(
-            colors.HexColor("#D8D0C6")
+            colors.HexColor("#D5E0EF")
         )
 
         canvas.line(
@@ -15738,7 +15935,7 @@ def informe_pdf():
     document.build(
         elements,
         onFirstPage=add_first_page,
-        onLaterPages=add_page_footer,
+        onLaterPages=add_first_page,
     )
 
     buffer.seek(0)
@@ -15940,6 +16137,140 @@ def can_manage_garment_model(model):
     )
 
 
+
+def garment_cover_url(model_id, reference_image_path=None):
+    """Foto principal en catalogo, ficha y editor.
+
+    El modelo tiene dos formas historicas de subir una foto: referencia y
+    portada. La mas reciente que exista en disco es la fuente visual comun.
+    Asi una sola carga se refleja en todas las pantallas automaticamente.
+    """
+    model_id = int(model_id)
+    if reference_image_path is None:
+        row = fetch_one(
+            """SELECT image_path FROM garment_model_images
+               WHERE garment_model_id = %s AND image_type='REFERENCIA'
+               ORDER BY sort_order ASC, id ASC LIMIT 1""",
+            (model_id,),
+        )
+        reference_image_path = (row or {}).get("image_path") or ""
+
+    candidates = [f"results/model_covers/{model_id}.jpg"]
+    reference_image_path = str(reference_image_path or "").replace(chr(92), "/")
+    allowed_prefixes = (
+        f"results/model_references/{model_id}/",
+        f"garment_models/{model_id}/",
+        f"results/model_covers/{model_id}.jpg",
+    )
+    if reference_image_path and any(
+        reference_image_path.startswith(prefix) for prefix in allowed_prefixes
+    ):
+        candidates.append(reference_image_path)
+
+    static_root = Path(app.static_folder).resolve()
+    existing = []
+    for relative in set(candidates):
+        candidate = (static_root / relative).resolve()
+        if not candidate.is_relative_to(static_root) or not candidate.is_file():
+            continue
+        existing.append((candidate.stat().st_mtime_ns, relative))
+    if not existing:
+        return None
+    # When both types exist, the most recently uploaded photo wins.
+    modified_ns, relative = max(existing)
+    return url_for("static", filename=relative, v=modified_ns)
+
+
+def prepare_garment_cover_photo(upload):
+    """Valida y convierte una foto a JPEG sin conservar bytes originales."""
+    if upload is None or not upload.filename:
+        return None
+    if Path(upload.filename).suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise ValueError("Seleccione una fotografia JPG, PNG o WEBP.")
+    data = upload.stream.read(5 * 1024 * 1024 + 1)
+    if not data or len(data) > 5 * 1024 * 1024:
+        raise ValueError("La fotografia debe ocupar como maximo 5 MB.")
+    image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError("El archivo no es una imagen valida.")
+    height, width = image.shape[:2]
+    if width < 100 or height < 100 or width * height > 16000000:
+        raise ValueError("La imagen debe tener al menos 100 pixeles por lado y un maximo de 16 megapixeles.")
+    scale = min(1.0, 1600 / max(width, height))
+    if scale < 1:
+        image = cv2.resize(image, (round(width*scale), round(height*scale)), interpolation=cv2.INTER_AREA)
+    valid, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    if not valid:
+        raise ValueError("No fue posible procesar la fotografia.")
+    return encoded.tobytes()
+
+
+@app.route("/modelos-prenda/<int:model_id>/editar", methods=["GET", "POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_model_edit(model_id):
+    model = get_garment_model(model_id)
+    if not model or int(model.get("active") or 0) != 1:
+        flash("El modelo solicitado no esta disponible.", "error")
+        return redirect(url_for("garment_models_page"))
+    if not can_manage_garment_model(model):
+        return "No tiene permiso para editar este modelo.", 403
+
+    editable_details = model.get("status") in ("BORRADOR", "RECHAZADO")
+    if request.method == "POST":
+        photo = request.files.get("cover_photo")
+        try:
+            image_bytes = prepare_garment_cover_photo(photo)
+        except ValueError as error:
+            flash(str(error), "error")
+            return redirect(url_for("garment_model_edit", model_id=model_id))
+
+        if editable_details:
+            name = request.form.get("name", "").strip()
+            color = request.form.get("color", "").strip()
+            description = request.form.get("description", "").strip()
+            if not name or len(name) > 150 or not color or len(color) > 80 or len(description) > 2000:
+                flash("Revise el nombre, el color y la descripcion del modelo.", "error")
+                return redirect(url_for("garment_model_edit", model_id=model_id))
+        elif image_bytes is None:
+            flash("Seleccione una fotografia para actualizar la portada.", "error")
+            return redirect(url_for("garment_model_edit", model_id=model_id))
+
+        path = Path(app.static_folder) / "results" / "model_covers" / f"{model_id}.jpg"
+        temporary = None
+        try:
+            if image_bytes is not None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = path.with_name(f".{model_id}.{uuid.uuid4().hex}.tmp")
+                temporary.write_bytes(image_bytes)
+            if editable_details:
+                execute(
+                    """UPDATE garment_models
+                       SET name = %s, color = %s, description = %s
+                       WHERE id = %s AND active = 1
+                         AND status IN ('BORRADOR','RECHAZADO')""",
+                    (name, color, description or None, model_id),
+                )
+            if temporary is not None:
+                os.replace(temporary, path)
+        except Exception:
+            app.logger.exception("No se pudo actualizar el modelo o su fotografia.")
+            flash("No se pudo guardar el modelo. Intente nuevamente.", "error")
+            return redirect(url_for("garment_model_edit", model_id=model_id))
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+        flash("Modelo actualizado correctamente.", "success")
+        return redirect(url_for("garment_models_page"))
+
+    return render_template(
+        "garment_model_edit.html", model=model,
+        editable_details=editable_details,
+        cover_url=garment_cover_url(model_id),
+    )
+
+
 def prepare_garment_reference_images(files):
     prepared = []
     allowed = {".jpg", ".jpeg", ".png", ".webp"}
@@ -15974,10 +16305,7 @@ def save_garment_reference_images(model_id, images, *, cur):
     from uuid import uuid4
 
     directory = (
-        Path(app.root_path)
-        / "static"
-        / "garment_models"
-        / str(model_id)
+        Path(app.static_folder) / "results" / "model_references" / str(model_id)
     )
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -15994,7 +16322,7 @@ def save_garment_reference_images(model_id, images, *, cur):
             saved_paths.append(full_path)
 
             relative_path = (
-                f"garment_models/{model_id}/{filename}"
+                f"results/model_references/{model_id}/{filename}"
             )
 
             cur.execute(
@@ -16055,6 +16383,14 @@ def garment_models_page():
         SELECT
             gm.*,
             COALESCE(
+                (SELECT ref.image_path
+                 FROM garment_model_images ref
+                 WHERE ref.garment_model_id=gm.id
+                   AND ref.image_type='REFERENCIA'
+                 ORDER BY ref.sort_order ASC,ref.id ASC LIMIT 1),
+                ''
+            ) AS primary_reference_image,
+            COALESCE(
                 u.full_name,
                 u.username,
                 'Sin usuario'
@@ -16112,11 +16448,101 @@ def garment_models_page():
         params,
     )
 
+    for model in models:
+        model["cover_url"] = garment_cover_url(
+            model["id"], model["primary_reference_image"]
+        )
+
     return render_template(
         "garment_models.html",
         models=models,
         role=role,
     )
+
+
+@app.route("/modelos-prenda/<int:model_id>/eliminar", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def garment_model_archive(model_id):
+    """Retira del catalogo un modelo sin borrar inspecciones ni versiones de IA."""
+    confirmation = (request.form.get("confirm_code") or "").strip()
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute(
+            """
+            SELECT
+                gm.id, gm.code, gm.active,
+                EXISTS (
+                    SELECT 1 FROM batches b
+                    WHERE b.garment_model_id = gm.id
+                      AND b.status = 'EN_INSPECCION'
+                ) AS has_inspecting_batch,
+                EXISTS (
+                    SELECT 1 FROM garment_ai_models ai
+                    WHERE ai.garment_model_id = gm.id
+                      AND ai.status = 'ENTRENANDO'
+                ) AS ai_training_now
+            FROM garment_models gm
+            WHERE gm.id = %s
+            FOR UPDATE
+            """,
+            (model_id,),
+        )
+        model = cur.fetchone()
+        if not model or int(model.get("active") or 0) != 1:
+            conn.rollback()
+            flash("El modelo ya no esta disponible.", "error")
+            return redirect(url_for("garment_models_page"))
+        if confirmation != str(model["code"]):
+            conn.rollback()
+            flash("Para retirar el modelo debe confirmar su codigo exacto.", "error")
+            return redirect(url_for("garment_models_page"))
+        if int(model.get("has_inspecting_batch") or 0):
+            conn.rollback()
+            flash(
+                "Este modelo tiene un lote en inspeccion. Finalice o cancele "
+                "la inspeccion activa antes de retirarlo del catalogo. "
+                "Los lotes en preparacion o pendientes de revision no impiden retirarlo.",
+                "error",
+            )
+            return redirect(url_for("garment_models_page"))
+        if int(model.get("ai_training_now") or 0):
+            conn.rollback()
+            flash(
+                "Este modelo tiene un entrenamiento de IA en curso. "
+                "Espere a que termine antes de retirarlo.",
+                "error",
+            )
+            return redirect(url_for("garment_models_page"))
+        cur.execute(
+            "UPDATE garment_models SET active = 0 WHERE id = %s AND active = 1",
+            (model_id,),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            flash("No se pudo retirar el modelo.", "error")
+            return redirect(url_for("garment_models_page"))
+        conn.commit()
+        app.logger.info(
+            "Modelo retirado del catalogo: id=%s code=%s by_user_id=%s",
+            model_id, model["code"], session.get("user_id"),
+        )
+        flash(
+            "Modelo retirado del catalogo. Sus inspecciones y modelos de IA se conservaron.",
+            "success",
+        )
+        return redirect(url_for("garment_models_page"))
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("Fallo al retirar el modelo %s del catalogo.", model_id)
+        flash("No se pudo retirar el modelo. Intente de nuevo.", "error")
+        return redirect(url_for("garment_models_page"))
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route(
@@ -16244,32 +16670,99 @@ def garment_model_delete_incomplete(model_id):
         cur.close()
         conn.close()
 
-
+# Genera automáticamente un código para cada nuevo modelo.
 def generate_garment_model_code():
     """
     Código de modelo nuevo, generado siempre en backend.
 
     La usuaria nunca lo escribe: la unicidad no depende del frontend.
     """
+# Establece la conexión con la base de datos MySQL.
     conn = db()
+# Crea un cursor para consultar y procesar registros.
     cur = conn.cursor(dictionary=True)
     try:
+ # Solicita el siguiente código disponible para el modelo.
         code = next_garment_model_code(cur)
+# Confirma las operaciones realizadas en la transacción.
         conn.commit()
+# Devuelve el código generado.
         return code
     except Exception:
+# Revierte los cambios si ocurre un error en la transacción.
         if conn.in_transaction:
             conn.rollback()
         raise
     finally:
+# Cierra el cursor y la conexión con MySQL
         cur.close()
         conn.close()
 
+# La referencia se toma del mismo trabajador RTSP que usa la estacion.
+# No se registra una inspeccion ni se modifica ninguna sesion de IA.
+@app.route("/modelos-prenda/camara-referencia/video", methods=["GET"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_reference_camera_video():
+    response = Response(
+        generate_video_feed(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
+
+@app.route("/modelos-prenda/camara-referencia/foto", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_reference_camera_photo():
+    """Fotograma limpio y reciente; nunca guardar la guia dibujada."""
+    ensure_camera_capture_worker()
+    frame, timestamp, _ = get_latest_camera_frame()
+    if (
+        frame is None
+        or timestamp is None
+        or not isinstance(timestamp, (int,float))
+        or (time.perf_counter() - timestamp) > 3.0
+        or time.perf_counter() < timestamp
+    ):
+        response = jsonify({
+            "ok": False,
+            "error": "La camara aun no tiene una imagen reciente. "
+                     "Espere unos segundos y vuelva a intentar.",
+        })
+        response.status_code = 503
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    # No alterar latest_frame: recorte/guia solo corresponden a la
+    # vista previa y no deben aparecer en la referencia.
+    height,width=frame.shape[:2]
+    if max(height,width)>1800:
+        scale=1800/max(height,width)
+        frame=cv2.resize(
+            frame,
+            (max(1,round(width*scale)),max(1,round(height*scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+    jpeg=encode_jpeg(frame)
+    if not jpeg:
+        response=jsonify({"ok":False,"error":"No se pudo capturar la imagen."})
+        response.status_code=503
+        return response
+    response=Response(jpeg,mimetype="image/jpeg")
+    response.headers["Cache-Control"]="no-store, max-age=0"
+    response.headers["X-Content-Type-Options"]="nosniff"
+    return response
+
+
+# Define la ruta para registrar nuevos modelos de prenda
 @app.route(
     "/modelos-prenda/nuevo",
     methods=["GET", "POST"],
 )
+# Verifica que el usuario haya iniciado sesión.
 @login_required
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
 def garment_model_create():
@@ -16319,9 +16812,15 @@ def garment_model_create():
                 "garment_model_form.html"
             )
 
-        images = prepare_garment_reference_images(
-            request.files.getlist("reference_images")
-        )
+        reference_files = [
+            photo for photo in request.files.getlist("reference_images")
+            if photo and photo.filename
+        ]
+        if len(reference_files) > 8:
+            flash("Puede registrar un maximo de 8 imagenes por modelo.", "error")
+            return render_template("garment_model_form.html")
+
+        images = prepare_garment_reference_images(reference_files)
 
         if not images:
             flash(
@@ -16442,6 +16941,102 @@ def garment_model_create():
     )
 
 
+
+@app.route("/modelos-prenda/<int:model_id>/imagen-referencia", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_model_reference_replace(model_id):
+    """Reemplaza la foto de referencia, sin tocar datasets, capturas ni IA."""
+    model = get_garment_model(model_id)
+    if not model or int(model.get("active") or 0) != 1:
+        flash("El modelo ya no esta disponible.", "error")
+        return redirect(url_for("garment_models_page"))
+    if not can_manage_garment_model(model):
+        return "No tiene permiso para modificar este modelo.", 403
+
+    upload = request.files.get("reference_photo")
+    if not upload or not upload.filename:
+        flash("Seleccione una fotografia de referencia.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    if Path(upload.filename).suffix.lower() not in {".jpg",".jpeg",".png",".webp"}:
+        flash("Seleccione una fotografia JPG, PNG o WEBP.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+
+    # Limite de bytes, dimensiones y normalizacion para no guardar
+    # metadatos privados ni archivos arbitrarios del cliente.
+    data = upload.stream.read(8 * 1024 * 1024 + 1)
+    if not data or len(data) > 8 * 1024 * 1024:
+        flash("La imagen no debe superar 8 MB.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    try:
+        image = cv2.imdecode(np.frombuffer(data,dtype=np.uint8),cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("No se pudo leer la imagen.")
+        height,width = image.shape[:2]
+        if min(height,width) < 100 or height*width > 16_000_000:
+            raise ValueError("La imagen debe medir al menos 100 pixeles por lado y maximo 16 megapixeles.")
+        scale = min(1.0, 1800/max(height,width))
+        if scale < 1:
+            image = cv2.resize(image, (int(width*scale),int(height*scale)),
+                               interpolation=cv2.INTER_AREA)
+        valid,encoded = cv2.imencode(".jpg",image,[cv2.IMWRITE_JPEG_QUALITY,90])
+        if not valid:
+            raise ValueError("No fue posible procesar la imagen.")
+    except (ValueError, cv2.error) as error:
+        flash(str(error), "error")
+        return redirect(url_for("garment_model_detail",model_id=model_id))
+
+    from uuid import uuid4
+    folder = Path(app.static_folder)/"results"/"model_references"/str(model_id)
+    relative = f"results/model_references/{model_id}/{uuid4().hex}.jpg"
+    destination = Path(app.static_folder)/relative
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    committed = False
+    try:
+        folder.mkdir(parents=True,exist_ok=True)
+        destination.write_bytes(encoded.tobytes())
+        conn.start_transaction()
+        cur.execute(
+            """SELECT id, image_path
+               FROM garment_model_images
+               WHERE garment_model_id=%s AND image_type='REFERENCIA'
+               ORDER BY sort_order, id LIMIT 1 FOR UPDATE""",
+            (model_id,),
+        )
+        previous = cur.fetchone()
+        if previous:
+            cur.execute(
+                "UPDATE garment_model_images SET image_path=%s WHERE id=%s",
+                (relative,previous["id"]),
+            )
+        else:
+            cur.execute(
+                """INSERT INTO garment_model_images
+                     (garment_model_id,image_path,image_type,sort_order,created_by)
+                   VALUES (%s,%s,'REFERENCIA',1,%s)""",
+                (model_id,relative,session.get("user_id")),
+            )
+        conn.commit()
+        committed = True
+        app.logger.info(
+            "Referencia de modelo actualizada: model_id=%s, by_user_id=%s",
+            model_id,session.get("user_id"),
+        )
+        flash("Fotografia de referencia actualizada correctamente.", "success")
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo guardar imagen referencia del modelo %s",model_id)
+        flash("No se pudo guardar la imagen. Intente nuevamente.", "error")
+    finally:
+        if not committed:
+            destination.unlink(missing_ok=True)
+        cur.close()
+        conn.close()
+    return redirect(url_for("garment_model_detail",model_id=model_id))
+
+
 @app.route("/modelos-prenda/<int:model_id>")
 @login_required
 def garment_model_detail(model_id):
@@ -16481,6 +17076,15 @@ def garment_model_detail(model_id):
         ORDER BY sort_order ASC, id ASC
         """,
         (model_id,),
+    )
+
+    primary_photo_url = garment_cover_url(
+        model_id,
+        next(
+            (row.get("image_path") for row in images
+             if row.get("image_type") == "REFERENCIA"),
+            "",
+        ),
     )
 
     ai_versions = get_garment_ai_versions(model_id)
@@ -16648,6 +17252,7 @@ def garment_model_detail(model_id):
         "garment_model_detail.html",
         model=model,
         images=images,
+        primary_photo_url=primary_photo_url,
         role=role,
         can_manage=can_manage,
         ai_versions=ai_versions,
@@ -17302,6 +17907,7 @@ def users_admin():
             )
 
         else:
+# Registra un nuevo usuario en la base de datos MySQL.
             execute(
                 """
                 INSERT INTO users (
@@ -17314,9 +17920,13 @@ def users_admin():
                 VALUES (%s, %s, %s, %s, 1)
                 """,
                 (
+# Nombre de usuario utilizado para acceder al sistema.
                     username,
+# Nombre completo de la persona registrada.
                     full_name,
+# Genera un hash para no almacenar la contraseña original.
                     generate_password_hash(password),
+# Asigna el rol que tendrá el usuario en el sistema.
                     role,
                 ),
             )
@@ -17343,9 +17953,15 @@ def users_admin():
         """
     )
 
+    current_profile = next(
+        (item for item in users if item["id"] == session.get("user_id")),
+        None,
+    )
+
     return render_template(
         "users.html",
         users=users,
+        current_profile=current_profile,
         role_labels=ROLE_LABELS,
         valid_roles=[
             ROLE_ADMIN,
@@ -17353,6 +17969,45 @@ def users_admin():
             ROLE_QUALITY_MANAGER,
         ],
     )
+
+
+@app.route("/usuarios/<int:user_id>/nombre", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def user_change_full_name(user_id):
+    """Solo un administrador puede corregir nombres de identificacion.
+
+    Nunca modifica username, contraseña ni rol. El rol mostrado
+    siempre permanece separado del nombre de la persona.
+    """
+    new_name = " ".join((request.form.get("full_name") or "").split())
+    if (
+        not 2 <= len(new_name) <= 150
+        or any(ord(char) < 32 or ord(char) == 127 for char in new_name)
+    ):
+        flash("Ingrese un nombre valido de 2 a 150 caracteres.", "error")
+        return redirect(url_for("users_admin"))
+
+    target = fetch_one(
+        "SELECT id, username, full_name FROM users WHERE id = %s",
+        (user_id,),
+    )
+    if target is None:
+        flash("El usuario solicitado no existe.", "error")
+        return redirect(url_for("users_admin"))
+
+    if (target.get("full_name") or "").strip() == new_name:
+        flash("El nombre ya estaba actualizado.", "success")
+        return redirect(url_for("users_admin"))
+
+    execute(
+        "UPDATE users SET full_name = %s WHERE id = %s",
+        (new_name, user_id),
+    )
+    if session.get("user_id") == user_id:
+        session["display_name"] = new_name
+    flash("Nombre actualizado correctamente.", "success")
+    return redirect(url_for("users_admin"))
 
 
 @app.route("/usuarios/<int:user_id>/rol", methods=["POST"])
@@ -18779,7 +19434,7 @@ def _ai_capture_idle_payload(
     station_code = None
     if station_busy:
         cur.execute(
-            "SELECT code FROM garment_models WHERE id = %s",
+            "SELECT code, active FROM garment_models WHERE id = %s",
             (station_row["garment_model_id"],),
         )
         station_row_model = cur.fetchone()
@@ -18809,6 +19464,14 @@ def _ai_capture_idle_payload(
         "normal_augmentation": augmentation,
         "station_busy": station_busy,
         "station_busy_model_code": station_code,
+        "station_busy_model_id": (
+            int(station_row["garment_model_id"]) if station_busy else None
+        ),
+        "station_busy_session_id": int(station_row["id"]) if station_busy else None,
+        "station_busy_model_active": (
+            bool((station_row_model or {}).get("active")) if station_busy else None
+        ),
+        "can_pause_busy": bool(session.get("role") == ROLE_ADMIN),
     }
     return _ai_capture_enrich(
         payload,
@@ -19063,6 +19726,14 @@ def ai_capture_start():
             ),
         }), 409
 
+    active_batch = get_active_batch()
+    if active_batch is not None:
+        return jsonify({
+            "ok":False,
+            "error":"El lote " + str(active_batch["code"]) +
+                    " sigue en inspeccion. Pauselo en Lotes antes de usar la camara."
+        }),409
+
     try:
         ensure_ai_capture_can_start()
     except AIDomainError as error:
@@ -19282,6 +19953,43 @@ def ai_capture_status():
     return jsonify(payload)
 
 
+@app.route("/modelos-prenda/captura-ia/pausar-ocupada", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def pause_busy_capture():
+    """El administrador libera una sesion ABIERTA incluso de modelos archivados."""
+    raw_id = request.form.get("capture_session_id", type=int)
+    return_model = request.form.get("return_model_id", type=int)
+    if not raw_id or raw_id <= 0:
+        flash("Seleccione una sesion de captura valida.", "error")
+        return redirect(url_for("garment_models_page"))
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        active = get_open_capture_session(cur)
+    finally:
+        cur.close()
+        conn.close()
+    if not active or int(active["id"]) != int(raw_id):
+        flash("La sesion ya cambio. Actualice la pagina.", "error")
+        return redirect(url_for("garment_models_page"))
+    result = _ai_capture_finish("pause", session_id_override=int(raw_id))
+    payload = result[0].get_json() if isinstance(result, tuple) else result.get_json()
+    if not payload or not payload.get("ok"):
+        flash((payload or {}).get("error") or "No se pudo pausar la sesion.", "error")
+    else:
+        _stop_ai_guided_worker()
+        _ai_guided_reset_state()
+        flash("Se libero la camara. La sesion anterior quedo pausada, no eliminada.", "success")
+    if request.form.get("return_to_lots") == "1":
+        return redirect(url_for("batches"))
+    if return_model is not None and return_model > 0:
+        if request.form.get("return_to_capture") == "1" and payload and payload.get("ok"):
+            return redirect(url_for("guided_capture_page", model_id=return_model))
+        return redirect(url_for("garment_model_detail", model_id=return_model))
+    return redirect(url_for("garment_models_page"))
+
+
 @app.route("/api/ai/capture/stop", methods=["POST"])
 @login_required
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
@@ -19296,9 +20004,12 @@ def ai_capture_cancel():
     return _ai_capture_finish("cancel")
 
 
-def _ai_capture_finish(action):
+def _ai_capture_finish(action, session_id_override=None):
     body = request.get_json(silent=True) or {}
-    raw_id = body.get("session_id")
+    raw_id = (
+        session_id_override if session_id_override is not None
+        else body.get("session_id")
+    )
     session_id = None
 
     if raw_id not in (None, ""):
@@ -19332,17 +20043,20 @@ def _ai_capture_finish(action):
         if action == "stop":
             result = stop_ai_capture_session(cur, session_id)
             event_type = "CAPTURE_COMPLETED"
-            message = "Sesión de captura finalizada."
+            message = "Sesion finalizada."
+        elif action == "pause":
+            result = transition_capture_session_status(cur,session_id,"PAUSADA")
+            event_type = "CAPTURE_PAUSED"
+            message = "Captura pausada sin perder imagenes."
         else:
             result = cancel_ai_capture_session(cur, session_id)
             event_type = "CAPTURE_CANCELLED"
-            message = "Sesión de captura cancelada."
+            message = "Sesion cancelada."
 
-        already = result.get(
-            "already_finished"
-            if action == "stop"
-            else "already_cancelled",
-            False,
+        already = (
+            result.get("already_finished",False) if action=="stop"
+            else result.get("already_cancelled",False) if action=="cancel"
+            else False
         )
 
         if not already:
@@ -21371,10 +22085,37 @@ def guided_capture_page(model_id):
         )
         payload = None
 
+    occupied_capture = None
+    try:
+        capture_conn = db()
+        capture_cur = capture_conn.cursor(dictionary=True)
+        try:
+            station_session = get_open_capture_session(capture_cur)
+            if (
+                station_session is not None
+                and int(station_session["garment_model_id"]) != int(model_id)
+            ):
+                capture_cur.execute(
+                    "SELECT code, active FROM garment_models WHERE id = %s",
+                    (station_session["garment_model_id"],),
+                )
+                previous_model = capture_cur.fetchone() or {}
+                occupied_capture = {
+                    "session_id": int(station_session["id"]),
+                    "model_code": previous_model.get("code") or "modelo anterior",
+                    "model_archived": int(previous_model.get("active") or 0) != 1,
+                }
+        finally:
+            capture_cur.close()
+            capture_conn.close()
+    except Exception:
+        app.logger.exception("No se pudo consultar la captura que ocupa la estacion.")
+
     return render_template(
         "guided_capture.html",
         model=model,
         ai_capture=_json_sanitize(payload) if payload else None,
+        occupied_capture=occupied_capture,
     )
 
 
@@ -21944,6 +22685,183 @@ def ai_capture_guide_review():
     })
 
 
+
+@app.route("/modelos-prenda/<int:model_id>/captura-ia/imagenes", methods=["GET"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def training_image_gallery(model_id):
+    """Revisar imagenes de la ultima sesion sin abrir la camara."""
+    model = get_garment_model(model_id)
+    if not model or not can_manage_garment_model(model):
+        return "No tiene permiso para revisar estas imagenes.", 403
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """SELECT id, status
+               FROM ai_capture_sessions
+               WHERE garment_model_id = %s
+               ORDER BY id DESC LIMIT 1""",
+            (model_id,),
+        )
+        capture = cur.fetchone()
+        images = []
+        accepted_count = 0
+        can_review = False
+        if capture:
+            cur.execute(
+                """SELECT ti.id, ti.status, ti.reject_reason, ti.captured_at,
+                          EXISTS (
+                             SELECT 1 FROM ai_dataset_images di
+                             WHERE di.image_id = ti.id
+                          ) AS in_dataset
+                   FROM ai_training_images ti
+                   WHERE ti.capture_session_id = %s
+                     AND ti.garment_model_id = %s
+                     AND (ti.status = 'ACEPTADA'
+                          OR (ti.status = 'RECHAZADA' AND
+                              ti.reject_reason = 'MANUAL_TRAINING_EXCLUDED'))
+                   ORDER BY ti.captured_at ASC, ti.id ASC
+                   LIMIT 250""",
+                (capture["id"], model_id),
+            )
+            images = cur.fetchall()
+            for sequence, photo in enumerate(images, 1):
+                photo["sequence"] = sequence
+                photo["excluded"] = (
+                    photo["status"] == "RECHAZADA"
+                    and photo["reject_reason"] == "MANUAL_TRAINING_EXCLUDED"
+                )
+                photo["editable"] = (
+                    capture["status"] in ("ABIERTA", "PAUSADA")
+                    and not photo["in_dataset"]
+                )
+                if photo["status"] == "ACEPTADA":
+                    accepted_count += 1
+            can_review = capture["status"] in ("ABIERTA", "PAUSADA")
+    finally:
+        cur.close()
+        conn.close()
+
+    return render_template(
+        "training_image_gallery.html",
+        model=model,
+        capture=capture,
+        images=images,
+        accepted_count=accepted_count,
+        can_review=can_review,
+    )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/captura-ia/imagenes/<int:image_id>/revisar",
+    methods=["POST"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def training_image_gallery_review(model_id, image_id):
+    """Excluye o restaura una toma; nunca borra el archivo ni altera datasets."""
+    model = get_garment_model(model_id)
+    if not model or not can_manage_garment_model(model):
+        return "No tiene permiso para modificar esta imagen.", 403
+    operation = (request.form.get("action") or "").strip()
+    confirm_image_id = request.form.get("confirm_image_id", type=int)
+    if operation not in ("exclude", "restore") or confirm_image_id != image_id:
+        flash("La solicitud de revision no es valida.", "error")
+        return redirect(url_for("training_image_gallery", model_id=model_id))
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute(
+            """SELECT id, status
+               FROM ai_capture_sessions
+               WHERE garment_model_id = %s
+               ORDER BY id DESC LIMIT 1 FOR UPDATE""",
+            (model_id,),
+        )
+        capture = cur.fetchone()
+        if not capture or capture["status"] not in ("ABIERTA", "PAUSADA"):
+            conn.rollback()
+            flash("La preparacion ya fue cerrada; las imagenes se conservan sin cambios.", "error")
+            return redirect(url_for("training_image_gallery", model_id=model_id))
+        cur.execute(
+            """SELECT id, status, reject_reason
+               FROM ai_training_images
+               WHERE id = %s AND capture_session_id = %s
+                 AND garment_model_id = %s
+               FOR UPDATE""",
+            (image_id, capture["id"], model_id),
+        )
+        photo = cur.fetchone()
+        if photo is None:
+            conn.rollback()
+            flash("La imagen no pertenece a esta sesion.", "error")
+            return redirect(url_for("training_image_gallery", model_id=model_id))
+        cur.execute(
+            "SELECT 1 FROM ai_dataset_images WHERE image_id = %s LIMIT 1",
+            (image_id,),
+        )
+        if cur.fetchone() is not None:
+            conn.rollback()
+            flash("La imagen ya pertenece a un dataset y no puede modificarse.", "error")
+            return redirect(url_for("training_image_gallery", model_id=model_id))
+        is_excluded = (
+            photo["status"] == "RECHAZADA"
+            and photo["reject_reason"] == "MANUAL_TRAINING_EXCLUDED"
+        )
+        if operation == "exclude" and photo["status"] == "ACEPTADA":
+            new_status, new_reason = "RECHAZADA", "MANUAL_TRAINING_EXCLUDED"
+        elif operation == "restore" and is_excluded:
+            new_status, new_reason = "ACEPTADA", None
+        else:
+            conn.rollback()
+            flash("La imagen ya cambio de estado; actualice la galeria.", "error")
+            return redirect(url_for("training_image_gallery", model_id=model_id))
+        cur.execute(
+            """UPDATE ai_training_images
+               SET status = %s, reject_reason = %s
+               WHERE id = %s AND capture_session_id = %s""",
+            (new_status, new_reason, image_id, capture["id"]),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            flash("No fue posible actualizar la imagen.", "error")
+            return redirect(url_for("training_image_gallery", model_id=model_id))
+        record_ai_event(
+            cur,
+            "CAPTURE_IMAGE_REVIEWED",
+            actor_id=session.get("user_id"),
+            capture_session_id=capture["id"],
+            payload={
+                "source": "training_gallery",
+                "action": operation,
+                "image_id": image_id,
+                "status": new_status,
+            },
+        )
+        conn.commit()
+        flash(
+            "Imagen excluida del entrenamiento. Las otras capturas siguen intactas."
+            if operation == "exclude"
+            else "Imagen restaurada entre las capturas validas.",
+            "success",
+        )
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo revisar la imagen de entrenamiento %s", image_id
+        )
+        flash("No se pudo guardar el cambio. Intente nuevamente.", "error")
+    finally:
+        cur.close()
+        conn.close()
+    return redirect(url_for("training_image_gallery", model_id=model_id))
+
+
 @app.route(
     "/modelos-prenda/<int:model_id>/captura-ia/imagen/<int:image_id>",
     methods=["GET"],
@@ -22116,6 +23034,31 @@ def _ai_guided_close(model_id, action):
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
 def guided_capture_finish(model_id):
     return _ai_guided_close(model_id, "stop")
+
+
+@app.route("/modelos-prenda/<int:model_id>/captura-ia/pausar",methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def guided_capture_pause(model_id):
+    model,blocked=_guarded_model_or_none(model_id)
+    if blocked is not None:return blocked
+    conn=db();cur=conn.cursor(dictionary=True)
+    try:
+        open_row=get_open_capture_session(cur)
+    finally:
+        cur.close();conn.close()
+    if open_row is None or int(open_row["garment_model_id"])!=int(model_id):
+        flash("No hay captura activa para pausar.","error")
+        return redirect(url_for("garment_model_detail",model_id=model_id))
+    response=_ai_capture_finish("pause")
+    payload=response[0].get_json() if isinstance(response,tuple) else response.get_json()
+    if not payload or not payload.get("ok"):
+        flash((payload or {}).get("error") or "No se pudo pausar.","error")
+        return redirect(url_for("guided_capture_page",model_id=model_id))
+    _stop_ai_guided_worker()
+    _ai_guided_reset_state()
+    flash("Captura pausada. Puede reanudarla desde la ficha del modelo.","success")
+    return redirect(url_for("garment_model_detail",model_id=model_id))
 
 
 @app.route(

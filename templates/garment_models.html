@@ -271,6 +271,7 @@ body.app-body{
   overflow:hidden;
   position:relative;
 }
+.model-cover-photo{width:100%;height:100%;object-fit:contain;display:block;padding:6px;box-sizing:border-box}
 .model-shirt{
   width:98px;
   height:98px;
@@ -360,7 +361,7 @@ body.app-body{
   gap:18px;
   padding:2px 0;
 }
-.model-actions{display:flex;align-items:center;gap:10px}
+.model-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .model-view-btn{
   display:inline-flex;
   align-items:center;
@@ -541,13 +542,17 @@ body.app-body{
       data-status="{{ (model.status or '')|e }}"
       data-view="{{ (model.inspection_side or '')|e }}"
     >
-      <div class="model-visual" aria-hidden="true">
+      <div class="model-visual">
+        {% if model.cover_url %}
+        <img class="model-cover-photo" src="{{ model.cover_url }}" alt="Foto de {{ model.name }}" loading="lazy">
+        {% else %}
         <div class="model-shirt">
           <svg viewBox="0 0 120 120">
             <path d="M42 23c5 5 11 8 18 8s13-3 18-8l18 10 10 24-17 8-5-10v42H36V55l-5 10-17-8 10-24 18-10Z"/>
             <path d="M49 25c2 5 6 8 11 8s9-3 11-8" fill="none"/>
           </svg>
         </div>
+        {% endif %}
       </div>
 
       <div class="model-body">
@@ -603,21 +608,24 @@ body.app-body{
         {% endif %}
 
         <div class="model-actions">
+          {% if role == 'ADMIN' or (role == 'MODEL_MANAGER' and model.created_by == session.get('user_id')) %}
+          <a class="model-view-btn" href="{{ url_for('garment_model_edit', model_id=model.id) }}" aria-label="Editar {{ model.name }} y su fotografia">
+            Editar
+          </a>
+          {% endif %}
           <a class="model-view-btn" href="{{ url_for('garment_model_detail', model_id=model.id) }}">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></svg>
             Ver modelo
           </a>
 
-          {% if role == 'ADMIN'
-                and not model.has_active_ai
-                and not model.has_batches
-                and not model.ai_training_now %}
+          {% if role == 'ADMIN' %}
           <form
             class="model-delete-form"
             method="post"
-            action="{{ url_for('garment_model_delete_incomplete', model_id=model.id) }}"
-            onsubmit="return confirm('¿Eliminar este modelo incompleto del catálogo? Esta opción solo está disponible porque todavía no se ha usado en producción.');"
+            action="{{ url_for('garment_model_archive', model_id=model.id) }}"
+            data-confirm-code="{{ model.code }}"
           >
+            <input type="hidden" name="confirm_code" value="">
             <button class="model-delete-btn" type="submit">
               Eliminar
             </button>
@@ -647,6 +655,23 @@ body.app-body{
 
 <script>
 (() => {
+  document.querySelectorAll(".model-delete-form").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      const code = form.dataset.confirmCode;
+      const typed = window.prompt(
+        "¿Retirar el modelo " + code +
+        " del catálogo? Las inspecciones y versiones de IA se conservarán. " +
+        "Escriba el código del modelo para confirmar:",
+        ""
+      );
+      if (typed === null || typed.trim() !== code) {
+        event.preventDefault();
+        if (typed !== null) window.alert("Código incorrecto. No se eliminó el modelo.");
+        return;
+      }
+      form.querySelector('input[name="confirm_code"]').value = typed.trim();
+    });
+  });
   const dateEl = document.getElementById("modelsCurrentDate");
   const timeEl = document.getElementById("modelsCurrentTime");
   const search = document.getElementById("modelSearch");

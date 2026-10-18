@@ -269,20 +269,24 @@ def get_model_inspector(bundle, inspector_factory=None) -> object:
         str(bundle["checkpoint_path"]),
         int(bundle["input_size"]),
     )
-
+# Protege el acceso a los modelos cargados en memoria.
     with _INSPECTORS_LOCK:
+# Busca si el inspector del modelo ya está cargado.
         inspector = _INSPECTORS.get(key)
-
+# Reutiliza el modelo para evitar cargarlo nuevamente.
         if inspector is not None:
             return inspector
 
+# Obtiene la clase o función encargada de crear el inspector.
         factory = inspector_factory
 
         if factory is None:
+# Importa el inspector PatchCore cuando es necesario.
             from patchcore_inference import PatchCoreInspector
 
             factory = PatchCoreInspector
-
+# Carga el modelo utilizando su archivo de referencia
+# y el tamaño de imagen definido en su configuración.
         inspector = factory(
             bundle["checkpoint_abs"],
             image_size=int(bundle["input_size"]),

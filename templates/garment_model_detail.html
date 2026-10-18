@@ -1165,6 +1165,14 @@
     </div>
   </section>
 
+  {% if can_manage %}
+  <div style="margin:0 0 16px">
+    <a class="detail-button neutral" href="{{ url_for('training_image_gallery', model_id=model.id) }}">
+      Revisar imagenes del entrenamiento
+    </a>
+  </div>
+  {% endif %}
+
   <div class="detail-content-grid">
     <section class="detail-card">
       <div class="detail-card-head">
@@ -1278,14 +1286,33 @@
       <span class="detail-chip">{{ images|length }} imagen{{ '' if images|length == 1 else 'es' }}</span>
     </div>
 
+    {% if can_manage %}
+    <form method="post" action="{{ url_for('garment_model_reference_replace',model_id=model.id) }}"
+          enctype="multipart/form-data"
+          style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin:0 0 18px">
+      <label style="flex:1 1 230px;min-width:0;font-size:13px;color:var(--ui-text,#10275a);font-weight:700">
+        Cambiar imagen de referencia
+        <input type="file" name="reference_photo" accept="image/jpeg,image/png,image/webp" required
+               style="display:block;width:100%;margin-top:8px;border:1px solid #d8e1ee;border-radius:8px;padding:11px;background:#fff">
+      </label>
+      <button type="submit" class="detail-button primary">Guardar fotografia</button>
+      <small style="flex:1 0 100%;color:#687a99">
+        JPG, PNG o WEBP (maximo 8 MB). Solo cambia la foto informativa; no modifica las capturas de IA.
+      </small>
+    </form>
+    {% endif %}
     {% if images %}
       <div class="detail-images-grid">
         {% for image in images %}
         <figure class="detail-image-card">
           <img
-            src="{{ url_for('static', filename=image.image_path) }}"
+            src="{{ primary_photo_url if loop.first and primary_photo_url else url_for('static', filename=image.image_path) }}"
             alt="Referencia del modelo {{ model.name }}"
+            onerror="this.hidden=true;this.nextElementSibling.hidden=false"
           >
+          <div hidden role="status" style="min-height:140px;padding:18px;background:#f4f6fa;color:#64758f;font-size:13px">
+            La foto de referencia anterior ya no esta disponible. Puede volver a subirla arriba.
+          </div>
           <figcaption>Referencia {{ loop.index }} · {{ model.code }}</figcaption>
         </figure>
         {% endfor %}
@@ -1426,8 +1453,8 @@
 
     {% if not ai_versions and not ai_in_progress %}
       <p class="detail-muted">Este modelo todavía no tiene versiones de IA registradas.</p>
-    {% elif ai_in_progress %}
-      <p class="detail-muted">Ya existe una versión de IA en proceso.</p>
+    {% elif ai_in_progress and (ai_versions|selectattr('status','equalto','ENTRENANDO')|list) %}
+      <p class="detail-muted">El entrenamiento de IA esta ejecutandose.</p>
     {% endif %}
 
     {% if ai_versions %}
@@ -1887,13 +1914,28 @@
   }
 
   function stationBusyHtml() {
+    const activeId = Number(state.station_busy_model_id);
+    const busyLink = Number.isInteger(activeId) && activeId > 0 &&
+      state.station_busy_model_active !== false
+      ? '<a class="detail-button" href="/modelos-prenda/' + activeId + '/captura-ia">Ir a la sesión activa para pausarla</a>'
+      : "";
+    const sid = Number(state.station_busy_session_id);
+    const adminForm = state.can_pause_busy &&
+        Number.isInteger(sid) && sid > 0
+      ? '<form method="post" action="/modelos-prenda/captura-ia/pausar-ocupada">' +
+        '<input type="hidden" name="capture_session_id" value="' + sid + '">' +
+        '<input type="hidden" name="return_model_id" value="' + Number(config.modelId) + '">' +
+        '<button type="submit" class="detail-button">Pausar sesion anterior y liberar camara</button>' +
+        '</form>' : "";
     const code = state.station_busy_model_code
       ? ` (${esc(state.station_busy_model_code)})`
       : "";
     return `
       <div class="ai-capture-notice warn">
         Hay una sesión de captura activa para otro modelo${code}.
-        Finalícele o cancélela antes de iniciar aquí.
+        ${busyLink}
+        ${adminForm}
+        Páusela, finalícela o cancélela antes de iniciar aquí.
       </div>
     `;
   }
@@ -1917,7 +1959,11 @@
       </p>
     `);
     html.push(`<div class="ai-capture-notice">${esc(START_NOTICE)}</div>`);
-    html.push(countRowHtml(0, goal));
+    html.push(countRowHtml(state.status === "PAUSADA" ? counts().accepted : 0, goal));
+    if (state.status === "PAUSADA") {
+      html.push('<div class="ai-capture-notice">Captura pausada: ' +
+        counts().accepted + ' imagenes validas guardadas. Puede continuar.</div>');
+    }
 
     if (state.allowed === false) {
       html.push(permissionHtml());
@@ -1940,7 +1986,7 @@
 
     html.push(`
       <div class="ai-actions">
-        ${startButtonHtml("INICIAR CAPTURA")}
+        ${startButtonHtml(state.status === "PAUSADA" ? "REANUDAR CAPTURA" : "INICIAR CAPTURA")}
       </div>
     `);
 

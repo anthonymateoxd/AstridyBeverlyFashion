@@ -2,17 +2,33 @@
 {% block content %}
 
 <style>
-.gmf-card{max-width:760px;background:#fff;border:1px solid #e6ded2;border-radius:10px;padding:28px}
-.gmf-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-.gmf-field{margin-bottom:18px}
-.gmf-field label{display:block;font-size:12px;letter-spacing:1.3px;text-transform:uppercase;margin-bottom:7px;font-weight:700}
-.gmf-field input,.gmf-field textarea{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d8d0c5}
+.gmf-card{max-width:800px;background:#fff;border:1px solid #e1e8f2;border-radius:14px;padding:28px;color:var(--ui-text,#10275a)}
+.gmf-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.gmf-field{margin-bottom:18px;min-width:0}
+.gmf-field label{display:block;font-size:12px;letter-spacing:.65px;text-transform:uppercase;margin-bottom:8px;font-weight:800;color:var(--ui-navy-soft,#24487f)}
+.gmf-field input,.gmf-field textarea{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d8e1ee;border-radius:8px;font:inherit;color:var(--ui-text,#10275a)}
 .gmf-field textarea{min-height:110px;resize:vertical}
-.gmf-fixed{padding:12px;background:#f5f2ed;border:1px solid #e6ded2;color:#4b5568;line-height:1.5}
-.gmf-button{background:#111;color:#fff;border:0;padding:13px 18px;font-weight:700;cursor:pointer}
-.gmf-button:hover{background:#333}
-.gmf-button:disabled{opacity:.6;cursor:not-allowed}
-@media(max-width:800px){.gmf-grid{grid-template-columns:1fr}}
+.gmf-fixed{padding:12px;background:#f4f7fc;border:1px solid #dce5f2;border-radius:8px;color:#445e80;line-height:1.5}
+.gmf-button{background:var(--ui-navy,#0d2a66);color:#fff;border:1px solid var(--ui-navy,#0d2a66);border-radius:8px;padding:13px 18px;font-weight:800;cursor:pointer}
+.gmf-button:hover:not(:disabled){background:var(--ui-navy-soft,#24487f)}
+.gmf-button:disabled{opacity:.65;cursor:not-allowed}
+.gmf-photo-options{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 12px}
+.gmf-photo-option{border:1px solid #d7e2f0;border-radius:8px;background:#fff;color:var(--ui-navy,#0d2a66);padding:10px 13px;font:700 13px inherit;cursor:pointer}
+.gmf-photo-option[aria-pressed="true"]{border-color:var(--ui-navy,#0d2a66);background:#edf4ff}
+.gmf-upload-panel,.gmf-camera-panel{border:1px solid #e0e8f3;border-radius:12px;padding:16px;background:#f8fafd}
+.gmf-camera-preview{width:100%;max-width:610px;aspect-ratio:16/9;object-fit:contain;border-radius:9px;background:#17233c;display:block}
+.gmf-camera-actions{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:12px}
+.gmf-hint{font-size:12px;line-height:1.55;color:#647b9a;margin:9px 0}
+.gmf-photo-status{min-height:20px;color:#315778;font-size:13px;line-height:1.5;margin-top:10px}
+.gmf-photo-status[data-error="true"]{color:#a33341}
+.gmf-photo-summary{margin:16px 0 10px;font-size:13px;font-weight:700;color:var(--ui-text,#10275a)}
+.gmf-photo-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:11px;margin:0 0 20px}
+.gmf-photo-card{min-width:0;background:#fff;border:1px solid #e1e8f2;border-radius:10px;overflow:hidden}
+.gmf-photo-card img{height:110px;width:100%;object-fit:contain;background:#f0f4fa;display:block}
+.gmf-photo-card span{display:block;margin:9px 9px 5px;font-size:11px;color:#58708f;overflow-wrap:anywhere}
+.gmf-photo-remove{margin:0 9px 10px;display:block;border:1px solid #d6e1f1;background:#fff;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700;color:#183666;cursor:pointer}
+.gmf-photo-option:focus-visible,.gmf-photo-remove:focus-visible,.gmf-button:focus-visible{outline:2px solid #1597dc;outline-offset:2px}
+@media(max-width:800px){.gmf-grid{grid-template-columns:1fr}.gmf-card{padding:17px}}
 </style>
 
 <header class="page-header">
@@ -71,14 +87,34 @@
 
   <div class="gmf-field">
     <label>Im&aacute;genes de referencia</label>
-    <input
-      name="reference_images"
-      type="file"
-      accept="image/jpeg,image/png,image/webp"
-      multiple
-      required
-    >
-    <small>Puede seleccionar hasta 8 fotograf&iacute;as.</small>
+    <p class="gmf-hint">Elija c&oacute;mo agregar la fotograf&iacute;a del modelo. Puede combinar im&aacute;genes subidas y capturadas (m&aacute;ximo 8).</p>
+    <div class="gmf-photo-options" role="group" aria-label="Origen de las im&aacute;genes">
+      <button class="gmf-photo-option" type="button" id="gmfUploadTab" aria-pressed="true">Subir im&aacute;genes</button>
+      <button class="gmf-photo-option" type="button" id="gmfCameraTab" aria-pressed="false">Tomar fotograf&iacute;a</button>
+    </div>
+    <div class="gmf-upload-panel" id="gmfUploadPanel">
+      <label for="gmfReferenceFiles">Seleccionar fotograf&iacute;as</label>
+      <input id="gmfReferenceFiles"
+        name="reference_images"
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        multiple
+        required
+      >
+      <p class="gmf-hint">JPG, PNG o WEBP. La imagen principal aparecer&aacute; en la ficha y el cat&aacute;logo.</p>
+    </div>
+    <div class="gmf-camera-panel" id="gmfCameraPanel" hidden>
+      <p class="gmf-hint">La c&aacute;mara conectada mostrar&aacute; el &aacute;rea de inspecci&oacute;n para ayudarle a ubicar la prenda. La fotograf&iacute;a se guardar&aacute; sin el rect&aacute;ngulo de gu&iacute;a.</p>
+      <img id="gmfCameraVideo" class="gmf-camera-preview" alt="Vista previa de la c&aacute;mara conectada"
+           data-src="{{ url_for('garment_reference_camera_video') }}">
+      <div class="gmf-camera-actions">
+        <button type="button" class="gmf-button" id="gmfTakePhoto">Capturar fotograf&iacute;a</button>
+        <span class="gmf-hint" id="gmfCameraHelp">Coloque la prenda completa dentro del encuadre.</span>
+      </div>
+    </div>
+    <p class="gmf-photo-status" id="gmfPhotoStatus" role="status" aria-live="polite"></p>
+    <p class="gmf-photo-summary" id="gmfPhotoSummary">0 de 8 fotograf&iacute;as listas</p>
+    <div class="gmf-photo-gallery" id="gmfPhotoGallery" aria-label="Im&aacute;genes seleccionadas"></div>
   </div>
 
   <button class="gmf-button" type="submit" id="gmfSubmit">
@@ -89,18 +125,150 @@
 
 <script>
 (() => {
-  const form = document.getElementById("gmfForm");
-  const button = document.getElementById("gmfSubmit");
-  if (!form || !button) return;
+  "use strict";
+  const form=document.getElementById("gmfForm");
+  const submit=document.getElementById("gmfSubmit");
+  const input=document.getElementById("gmfReferenceFiles");
+  const uploadTab=document.getElementById("gmfUploadTab");
+  const cameraTab=document.getElementById("gmfCameraTab");
+  const uploadPanel=document.getElementById("gmfUploadPanel");
+  const cameraPanel=document.getElementById("gmfCameraPanel");
+  const cameraVideo=document.getElementById("gmfCameraVideo");
+  const captureButton=document.getElementById("gmfTakePhoto");
+  const status=document.getElementById("gmfPhotoStatus");
+  const summary=document.getElementById("gmfPhotoSummary");
+  const gallery=document.getElementById("gmfPhotoGallery");
+  const capturedEndpoint={{ url_for('garment_reference_camera_photo')|tojson }};
+  if(!form||!input||!submit) return;
 
-  form.addEventListener("submit", (event) => {
-    if (button.disabled) {
-      event.preventDefault();
+  const maxPhotos=8;
+  let photos=[];
+  let urls=[];
+  let capturing=false;
+  function message(text,error=false){
+    status.textContent=text;
+    status.dataset.error=error?"true":"false";
+  }
+  function showMode(mode){
+    const camera=mode==="camera";
+    cameraPanel.hidden=!camera;
+    uploadPanel.hidden=camera;
+    uploadTab.setAttribute("aria-pressed",String(!camera));
+    cameraTab.setAttribute("aria-pressed",String(camera));
+    if(camera){
+      cameraVideo.src=cameraVideo.dataset.src+"?t="+Date.now();
+    }else{
+      cameraVideo.removeAttribute("src");
+    }
+  }
+  uploadTab.addEventListener("click",()=>showMode("upload"));
+  cameraTab.addEventListener("click",()=>showMode("camera"));
+
+  function refresh(){
+    urls.forEach(url=>URL.revokeObjectURL(url));
+    urls=[];
+    const transfer=new DataTransfer();
+    photos.forEach(file=>transfer.items.add(file));
+    input.files=transfer.files;
+    summary.textContent=photos.length+" de "+maxPhotos+" fotografías listas";
+    gallery.replaceChildren();
+    photos.forEach((file,index)=>{
+      const card=document.createElement("div");
+      card.className="gmf-photo-card";
+      const img=document.createElement("img");
+      img.alt="Imagen de referencia "+(index+1);
+      const src=URL.createObjectURL(file);
+      urls.push(src);
+      img.src=src;
+      const label=document.createElement("span");
+      label.textContent="Imagen "+(index+1)+(file.name.startsWith("camara-")?" · Cámara":" · Archivo");
+      const remove=document.createElement("button");
+      remove.type="button";
+      remove.className="gmf-photo-remove";
+      remove.textContent="Quitar";
+      remove.setAttribute("aria-label","Quitar imagen "+(index+1));
+      remove.addEventListener("click",()=>{
+        photos.splice(index,1);
+        refresh();
+        message("Imagen retirada. Puede agregar otra.");
+      });
+      card.append(img,label,remove);
+      gallery.append(card);
+    });
+    captureButton.disabled=capturing||photos.length>=maxPhotos;
+  }
+
+  input.addEventListener("change",()=>{
+    const selected=Array.from(input.files);
+    if(selected.length>maxPhotos-photos.length){
+      message("Máximo 8 fotografías. Quite alguna para agregar más.",true);
+      refresh();
       return;
     }
-    button.disabled = true;
-    button.textContent = "Guardando...";
+    for(const file of selected){
+      if(!["image/jpeg","image/png","image/webp"].includes(file.type)){
+        message("Solo se permiten fotografías JPG, PNG o WEBP.",true);
+        refresh();
+        return;
+      }
+      if(file.size>8*1024*1024){
+        message("La fotografía seleccionada supera los 8 MB.",true);
+        refresh();
+        return;
+      }
+    }
+    photos.push(...selected);
+    refresh();
+    message("Fotografías listas para guardar con el nuevo modelo.");
   });
+
+  captureButton.addEventListener("click",async()=>{
+    if(capturing||photos.length>=maxPhotos) return;
+    capturing=true;
+    captureButton.disabled=true;
+    message("Tomando fotografía de la cámara…");
+    try{
+      const response=await fetch(capturedEndpoint,{
+        method:"POST",credentials:"same-origin",cache:"no-store",
+        headers:{"Accept":"image/jpeg,application/json"}
+      });
+      if(!response.ok){
+        const payload=await response.json().catch(()=>({}));
+        throw new Error(payload.error||"La cámara no está disponible. Revise la conexión.");
+      }
+      const blob=await response.blob();
+      if(!blob.type.startsWith("image/jpeg")||!blob.size){
+        throw new Error("La cámara no devolvió una imagen válida.");
+      }
+      if(photos.length>=maxPhotos) return;
+      const file=new File([blob],"camara-"+Date.now()+".jpg",{type:"image/jpeg"});
+      photos.push(file);
+      refresh();
+      message("Fotografía capturada. Revísela abajo o quite la imagen si no quedó bien.");
+    }catch(error){
+      message(error.message||"No fue posible tomar la fotografía.",true);
+    }finally{
+      capturing=false;
+      refresh();
+    }
+  });
+
+  form.addEventListener("submit",(event)=>{
+    if(submit.disabled){event.preventDefault();return;}
+    if(!photos.length){
+      event.preventDefault();
+      message("Agregue al menos una imagen de referencia antes de guardar.",true);
+      return;
+    }
+    cameraVideo.removeAttribute("src");
+    submit.disabled=true;
+    submit.textContent="Guardando modelo…";
+  });
+  window.addEventListener("pagehide",()=>{
+    cameraVideo.removeAttribute("src");
+    urls.forEach(url=>URL.revokeObjectURL(url));
+  });
+  refresh();
 })();
 </script>
 

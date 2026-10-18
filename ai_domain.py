@@ -1371,18 +1371,25 @@ def next_garment_model_code(
 # ============================================================
 
 CAPTURE_STATUS_ABIERTA = "ABIERTA"
+CAPTURE_STATUS_PAUSADA = "PAUSADA"
 CAPTURE_STATUS_COMPLETADA = "COMPLETADA"
 CAPTURE_STATUS_CANCELADA = "CANCELADA"
 
 CAPTURE_SESSION_STATUSES = {
     CAPTURE_STATUS_ABIERTA,
+    CAPTURE_STATUS_PAUSADA,
     CAPTURE_STATUS_COMPLETADA,
     CAPTURE_STATUS_CANCELADA,
 }
 
 CAPTURE_SESSION_TRANSITIONS = {
     CAPTURE_STATUS_ABIERTA: {
+        CAPTURE_STATUS_PAUSADA,
         CAPTURE_STATUS_COMPLETADA,
+        CAPTURE_STATUS_CANCELADA,
+    },
+    CAPTURE_STATUS_PAUSADA: {
+        CAPTURE_STATUS_ABIERTA,
         CAPTURE_STATUS_CANCELADA,
     },
     CAPTURE_STATUS_COMPLETADA: set(),
@@ -1446,6 +1453,7 @@ JOB_TRANSITIONS = {
 
 AI_EVENT_TYPES = {
     "CAPTURE_STARTED",
+    "CAPTURE_PAUSED",
     "CAPTURE_COMPLETED",
     "CAPTURE_CANCELLED",
     "CAPTURE_IMAGE_REVIEWED",
@@ -3603,6 +3611,30 @@ def start_ai_capture_session(
                 f"para garment_model_id={existing['garment_model_id']}."
             )
 
+        cur.execute(
+            """SELECT id,garment_model_id,target_ai_model_id,started_at
+               FROM ai_capture_sessions
+               WHERE garment_model_id=%s AND status='PAUSADA'
+               ORDER BY id DESC LIMIT 1 FOR UPDATE""",
+            (garment_model_id,),
+        )
+        paused = cur.fetchone()
+        if paused is not None:
+            if int(paused.get("target_ai_model_id") or 0) != int(target_ai_model_id or 0):
+                raise AIDomainError(
+                    "La captura pausada pertenece a otra version del modelo."
+                )
+            transition_capture_session_status(cur,int(paused["id"]),CAPTURE_STATUS_ABIERTA)
+            return {
+                "id":int(paused["id"]),
+                "garment_model_id":int(garment_model_id),
+                "target_ai_model_id":paused.get("target_ai_model_id"),
+                "status":CAPTURE_STATUS_ABIERTA,
+                "started_at":paused["started_at"],
+                "already_open":False,
+                "resumed":True,
+                "target_images":int(cfg["target_images"]),
+            }
         session = open_ai_capture_session(
             cur,
             garment_model_id,
@@ -3980,7 +4012,7 @@ def transition_capture_session_status(
 
     validate_capture_status_transition(row["status"], new_raw)
 
-    if new_raw == CAPTURE_STATUS_ABIERTA:
+    if new_raw == CAPTURE_STATUS_ABIERTA and row["status"] != CAPTURE_STATUS_PAUSADA:
         raise AIDomainError(
             "Una sesión completada o cancelada no puede reabrirse."
         )
@@ -3989,10 +4021,11 @@ def transition_capture_session_status(
         """
         UPDATE ai_capture_sessions
         SET status = %s,
-            finished_at = NOW()
+            finished_at = CASE WHEN %s IN ('ABIERTA', 'PAUSADA')
+                                THEN NULL ELSE NOW() END
         WHERE id = %s
         """,
-        (new_raw, capture_session_id),
+        (new_raw, new_raw, capture_session_id),
     )
 
     return {

@@ -349,6 +349,90 @@
 }
 
 
+/* Estado de la unica camara: explica y permite pausar sesiones IA. */
+.lot-camera-occupied {
+  background: #f0f5fc;
+  border: 1px solid #d7e3f5;
+  border-left: 4px solid var(--ui-navy, #0d2a66);
+  color: var(--ui-text, #10275a);
+  border-radius: 10px;
+  padding: 15px 17px;
+  margin: 18px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-family: Arial, Helvetica, sans-serif;
+}
+.lot-camera-occupied > div { flex: 1 1 360px; }
+.lot-camera-occupied strong { font-size: 15px; }
+.lot-camera-occupied p {
+  margin: 7px 0 0;
+  font-size: 13px;
+  color: #496481;
+  line-height: 1.5;
+}
+.lot-camera-occupied form { margin: 0; }
+.lot-camera-occupied .lot-btn { white-space: normal; min-height: 43px; }
+/* PALETA LOTES: la misma familia azul/gris del menu lateral. */
+.page-header h1,
+.production-plan h2,
+.lot-panel > h2,
+.lot-code,
+.production-plan-item strong,
+.lot-stat strong,
+.smart-quantity strong,
+.lot-active strong {
+  color: var(--ui-text, #10275a);
+  font-family: Arial, Helvetica, sans-serif;
+}
+.production-plan, .lot-panel {
+  border-color: var(--ui-line, #e4e9f1);
+  border-radius: 12px;
+}
+.lot-field label, .lot-status {
+  color: var(--ui-navy-soft, #24487f);
+  font-family: Arial, Helvetica, sans-serif;
+}
+.lot-meta, .lot-hint, .lot-stat span, .production-plan-item span,
+.production-plan-note, .smart-quantity-note, .lot-disabled {
+  color: #667794;
+  font-family: Arial, Helvetica, sans-serif;
+}
+.production-plan-item, .lot-stat, .smart-quantity, .lot-auto {
+  background: #f5f7fb;
+}
+.lot-stat strong, .production-plan-item strong {
+  letter-spacing: -.25px;
+}
+.lot-field input, .lot-field select {
+  border-color: #d8e1ee;
+  border-radius: 8px;
+  color: var(--ui-text, #10275a);
+  font-family: Arial, Helvetica, sans-serif;
+}
+.lot-btn {
+  background: var(--ui-navy, #0d2a66);
+  color: #fff;
+  border-radius: 8px;
+  letter-spacing: .25px;
+  font-family: Arial, Helvetica, sans-serif;
+  transition: background .18s ease;
+}
+.lot-btn:not(:disabled):hover { background: #24487f; }
+.smart-edit-btn { color: var(--ui-navy-soft, #24487f); }
+.lot-progress { background: #e4e9f1; border-radius: 999px; overflow: hidden; }
+.lot-progress div { background: var(--ui-navy, #0d2a66); }
+.lot-card { border-bottom-color: var(--ui-line, #e4e9f1); }
+.lot-field input:focus-visible,
+.lot-field select:focus-visible,
+.lot-btn:focus-visible,
+.smart-edit-btn:focus-visible {
+  outline: 2px solid var(--ui-blue, #1597dc);
+  outline-offset: 2px;
+}
+
 </style>
 
 
@@ -426,6 +510,32 @@
 </section>
 
 
+{% if occupied_capture %}
+<div class="lot-camera-occupied" role="alert">
+  <div>
+    <strong>Camara ocupada por una captura de IA</strong>
+    <p>La sesion del modelo
+       <b>{{ occupied_capture.model_code }}</b>
+       ({{ occupied_capture.model_name }})
+       sigue abierta.
+       {% if not occupied_capture.model_active %}El modelo fue retirado del catalogo.{% endif %}
+       Pausar un lote no cierra esta captura. Para iniciar una inspeccion,
+       primero libere la camara. Las fotografias aceptadas se conservaran.
+    </p>
+  </div>
+  {% if session.get('role') == 'ADMIN' %}
+  <form method="post" action="{{ url_for('pause_busy_capture') }}"
+        onsubmit="return confirm('Pausar la captura de IA anterior y conservar sus fotografias para liberar la camara?');">
+    <input type="hidden" name="capture_session_id" value="{{ occupied_capture.id }}">
+    <input type="hidden" name="return_to_lots" value="1">
+    <button class="lot-btn" type="submit">Pausar captura de IA y liberar camara</button>
+  </form>
+  {% else %}
+  <p class="lot-camera-occupied-note">Solicite al administrador que pause la captura de IA.</p>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if active_batch %}
 
 <div class="lot-active">
@@ -448,7 +558,13 @@
  <a href="{{ url_for('station') }}">
   Ir a la estaci&oacute;n
  </a>
-
+ {% if session.get('role') in ['ADMIN','QUALITY_MANAGER'] %}
+ <form method="post" action="{{ url_for('pause_batch',batch_id=active_batch.id) }}"
+       style="display:inline-block;margin-left:12px"
+       onsubmit="return confirm('Pausar este lote y guardar el progreso?');">
+   <button class="lot-btn" type="submit">Pausar lote</button>
+ </form>
+ {% endif %}
 </div>
 
 {% endif %}
@@ -698,7 +814,7 @@
 
 <article class="lot-panel">
 
- <h2>Lotes de hoy</h2>
+ <h2>Lotes de hoy y pausados</h2>
 
 
 
@@ -754,6 +870,8 @@
 
       {% elif batch.status == 'EN_INSPECCION' %}
        EN INSPECCI&Oacute;N
+      {% elif batch.status == 'PAUSADO' %}
+       PAUSADO
 
       {% elif batch.status == 'PREPARACION' %}
        PREPARACI&Oacute;N
@@ -810,9 +928,15 @@
 
       {% endif %}
 
+     {% elif batch.status == 'PAUSADO' %}
+      {% if session.get('role') in ['ADMIN','QUALITY_MANAGER'] %}
+      <form method="post" action="{{ url_for('resume_batch',batch_id=batch.id) }}">
+        <button class="lot-btn" type="submit">Reanudar inspecci&oacute;n</button>
+      </form>
+      {% endif %}
      {% elif batch.status == 'EN_INSPECCION' %}
 
-      <a class="lot-btn" href="{{ url_for('station') }}">
+      <a class="lot-btn"  href="{{ url_for('station') }}">
        Continuar
       </a>
 

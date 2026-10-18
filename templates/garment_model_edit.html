@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.gme-shell{max-width:840px;margin:0 auto;color:#10224a}
+.gme-back{display:inline-flex;margin-bottom:18px;color:#566b87;text-decoration:none;font-weight:700}
+.gme-head h1{margin:0 0 6px;font-size:30px;line-height:1.2}
+.gme-head p{margin:0 0 20px;color:#667892}
+.gme-card{background:#fff;border:1px solid #e6ebf1;border-radius:16px;padding:26px;box-shadow:0 8px 24px rgba(29,48,76,.045)}
+.gme-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.gme-field{margin-bottom:18px}
+.gme-field label{display:block;margin-bottom:8px;font-weight:750;font-size:14px}
+.gme-field input,.gme-field textarea{width:100%;box-sizing:border-box;border:1px solid #d5deea;border-radius:8px;padding:12px;font:inherit;color:#172033;background:#fff}
+.gme-field textarea{min-height:100px;resize:vertical}
+.gme-photo{width:210px;height:190px;max-width:100%;object-fit:contain;border:1px solid #e6ebf1;border-radius:12px;background:#f6f8fb}
+.gme-help{display:block;font-size:13px;color:#65758c;line-height:1.5;margin-top:8px}
+.gme-submit{padding:13px 22px;background:#10224a;color:#fff;border:0;border-radius:9px;font-weight:800;cursor:pointer}
+.gme-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.gme-cancel{color:#52647f;text-decoration:none;font-weight:700}
+.gme-note{background:#fff8e0;border:1px solid #f5e8b3;border-radius:9px;padding:12px;color:#785b09;margin-bottom:20px;font-size:14px}
+@media(max-width:700px){.gme-card{padding:17px}.gme-grid{grid-template-columns:1fr}.gme-head h1{font-size:26px}}
+</style>
+<div class="gme-shell">
+<a class="gme-back" href="{{ url_for('garment_models_page') }}">&larr; Volver a modelos</a>
+<div class="gme-head">
+<h1>Editar modelo de prenda</h1>
+<p>{{ model.code }} · {{ model.name }}</p>
+</div>
+<div class="gme-card">
+{% if not editable_details %}
+<div class="gme-note">Este modelo ya fue enviado o aprobado. Para proteger sus inspecciones y su IA, puede cambiar la fotografia de portada, pero no sus datos tecnicos.</div>
+{% endif %}
+<form action="{{ url_for('garment_model_edit', model_id=model.id) }}" method="post" enctype="multipart/form-data" id="gmeForm">
+<div class="gme-grid">
+<div class="gme-field"><label for="modelEditName">Nombre del modelo</label>
+<input id="modelEditName" name="name" maxlength="150" value="{{ model.name }}" {% if not editable_details %}readonly{% else %}required{% endif %}></div>
+<div class="gme-field"><label for="modelEditColor">Color</label>
+<input id="modelEditColor" name="color" maxlength="80" value="{{ model.color or '' }}" {% if not editable_details %}readonly{% else %}required{% endif %}></div>
+</div>
+<div class="gme-field"><label for="modelEditDescription">Descripcion</label>
+<textarea id="modelEditDescription" name="description" maxlength="2000" {% if not editable_details %}readonly{% endif %}>{{ model.description or '' }}</textarea>
+</div>
+<div class="gme-field">
+<label>Fotografia de la blusa (portada del catalogo)</label>
+{% if cover_url %}
+<img id="gmePreview" class="gme-photo" src="{{ cover_url }}" alt="Portada de {{ model.name }}">
+{% else %}
+<img id="gmePreview" class="gme-photo" alt="Vista previa de la foto de la blusa" hidden>
+{% endif %}
+<input id="gmePhoto" name="cover_photo" type="file" accept="image/jpeg,image/png,image/webp">
+<small class="gme-help">JPG, PNG o WEBP, maximo 5 MB. Se mostrara en las tarjetas del catalogo. No cambia el entrenamiento de IA.</small>
+</div>
+<div class="gme-actions">
+<button class="gme-submit" id="gmeSubmit" type="submit">Guardar cambios</button>
+<a class="gme-cancel" href="{{ url_for('garment_models_page') }}">Cancelar</a>
+</div>
+</form>
+</div>
+</div>
+<script>
+(() => {
+const input=document.getElementById("gmePhoto");
+const preview=document.getElementById("gmePreview");
+const form=document.getElementById("gmeForm");
+const button=document.getElementById("gmeSubmit");
+let previous=null;
+input?.addEventListener("change", () => {
+ if (previous) URL.revokeObjectURL(previous);
+ const image=input.files?.[0];
+ if (!image) return;
+ previous=URL.createObjectURL(image);
+ preview.src=previous;preview.hidden=false;
+});
+form?.addEventListener("submit", () => {
+button.disabled=true;button.textContent="Guardando...";
+});
+})();
+</script>
+{% endblock %}
