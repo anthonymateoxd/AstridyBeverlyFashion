@@ -18866,6 +18866,44 @@ def _ai_guided_segment(frame, roi):
         mask = None
         diagnostics["error"] = str(error)
 
+    # La caja luminosa confunde al segmentador de gradientes si la
+    # prenda es clara. Usar una segunda máscara SOLO si el contraste
+    # realmente delimitó una silueta completamente dentro del ROI.
+    # Este fallback no cambia el procesamiento ni los umbrales de PatchCore.
+    if mask is None or not cv2.countNonZero(mask):
+        try:
+            alternative = garment_visual_preview(frame, mask_only=True)
+            if alternative is not None:
+                candidate_bbox = mask_bbox(alternative, cv2)
+                x1, y1, x2, y2 = roi
+                rw, rh = x2 - x1, y2 - y1
+                margin_x = max(3, round(rw * .015))
+                margin_y = max(3, round(rh * .015))
+                detected_coverage = cv2.countNonZero(
+                    alternative[y1:y2, x1:x2]
+                ) / float(max(1, rw * rh))
+                fully_inside = (
+                    candidate_bbox is not None
+                    and candidate_bbox[0] > x1 + margin_x
+                    and candidate_bbox[1] > y1 + margin_y
+                    and candidate_bbox[2] < x2 - margin_x
+                    and candidate_bbox[3] < y2 - margin_y
+                )
+                diagnostics["contrast_candidate"] = {
+                    "coverage": round(detected_coverage, 4),
+                    "inside_roi": bool(fully_inside),
+                }
+                if (
+                    fully_inside
+                    and GUIDED_COVERAGE_MIN <= detected_coverage
+                    <= GUIDED_COVERAGE_MAX
+                ):
+                    mask = alternative
+                    diagnostics["method"] = "contraste_verificado"
+                    diagnostics["reason"] = None
+        except Exception as error:
+            diagnostics["contrast_fallback_error"] = type(error).__name__
+
     bbox = mask_bbox(mask, cv2) if mask is not None else None
 
     coverage = 0.0
@@ -19228,18 +19266,29 @@ def _ai_guided_manual_capture(garment_model_id):
 
         decision = _ai_capture_evaluate(frame, coverage, sequence)
         warnings = []
-        if segmentation.get("method") == "ninguno":
+        if bbox is None:
+            # Sin máscara no significa necesariamente que no haya prenda:
+            # en tela clara el contraste puede resultar insuficiente.
             warnings.append(
-                "No se detectó la prenda dentro del área: el sistema "
-                "no pudo confirmar una posición ideal. Colóquela entera "
-                "dentro del rectángulo antes de aceptar."
+                "No fue posible verificar automáticamente el contorno. "
+                "Revise que la prenda se vea completa en la fotografía "
+                "antes de aceptar. Si no, presione Repetir."
             )
-        elif bbox is None:
-            warnings.append("El sistema no pudo confirmar una posición ideal. Revise la imagen antes de aceptarla.")
         if float(sharpness or 0.0) < float((AI_CAPTURE_RUNTIME.get("config") or get_ai_capture_config())["min_sharpness"]):
             warnings.append("Imagen posiblemente borrosa.")
-        if float(coverage or 0.0) < float((AI_CAPTURE_RUNTIME.get("config") or get_ai_capture_config())["min_coverage"]):
-            warnings.append("La prenda podría quedar parcial o poco visible dentro del área.")
+        if (
+            bbox is not None
+            and float(coverage or 0.0)
+            < float(
+                (AI_CAPTURE_RUNTIME.get("config") or get_ai_capture_config())[
+                    "min_coverage"
+                ]
+            )
+        ):
+            warnings.append(
+                "La prenda ocupa menos espacio del recomendado. "
+                "Compruebe su tamaño y que no esté cortada en la foto."
+            )
         if decision.get("reason") in (
             "MOVE_LEFT", "MOVE_RIGHT", "MOVE_UP", "MOVE_DOWN",
             "HIGH_COVERAGE",

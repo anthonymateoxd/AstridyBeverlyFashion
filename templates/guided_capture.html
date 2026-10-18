@@ -35,6 +35,8 @@
   }
 
   .guide-panel {
+    container: guided-panel / inline-size;
+    min-width: 0;
     background: #fff;
     border: 1px solid #dbe3f0;
     border-radius: 16px;
@@ -255,8 +257,19 @@
   }
 
   .guide-review-actions .guide-button {
-    min-height: 52px;
-    font-size: 13px;
+    min-height: 48px;
+    min-width: 0;
+    padding: 10px 7px;
+    font-size: 12px;
+    letter-spacing: .025em;
+  }
+  @container guided-panel (max-width: 360px) {
+    .guide-review-actions {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .guide-review-actions [data-review="discard"] {
+      grid-column: 1 / -1;
+    }
   }
 
   .guide-button.accept { background: #187f50; color: #fff; }

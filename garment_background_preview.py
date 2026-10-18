@@ -9,12 +9,23 @@ import numpy as np
 MAX_EDGE = 1040
 
 
-def garment_visual_preview(image_bytes: bytes) -> bytes | None:
-    if not image_bytes or len(image_bytes) > 10 * 1024 * 1024:
-        return None
-    frame = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+def garment_visual_preview(image_bytes: bytes, *, mask_only=False):
+    """Return visual PNG, or its verified full-frame mask for guided capture.
+
+    mask_only uses the same conservative detection but skips PNG encoding.
+    It is solely an alternative to the guided segmentation, not PatchCore.
+    """
+    if isinstance(image_bytes, np.ndarray):
+        frame = image_bytes
+    else:
+        if not image_bytes or len(image_bytes) > 10 * 1024 * 1024:
+            return None
+        frame = cv2.imdecode(
+            np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR
+        )
     if frame is None or frame.ndim != 3:
         return None
+    original_h, original_w = frame.shape[:2]
     height, width = frame.shape[:2]
     if min(height, width) < 130 or height * width > 18_000_000:
         return None
@@ -90,6 +101,13 @@ def garment_visual_preview(image_bytes: bytes) -> bytes | None:
         or min(box_w, box_h) < min(w, h) * .19
     ):
         return None
+    if mask_only:
+        if (h, w) != (original_h, original_w):
+            mask = cv2.resize(
+                mask, (original_w, original_h),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        return mask
     padding = max(12, round(max(box_w, box_h) * .075))
     left, top = max(0, x-padding), max(0, y-padding)
     right, bottom = min(w, x+box_w+padding), min(h, y+box_h+padding)
