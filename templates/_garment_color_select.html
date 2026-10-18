@@ -1,0 +1,38 @@
+<div class="garment-color-picker" data-garment-color-picker>
+  <select name="color" id="{{ color_field_id }}" required
+          aria-label="Color del modelo" autocomplete="off">
+    <option value="" {% if not selected_color %}selected{% endif %}>Seleccione un color</option>
+    {% for option in garment_colors %}
+    <option value="{{ option }}" {% if selected_color == option %}selected{% endif %}>{{ option }}</option>
+    {% endfor %}
+    <option value="__otro__" {% if selected_color == "__otro__" %}selected{% endif %}>Otro color…</option>
+  </select>
+  <div class="garment-custom-color" {% if selected_color != "__otro__" %}hidden{% endif %}>
+    <label for="{{ color_field_id }}Custom">Especifique el color</label>
+    <input id="{{ color_field_id }}Custom" name="custom_color"
+           type="text" maxlength="80" minlength="2" autocomplete="off"
+           placeholder="Ejemplo: Verde olivo"
+           value="{{ other_color or '' }}"
+           {% if selected_color == "__otro__" %}required{% endif %}>
+    <small>Use un nombre claro. Si coincide con un color de la lista, se guardará el nombre estándar.</small>
+  </div>
+</div>
+<script>
+(() => {
+  const picker = document.currentScript.previousElementSibling;
+  if (!picker) return;
+  const select = picker.querySelector('select[name="color"]');
+  const custom = picker.querySelector('.garment-custom-color');
+  const input = picker.querySelector('input[name="custom_color"]');
+  if (!select || !custom || !input) return;
+  function sync() {
+    const other = select.value === '__otro__';
+    custom.hidden = !other;
+    input.required = other;
+    input.disabled = !other;
+    if (!other) input.value = '';
+  }
+  select.addEventListener('change', sync);
+  sync();
+})();
+</script>

@@ -8,6 +8,11 @@
 .gmf-field label{display:block;font-size:12px;letter-spacing:.65px;text-transform:uppercase;margin-bottom:8px;font-weight:800;color:var(--ui-navy-soft,#24487f)}
 .gmf-field input,.gmf-field textarea{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d8e1ee;border-radius:8px;font:inherit;color:var(--ui-text,#10275a)}
 .gmf-field textarea{min-height:110px;resize:vertical}
+.gmf-field select{width:100%;box-sizing:border-box;min-height:47px;padding:12px;border:1px solid #d8e1ee;border-radius:8px;background:#fff;color:var(--ui-text,#10275a);font:inherit}
+.garment-custom-color{margin-top:12px;padding:12px;background:#f7f9fe;border:1px solid #e0e8f4;border-radius:9px}
+.garment-custom-color[hidden]{display:none}
+.garment-custom-color label{font-size:12px;margin-bottom:7px}
+.garment-custom-color small{display:block;margin-top:7px;color:#657b98;font-size:12px;line-height:1.4}
 .gmf-fixed{padding:12px;background:#f4f7fc;border:1px solid #dce5f2;border-radius:8px;color:#445e80;line-height:1.5}
 .gmf-button{background:var(--ui-navy,#0d2a66);color:#fff;border:1px solid var(--ui-navy,#0d2a66);border-radius:8px;padding:13px 18px;font-weight:800;cursor:pointer}
 .gmf-button:hover:not(:disabled){background:var(--ui-navy-soft,#24487f)}
@@ -55,8 +60,11 @@
     </div>
 
     <div class="gmf-field">
-      <label>Color</label>
-      <input name="color" required placeholder="Rosa">
+      <label for="gmfColorSelect">Color</label>
+      {% set color_field_id = "gmfColorSelect" %}
+      {% set selected_color = "" %}
+      {% set other_color = "" %}
+      {% include "_garment_color_select.html" %}
     </div>
   </div>
 

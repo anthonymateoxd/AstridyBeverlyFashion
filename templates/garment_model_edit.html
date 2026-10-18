@@ -11,6 +11,11 @@
 .gme-field label{display:block;margin-bottom:8px;font-weight:750;font-size:14px}
 .gme-field input,.gme-field textarea{width:100%;box-sizing:border-box;border:1px solid #d5deea;border-radius:8px;padding:12px;font:inherit;color:#172033;background:#fff}
 .gme-field textarea{min-height:100px;resize:vertical}
+.gme-field select{width:100%;box-sizing:border-box;min-height:47px;border:1px solid #d5deea;border-radius:8px;padding:12px;color:#172033;background:#fff;font:inherit}
+.garment-custom-color{margin-top:12px;padding:12px;background:#f7f9fe;border:1px solid #e0e8f4;border-radius:9px}
+.garment-custom-color[hidden]{display:none}
+.garment-custom-color label{display:block;font-size:12px;margin-bottom:7px}
+.garment-custom-color small{display:block;margin-top:7px;color:#657b98;font-size:12px;line-height:1.4}
 .gme-photo{width:210px;height:190px;max-width:100%;object-fit:contain;border:1px solid #e6ebf1;border-radius:12px;background:#f6f8fb}
 .gme-help{display:block;font-size:13px;color:#65758c;line-height:1.5;margin-top:8px}
 .gme-submit{padding:13px 22px;background:#10224a;color:#fff;border:0;border-radius:9px;font-weight:800;cursor:pointer}
@@ -34,7 +39,14 @@
 <div class="gme-field"><label for="modelEditName">Nombre del modelo</label>
 <input id="modelEditName" name="name" maxlength="150" value="{{ model.name }}" {% if not editable_details %}readonly{% else %}required{% endif %}></div>
 <div class="gme-field"><label for="modelEditColor">Color</label>
-<input id="modelEditColor" name="color" maxlength="80" value="{{ model.color or '' }}" {% if not editable_details %}readonly{% else %}required{% endif %}></div>
+{% if editable_details %}
+  {% set color_field_id = "modelEditColor" %}
+  {% include "_garment_color_select.html" %}
+{% else %}
+  <input id="modelEditColor" name="color" maxlength="80"
+         value="{{ model.color or '' }}" readonly>
+{% endif %}
+</div>
 </div>
 <div class="gme-field"><label for="modelEditDescription">Descripcion</label>
 <textarea id="modelEditDescription" name="description" maxlength="2000" {% if not editable_details %}readonly{% endif %}>{{ model.description or '' }}</textarea>

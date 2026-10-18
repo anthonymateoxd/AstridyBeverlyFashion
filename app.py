@@ -16205,6 +16205,73 @@ def prepare_garment_cover_photo(upload):
     return encoded.tobytes()
 
 
+# Catálogo único para crear y editar modelos; no altera datos anteriores.
+GARMENT_COLORS = (
+    "Blanco", "Negro", "Gris", "Azul", "Celeste", "Rojo",
+    "Rosado", "Verde", "Amarillo", "Naranja", "Morado",
+    "Beige", "Café", "Multicolor",
+)
+GARMENT_COLOR_ALIASES = {
+    "blanca": "Blanco",
+    "rosa": "Rosado",
+    "rosada": "Rosado",
+    "cafe": "Café",
+}
+GARMENT_COLOR_OTHER = "__otro__"
+
+
+def normalize_garment_color(raw):
+    """Uniforma las variantes conocidas sin alterar los modelos guardados."""
+    import unicodedata
+
+    candidate = " ".join(str(raw or "").split())
+    lookup = "".join(
+        letter for letter in
+        unicodedata.normalize("NFD", candidate.casefold())
+        if unicodedata.category(letter) != "Mn"
+    )
+    for standard in GARMENT_COLORS:
+        key = "".join(
+            ch for ch in unicodedata.normalize("NFD", standard.casefold())
+            if unicodedata.category(ch) != "Mn"
+        )
+        if key == lookup:
+            return standard
+    return GARMENT_COLOR_ALIASES.get(lookup, candidate)
+
+
+def garment_color_from_form(form):
+    """Valida en servidor las opciones, incluso con JavaScript desactivado."""
+    selected = " ".join((form.get("color") or "").split())
+    if selected == GARMENT_COLOR_OTHER:
+        raw = " ".join((form.get("custom_color") or "").split())
+        if not 2 <= len(raw) <= 80:
+            raise ValueError("Ingrese otro color válido (de 2 a 80 caracteres).")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+            raise ValueError("El color contiene caracteres no permitidos.")
+        if not all(word.replace("-", "").isalpha() for word in raw.split()):
+            raise ValueError("Escriba el nombre del color con letras.")
+        normalized = normalize_garment_color(raw)
+        if normalized not in GARMENT_COLORS:
+            normalized = normalized[:1].upper() + normalized[1:].lower()
+        return normalized
+    normalized = normalize_garment_color(selected)
+    if normalized not in GARMENT_COLORS:
+        raise ValueError("Seleccione un color de la lista o use «Otro color».")
+    return normalized
+
+
+def garment_color_selection(saved):
+    """Al editar un borrador, muestra la opción de un color histórico."""
+    saved = " ".join(str(saved or "").split())
+    standard = normalize_garment_color(saved)
+    if not saved:
+        return "", ""
+    if standard in GARMENT_COLORS:
+        return standard, ""
+    return GARMENT_COLOR_OTHER, saved
+
+
 @app.route("/modelos-prenda/<int:model_id>/editar", methods=["GET", "POST"])
 @login_required
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
@@ -16227,7 +16294,11 @@ def garment_model_edit(model_id):
 
         if editable_details:
             name = request.form.get("name", "").strip()
-            color = request.form.get("color", "").strip()
+            try:
+                color = garment_color_from_form(request.form)
+            except ValueError as error:
+                flash(str(error), "error")
+                return redirect(url_for("garment_model_edit", model_id=model_id))
             description = request.form.get("description", "").strip()
             if not name or len(name) > 150 or not color or len(color) > 80 or len(description) > 2000:
                 flash("Revise el nombre, el color y la descripcion del modelo.", "error")
@@ -16264,10 +16335,14 @@ def garment_model_edit(model_id):
         flash("Modelo actualizado correctamente.", "success")
         return redirect(url_for("garment_models_page"))
 
+    selected_color, other_color = garment_color_selection(model.get("color"))
     return render_template(
         "garment_model_edit.html", model=model,
         editable_details=editable_details,
         cover_url=garment_cover_url(model_id),
+        garment_colors=GARMENT_COLORS,
+        selected_color=selected_color,
+        other_color=other_color,
     )
 
 
@@ -16768,7 +16843,13 @@ def garment_reference_camera_photo():
 def garment_model_create():
     if request.method == "POST":
         name = request.form.get("name", "").strip()
-        color = request.form.get("color", "").strip()
+        try:
+            color = garment_color_from_form(request.form)
+        except ValueError as error:
+            flash(str(error), "error")
+            return render_template(
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
+            )
         description = request.form.get(
             "description",
             "",
@@ -16780,7 +16861,7 @@ def garment_model_create():
                 "error",
             )
             return render_template(
-                "garment_model_form.html"
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
 
         if not color:
@@ -16789,7 +16870,7 @@ def garment_model_create():
                 "error",
             )
             return render_template(
-                "garment_model_form.html"
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
 
         try:
@@ -16797,7 +16878,7 @@ def garment_model_create():
         except AIDomainError as error:
             flash(str(error), "error")
             return render_template(
-                "garment_model_form.html"
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
         except Exception:
             app.logger.exception(
@@ -16809,7 +16890,7 @@ def garment_model_create():
                 "error",
             )
             return render_template(
-                "garment_model_form.html"
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
 
         reference_files = [
@@ -16818,7 +16899,7 @@ def garment_model_create():
         ]
         if len(reference_files) > 8:
             flash("Puede registrar un maximo de 8 imagenes por modelo.", "error")
-            return render_template("garment_model_form.html")
+            return render_template("garment_model_form.html", garment_colors=GARMENT_COLORS)
 
         images = prepare_garment_reference_images(reference_files)
 
@@ -16829,7 +16910,7 @@ def garment_model_create():
                 "error",
             )
             return render_template(
-                "garment_model_form.html"
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
 
         conn = db()
@@ -16915,7 +16996,7 @@ def garment_model_create():
                 "error",
             )
             return render_template(
-                "garment_model_form.html"
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
 
         finally:
@@ -16937,7 +17018,7 @@ def garment_model_create():
         )
 
     return render_template(
-        "garment_model_form.html"
+        "garment_model_form.html", garment_colors=GARMENT_COLORS
     )
 
 
