@@ -147,12 +147,28 @@
   const summary=document.getElementById("gmfPhotoSummary");
   const gallery=document.getElementById("gmfPhotoGallery");
   const capturedEndpoint={{ url_for('garment_reference_camera_photo')|tojson }};
+  const cutoutEndpoint={{ url_for('garment_reference_camera_cutout')|tojson }};
   if(!form||!input||!submit) return;
 
   const maxPhotos=8;
   let photos=[];
+  let thumbnails=[]; // preview-only Blob; original File remains for upload.
+  let showOriginal=[];
   let urls=[];
   let capturing=false;
+  async function removeBackground(file){
+    const payload=new FormData();
+    payload.append("photo",file,file.name);
+    try{
+      const response=await fetch(cutoutEndpoint,{
+        method:"POST",credentials:"same-origin",cache:"no-store",
+        body:payload
+      });
+      if(!response.ok) return null;
+      const result=await response.blob();
+      return result.type==="image/png"&&result.size?result:null;
+    }catch(_error){return null;}
+  }
   function message(text,error=false){
     status.textContent=text;
     status.dataset.error=error?"true":"false";
@@ -185,11 +201,17 @@
       card.className="gmf-photo-card";
       const img=document.createElement("img");
       img.alt="Imagen de referencia "+(index+1);
-      const src=URL.createObjectURL(file);
+      const cleaned=thumbnails[index]||null;
+      const src=URL.createObjectURL(
+        cleaned&&!showOriginal[index]?cleaned:file
+      );
       urls.push(src);
       img.src=src;
       const label=document.createElement("span");
-      label.textContent="Imagen "+(index+1)+(file.name.startsWith("camara-")?" · Cámara":" · Archivo");
+      label.textContent="Imagen "+(index+1)+(
+        cleaned&&!showOriginal[index]?" · Sin fondo":
+        file.name.startsWith("camara-")?" · Cámara original":" · Archivo"
+      );
       const remove=document.createElement("button");
       remove.type="button";
       remove.className="gmf-photo-remove";
@@ -197,10 +219,24 @@
       remove.setAttribute("aria-label","Quitar imagen "+(index+1));
       remove.addEventListener("click",()=>{
         photos.splice(index,1);
+        thumbnails.splice(index,1);
+        showOriginal.splice(index,1);
         refresh();
         message("Imagen retirada. Puede agregar otra.");
       });
-      card.append(img,label,remove);
+      card.append(img,label);
+      if(cleaned){
+        const compare=document.createElement("button");
+        compare.type="button";
+        compare.className="gmf-photo-remove";
+        compare.textContent=showOriginal[index]?"Ver sin fondo":"Ver original";
+        compare.addEventListener("click",()=>{
+          showOriginal[index]=!showOriginal[index];
+          refresh();
+        });
+        card.append(compare);
+      }
+      card.append(remove);
       gallery.append(card);
     });
     captureButton.disabled=capturing||photos.length>=maxPhotos;
@@ -226,6 +262,8 @@
       }
     }
     photos.push(...selected);
+    thumbnails.push(...selected.map(()=>null));
+    showOriginal.push(...selected.map(()=>false));
     refresh();
     message("Fotografías listas para guardar con el nuevo modelo.");
   });
@@ -250,9 +288,16 @@
       }
       if(photos.length>=maxPhotos) return;
       const file=new File([blob],"camara-"+Date.now()+".jpg",{type:"image/jpeg"});
+      const clean=await removeBackground(file);
       photos.push(file);
+      thumbnails.push(clean);
+      showOriginal.push(false);
       refresh();
-      message("Fotografía capturada. Revísela abajo o quite la imagen si no quedó bien.");
+      message(clean
+        ?"Fotografía lista: la miniatura muestra solo la prenda. Se conserva el original."
+        :"Fotografía guardada. No se pudo separar el fondo con seguridad; revise el original.",
+        !clean
+      );
     }catch(error){
       message(error.message||"No fue posible tomar la fotografía.",true);
     }finally{

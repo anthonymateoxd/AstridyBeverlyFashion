@@ -16138,6 +16138,34 @@ def can_manage_garment_model(model):
 
 
 
+from garment_background_preview import garment_visual_preview
+
+
+def garment_reference_preview_path(relative):
+    """Derive a visual PNG path; the original DB image path never changes."""
+    relative = str(relative or "").replace(chr(92), "/")
+    parts = Path(relative).parts
+    if (
+        len(parts) != 4
+        or parts[:2] != ("results", "model_references")
+        or not parts[2].isdigit()
+        or Path(parts[3]).name != parts[3]
+    ):
+        return None
+    return (
+        Path(app.static_folder) / "results" / "model_previews"
+        / parts[2] / (Path(parts[3]).stem + ".png")
+    )
+
+
+def garment_reference_visual_url(relative):
+    preview = garment_reference_preview_path(relative)
+    if preview is not None and preview.is_file():
+        static_path = preview.relative_to(Path(app.static_folder)).as_posix()
+        return url_for("static", filename=static_path, v=preview.stat().st_mtime_ns)
+    return url_for("static", filename=relative)
+
+
 def garment_cover_url(model_id, reference_image_path=None):
     """Foto principal en catalogo, ficha y editor.
 
@@ -16178,6 +16206,12 @@ def garment_cover_url(model_id, reference_image_path=None):
         return None
     # When both types exist, the most recently uploaded photo wins.
     modified_ns, relative = max(existing)
+    preview = garment_reference_preview_path(relative)
+    if preview is not None and preview.is_file():
+        static_path = preview.relative_to(static_root).as_posix()
+        return url_for(
+            "static", filename=static_path, v=preview.stat().st_mtime_ns
+        )
     return url_for("static", filename=relative, v=modified_ns)
 
 
@@ -16395,6 +16429,22 @@ def save_garment_reference_images(model_id, images, *, cur):
             full_path = directory / filename
             full_path.write_bytes(data)
             saved_paths.append(full_path)
+            # Non-destructive derivative for display only.
+            try:
+                visual = garment_visual_preview(data)
+                if visual:
+                    visual_path = (
+                        Path(app.static_folder) / "results" / "model_previews"
+                        / str(model_id) / (Path(filename).stem + ".png")
+                    )
+                    visual_path.parent.mkdir(parents=True, exist_ok=True)
+                    visual_path.write_bytes(visual)
+                    saved_paths.append(visual_path)
+            except Exception:
+                app.logger.exception(
+                    "No se pudo generar la vista sin fondo; "
+                    "se conserva la referencia original."
+                )
 
             relative_path = (
                 f"results/model_references/{model_id}/{filename}"
@@ -16788,6 +16838,34 @@ def garment_reference_camera_video():
     return response
 
 
+@app.route("/modelos-prenda/camara-referencia/recorte", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_reference_camera_cutout():
+    """Preview-only cleanup of an already captured file; does not store it."""
+    upload = request.files.get("photo")
+    if upload is None or not upload.filename:
+        return jsonify({"error": "Seleccione una fotografia valida."}), 400
+    # Same practical limit as the existing garment reference upload.
+    data = upload.stream.read(8 * 1024 * 1024 + 1)
+    if not data or len(data) > 8 * 1024 * 1024:
+        return jsonify({"error": "La foto excede el tamano permitido."}), 413
+    try:
+        visual = garment_visual_preview(data)
+    except Exception:
+        app.logger.exception("Error al separar fondo de referencia visual.")
+        visual = None
+    if visual is None:
+        return jsonify({
+            "ok": False,
+            "error": "El fondo no pudo separarse de forma segura."
+        }), 422
+    response = Response(visual, mimetype="image/png")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 @app.route("/modelos-prenda/camara-referencia/foto", methods=["POST"])
 @login_required
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
@@ -17159,6 +17237,10 @@ def garment_model_detail(model_id):
         (model_id,),
     )
 
+    for image in images:
+        image["visual_url"] = garment_reference_visual_url(
+            image.get("image_path", "")
+        )
     primary_photo_url = garment_cover_url(
         model_id,
         next(

@@ -1306,7 +1306,7 @@
         {% for image in images %}
         <figure class="detail-image-card">
           <img
-            src="{{ primary_photo_url if loop.first and primary_photo_url else url_for('static', filename=image.image_path) }}"
+            src="{{ primary_photo_url if loop.first and primary_photo_url else image.visual_url }}"
             alt="Referencia del modelo {{ model.name }}"
             onerror="this.hidden=true;this.nextElementSibling.hidden=false"
           >
