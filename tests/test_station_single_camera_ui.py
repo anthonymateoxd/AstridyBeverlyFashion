@@ -15,6 +15,13 @@ class CameraLotUiTests(unittest.TestCase):
         cls.appmodule=importlib.import_module("app")
 
     def setUp(self):
+        # El listado de lotes añade ahora los totales del dia (production_totals),
+        # que consultan la base; esta suite aislada solo revisa la interfaz.
+        totals = patch.object(
+            self.appmodule, "daily_production_totals", return_value={}
+        )
+        totals.start()
+        self.addCleanup(totals.stop)
         self.client=self.appmodule.app.test_client()
         self.user={"id":17,"username":"admin-test","role":"ADMIN","active":1}
         with self.client.session_transaction() as s:

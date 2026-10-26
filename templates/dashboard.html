@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
+{% include "_production_totals.html" %}
 
 <style>
 :root{
@@ -596,7 +597,7 @@ body.app-body{
       </div>
       <div>
         <strong id="dashGoalBatches">{% if goal %}{{ operational.remaining_batches }}{% else %}&mdash;{% endif %}</strong>
-        <span id="dashGoalBatchesLabel">{% if goal %}Lotes faltantes{% else %}Sin meta para hoy{% endif %}</span>
+        <span id="dashGoalBatchesLabel">{% if goal %}Lotes pendientes de inspección{% else %}Sin meta para hoy{% endif %}</span>
       </div>
     </article>
 
@@ -750,7 +751,7 @@ body.app-body{
           <div class="info-row"><span>Tiempo restante</span><strong>{{ operational.remaining_minutes // 60 }} h {{ operational.remaining_minutes % 60 }} min</strong></div>
           <div class="info-row"><span>Ritmo actual</span><strong>{{ operational.current_rate }} prendas/h</strong></div>
           <div class="info-row"><span>Ritmo necesario</span><strong>{{ operational.required_rate }} prendas/h</strong></div>
-          <div class="info-row"><span>Lotes faltantes para la meta</span><strong id="dashGoalBatchesDetail">{{ operational.remaining_batches }}</strong></div>
+          <div class="info-row"><span>Lotes pendientes de inspección</span><strong id="dashGoalBatchesDetail">{{ operational.remaining_batches }}</strong></div>
           {% if operational.estimated_finish %}<div class="info-row"><span>Finalización estimada</span><strong>{{ operational.estimated_finish.strftime('%H:%M') }}</strong></div>{% endif %}
         </div>
       </div>
@@ -1286,11 +1287,17 @@ document.addEventListener(
 
    if (get("dashGoalBatchesLabel")) {
     get("dashGoalBatchesLabel").textContent =
-     data.target_batches ? "Lotes faltantes" : "Sin meta para hoy";
+     data.target_batches ? "Lotes pendientes de inspección" : "Sin meta para hoy";
    }
 
    if (get("dashGoalBatchesDetail")) {
     get("dashGoalBatchesDetail").textContent = data.remaining_batches;
+    if (data.production_totals) {
+      Object.entries(data.production_totals).forEach(([key, value]) => {
+        const el = document.querySelector('[data-production-total="' + key + '"]');
+        if (el) el.textContent = value;
+      });
+    }
    }
 
 

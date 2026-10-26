@@ -1,3 +1,4 @@
+from production_totals import daily_production_totals
 # CAPÍTULO V — Backend de la aplicación web.
 # Flask recibe las solicitudes del navegador y conecta las pantallas
 # con los módulos de inspección, inteligencia artificial y persistencia.
@@ -642,6 +643,54 @@ def init_db():
         "created_by INT NULL AFTER notes",
     )
 
+    # BATCH_LOGICAL_DELETION_V1
+    # Baja logica reversible: el lote jamas se borra de la base. Su evidencia
+    # (fotografias, decisiones e inspecciones) permanece intacta y solo sale
+    # de los indicadores operativos mientras active = 0.
+    ensure_column(
+        "batches",
+        "active",
+        "active TINYINT(1) NOT NULL DEFAULT 1 AFTER status",
+    )
+    ensure_column(
+        "batches",
+        "deleted_at",
+        "deleted_at DATETIME NULL AFTER created_by",
+    )
+    ensure_column(
+        "batches",
+        "deleted_by",
+        "deleted_by INT NULL AFTER deleted_at",
+    )
+    ensure_column(
+        "batches",
+        "deletion_reason",
+        "deletion_reason VARCHAR(500) NULL AFTER deleted_by",
+    )
+
+    # Auditoria inmutable de eliminaciones y restauraciones de lotes.
+    # Se conserva aun cuando el lote vuelva a estar activo.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS batch_deletion_audit (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            batch_id INT NOT NULL,
+            batch_code VARCHAR(80) NOT NULL,
+            action VARCHAR(20) NOT NULL,
+            batch_status VARCHAR(40) NULL,
+            planned_quantity INT NOT NULL DEFAULT 0,
+            processed_quantity INT NOT NULL DEFAULT 0,
+            reason VARCHAR(500) NOT NULL,
+            admin_id INT NOT NULL,
+            admin_username VARCHAR(80) NULL,
+            active_after TINYINT(1) NOT NULL DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_batch_deletion_audit_batch (batch_id),
+            INDEX idx_batch_deletion_audit_created (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+
     cur.execute(
         """
         SELECT COUNT(*)
@@ -931,6 +980,7 @@ def get_inspection_lines(
                 FROM batches b
                 WHERE b.inspection_line_id = l.id
                   AND b.status = 'EN_INSPECCION'
+                  AND b.active = 1
                 ORDER BY b.id DESC
                 LIMIT 1
             ) AS active_batch_code
@@ -945,7 +995,9 @@ def get_inspection_lines(
 
 def get_active_batch(line_id=None):
     conditions = [
-        "b.status = 'EN_INSPECCION'"
+        "b.status = 'EN_INSPECCION'",
+        # BATCH_LOGICAL_DELETION_V1: un lote eliminado nunca es activo.
+        "b.active = 1",
     ]
     params = []
 
@@ -1112,9 +1164,39 @@ def get_batch(batch_id):
     )
 
 
-def get_batches():
+# BATCH_LOGICAL_DELETION_V1
+# Expresiones SQL compartidas para excluir de los indicadores operativos los
+# lotes con eliminacion logica (active = 0). Nunca borran evidencia: las
+# inspecciones de esos lotes siguen en la base y se consultan desde la
+# pantalla de auditoria de administrador.
+BATCH_ACTIVE_SQL = "b.active = 1"
+# Para consultas con LEFT JOIN a batches desde inspections (lote opcional).
+INSPECTION_FROM_ACTIVE_BATCH_SQL = "COALESCE(b.active, 1) = 1"
+# Estados que impiden eliminar un lote: inspeccion activa o pausada.
+BATCH_DELETION_BLOCKED_STATUSES = ("EN_INSPECCION", "PAUSADO")
+# Lock global que serializa la eliminacion y la restauracion de lotes.
+BATCH_DELETION_LOCK = "astrid_batch_logical_deletion"
+BATCH_DELETION_MIN_REASON = 5
+BATCH_DELETION_MAX_REASON = 500
+
+
+def batch_deletion_wants_json():
+    """Detecta si el cliente prefiere JSON (AJAX) en vez de redirect."""
+    if request.is_json:
+        return True
+
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return True
+
+    accept = request.headers.get("Accept", "")
+
+    return "application/json" in accept
+
+
+def get_batches(include_deleted=False):
+    """Lista de lotes operativos; los eliminados solo si se piden."""
     return fetch_all(
-        """
+        f"""
         SELECT
             b.*,
 
@@ -1228,10 +1310,109 @@ def get_batches():
         LEFT JOIN inspections i
           ON i.batch_id = b.id
 
+        {"" if include_deleted else "WHERE b.active = 1"}
+
         GROUP BY b.id
         ORDER BY b.id DESC
         """
     )
+
+
+def get_deleted_batches():
+    """Lotes con eliminacion logica, con su ultima entrada de auditoria.
+
+    Solo lo consume la vista de administrador: ningun indicador operativo
+    recorre esta lista.
+    """
+    return fetch_all(
+        f"""
+        SELECT
+            b.id,
+            b.code,
+            b.status,
+            b.planned_quantity,
+            b.production_date,
+            b.deleted_at,
+            b.deleted_by,
+            b.deletion_reason,
+            b.created_at,
+
+            (
+                SELECT COUNT(*)
+                FROM inspections i
+                WHERE i.batch_id = b.id
+            ) AS processed_quantity,
+
+            (
+                SELECT COALESCE(
+                    NULLIF(u.full_name, ''),
+                    u.username
+                )
+                FROM users u
+                WHERE u.id = b.deleted_by
+                LIMIT 1
+            ) AS deleted_by_name,
+
+            (
+                SELECT a.reason
+                FROM batch_deletion_audit a
+                WHERE a.batch_id = b.id
+                  AND a.action = 'ELIMINACION'
+                ORDER BY a.id DESC
+                LIMIT 1
+            ) AS last_audit_reason,
+
+            (
+                SELECT a.created_at
+                FROM batch_deletion_audit a
+                WHERE a.batch_id = b.id
+                  AND a.action = 'ELIMINACION'
+                ORDER BY a.id DESC
+                LIMIT 1
+            ) AS last_audit_at
+
+        FROM batches b
+
+        WHERE b.active = 0
+
+        ORDER BY b.deleted_at DESC, b.id DESC
+        """
+    )
+
+
+def get_batch_deletion_audit(batch_id=None):
+    """Historial de auditoria de eliminaciones/restauraciones de lotes."""
+    sql = """
+        SELECT
+            a.id,
+            a.batch_id,
+            a.batch_code,
+            a.action,
+            a.batch_status,
+            a.planned_quantity,
+            a.processed_quantity,
+            a.reason,
+            a.admin_id,
+            a.admin_username,
+            a.active_after,
+            a.created_at,
+
+            b.active AS batch_active
+
+        FROM batch_deletion_audit a
+
+        LEFT JOIN batches b
+          ON b.id = a.batch_id
+    """
+    params = ()
+
+    if batch_id is not None:
+        sql += " WHERE a.batch_id = %s"
+        params = (batch_id,)
+
+    sql += " ORDER BY a.id DESC"
+
+    return fetch_all(sql, params)
 
 
 ROLE_ADMIN = "ADMIN"
@@ -1805,6 +1986,28 @@ def get_quality_alerts_after(after_seq):
 def current_quality_alert_seq():
     with QUALITY_ALERT_LOCK:
         return QUALITY_ALERT_SEQ
+
+
+def purge_quality_alerts_for_batch(batch_id):
+    """Descarta de la memoria de alarmas los eventos de un lote eliminado.
+
+    El buffer es volatile y no se persiste, pero una alerta de un lote ya
+    eliminado no debe seguir sonando en la estacion ni presentarse como
+    alerta vigente. La evidencia de esa inspeccion sigue en la base y en la
+    pantalla de auditoria del administrador.
+    """
+    if batch_id is None:
+        return 0
+
+    with QUALITY_ALERT_LOCK:
+        wanted = (batch_id, str(batch_id))
+        before = len(QUALITY_ALERT_EVENTS)
+        QUALITY_ALERT_EVENTS[:] = [
+            event
+            for event in QUALITY_ALERT_EVENTS
+            if event.get("batch_id") not in wanted
+        ]
+        return before - len(QUALITY_ALERT_EVENTS)
 
 
 def trigger_quality_alert(
@@ -5896,6 +6099,7 @@ def get_batch_review_summary(batch_id):
           ON i.batch_id = b.id
 
         WHERE b.id = %s
+          AND b.active = 1
 
         GROUP BY b.id
         """,
@@ -6150,9 +6354,18 @@ def dashboard():
                 ),
                 0
             ) AS pending_alerts
-        FROM inspections
-        WHERE created_at >= %s
-          AND created_at < %s
+
+        -- BATCH_LOGICAL_DELETION_V1: las alertas y los contadores del panel
+        -- principal ignoran los lotes eliminados (su evidencia sigue en la
+        -- pantalla de auditoria del administrador).
+        FROM inspections i
+
+        LEFT JOIN batches b
+          ON b.id = i.batch_id
+
+        WHERE i.created_at >= %s
+          AND i.created_at < %s
+          AND COALESCE(b.active, 1) = 1
         """,
         (day_start, day_end),
     )
@@ -6163,6 +6376,7 @@ def dashboard():
         FROM batches b
         WHERE b.inspection_completed_at >= %s
           AND b.inspection_completed_at < %s
+          AND b.active = 1
           AND EXISTS (
               SELECT 1
               FROM inspections i
@@ -6193,6 +6407,7 @@ def dashboard():
           ON gm.id = b.garment_model_id
         LEFT JOIN inspections i
           ON i.batch_id = b.id
+        WHERE b.active = 1
         GROUP BY b.id
         ORDER BY b.id DESC
         LIMIT 5
@@ -6222,7 +6437,7 @@ def dashboard():
             0,
         )
         # Los lotes faltantes dependen de la meta, no de las prendas restantes.
-        remaining_batches = max(target_batches - completed, 0)
+        remaining_batches = daily_production_totals(fetch_one)["pending_batches"]
 
         progress = (
             min(inspected / target_garments * 100, 100)
@@ -6413,6 +6628,7 @@ def dashboard():
         WHERE
             i.created_at >= %s
             AND i.created_at < %s
+            AND COALESCE(b.active, 1) = 1
 
         GROUP BY
             gm.id,
@@ -6520,6 +6736,7 @@ def dashboard():
         WHERE
             i.created_at >= %s
             AND i.created_at < %s
+            AND COALESCE(b.active, 1) = 1
 
         ORDER BY
             i.created_at DESC,
@@ -6642,6 +6859,7 @@ def dashboard():
 
     return render_template(
         "dashboard.html",
+        production_totals=daily_production_totals(fetch_one),
         today=today,
         now_gt=now_gt,
         goal=goal,
@@ -6748,9 +6966,16 @@ def dashboard_live_api():
                 0
             ) AS pending_alerts
 
-        FROM inspections
-        WHERE created_at >= %s
-          AND created_at < %s
+        -- BATCH_LOGICAL_DELETION_V1: el panel en vivo tampoco cuenta las
+        -- alertas pendientes de lotes eliminados.
+        FROM inspections i
+
+        LEFT JOIN batches b
+          ON b.id = i.batch_id
+
+        WHERE i.created_at >= %s
+          AND i.created_at < %s
+          AND COALESCE(b.active, 1) = 1
         """,
         (
             day_start,
@@ -6768,6 +6993,7 @@ def dashboard_live_api():
             FROM batches b
             WHERE b.inspection_completed_at >= %s
               AND b.inspection_completed_at < %s
+              AND b.active = 1
               AND EXISTS (
                   SELECT 1 FROM inspections i
                   WHERE i.batch_id = b.id
@@ -6813,6 +7039,7 @@ def dashboard_live_api():
 
         FROM batches
         WHERE production_date = %s
+          AND active = 1
         """,
         (today,),
     )
@@ -6854,6 +7081,7 @@ def dashboard_live_api():
 
             WHERE b.production_date = %s
               AND b.status = %s
+              AND b.active = 1
 
             ORDER BY b.id {order_direction}
             LIMIT 1
@@ -6937,6 +7165,7 @@ def dashboard_live_api():
 
         WHERE i.created_at >= %s
           AND i.created_at < %s
+          AND COALESCE(b.active, 1) = 1
 
         GROUP BY
             gm.id,
@@ -6962,7 +7191,8 @@ def dashboard_live_api():
         or 0
     ) if goal else 0
     target_batches = int(goal["target_batches"] or 0) if goal else 0
-    remaining_batches = max(target_batches - completed_batches, 0)
+    totals = daily_production_totals(fetch_one)
+    remaining_batches = totals["pending_batches"]
 
     remaining = max(
         target - inspected,
@@ -7088,6 +7318,7 @@ def dashboard_live_api():
 
 
     return jsonify({
+        "production_totals": totals,
         "ok":
             True,
 
@@ -7323,10 +7554,15 @@ def dashboard_daily_goal():
 
     actual = fetch_one(
         """
+        -- BATCH_LOGICAL_DELETION_V1: la meta diaria se valida contra las
+        -- prendas de lotes vivos; las de un lote eliminado no bloquean el ajuste.
         SELECT COUNT(*) AS inspected
-        FROM inspections
-        WHERE created_at >= %s
-          AND created_at < %s
+        FROM inspections i
+        LEFT JOIN batches b
+          ON b.id = i.batch_id
+        WHERE i.created_at >= %s
+          AND i.created_at < %s
+          AND COALESCE(b.active, 1) = 1
         """,
         (
             day_start,
@@ -7348,6 +7584,7 @@ def dashboard_daily_goal():
             WHERE
                 b.inspection_completed_at >= %s
                 AND b.inspection_completed_at < %s
+                AND b.active = 1
                 AND EXISTS (
                     SELECT 1
                     FROM inspections i
@@ -7625,6 +7862,7 @@ def get_today_production_plan():
             ) AS planned_garments
         FROM batches
         WHERE production_date = %s
+          AND active = 1
         """,
         (today,),
     )
@@ -8189,6 +8427,14 @@ def batches():
     ]
     visible_batches = (paused_batches + today_batches)[:16]
 
+    # BATCH_LOGICAL_DELETION_V1: los lotes eliminados solo se consultan en
+    # la vista de auditoria del administrador; jamas suman en los indicadores.
+    deleted_lots = []
+    deletion_audit = []
+    if has_role(ROLE_ADMIN):
+        deleted_lots = get_deleted_batches()
+        deletion_audit = get_batch_deletion_audit()
+
     # La captura de entrenamiento puede reservar la misma camara incluso
     # cuando todos los lotes de produccion estan pausados.
     occupied_capture = None
@@ -8206,6 +8452,7 @@ def batches():
 
     return render_template(
         "batches.html",
+        production_totals=daily_production_totals(fetch_one),
         batches=visible_batches,
         today_batches_total=today_batches_total,
         active_batch=get_active_batch(),
@@ -8214,110 +8461,274 @@ def batches():
         available_lines=available_lines,
         production_plan=production_plan,
         can_create=can_create,
+        deleted_lots=deleted_lots,
+        deletion_audit=deletion_audit,
     )
 
 
 
-# DELETE_ACCIDENTAL_BATCH_V2
+# BATCH_LOGICAL_DELETION_V1
+# Eliminacion logica reversible de lotes: jamas se borra una fila. El lote
+# queda con active = 0, se excluye de los indicadores operativos y su
+# evidencia (fotografias, decisiones e inspecciones) permanece intacta,
+# visible para el administrador en la pantalla de auditoria.
+# Sustituye al borrado fisico anterior del lote, que destruia la trazabilidad.
+
+
+def _batch_deletion_reply(status_code, payload, message=None, category="error"):
+    """Responde en JSON a peticiones AJAX o redirige con flash a los formularios."""
+    wants_json = batch_deletion_wants_json()
+
+    if wants_json:
+        body = dict(payload)
+        if message:
+            body.setdefault("message", message)
+        return jsonify(body), status_code
+
+    if message:
+        flash(message, category)
+
+    return redirect(url_for("batches"))
+
+
+def _first_value(row):
+    """Primer valor de una fila devuelta con cursor en modo diccionario."""
+    if not row:
+        return None
+
+    if isinstance(row, dict):
+        return next(iter(row.values()))
+
+    return row[0]
+
+
 @app.route(
     "/lotes/<int:batch_id>/eliminar",
     methods=["POST"],
 )
 @login_required
 @role_required(ROLE_ADMIN)
-def delete_accidental_batch(batch_id):
-    conn = db()
-    cur = conn.cursor(
-        dictionary=True
+def delete_batch(batch_id):
+    """Eliminacion logica reversible, exclusiva de administradores.
+
+    Protecciones: motivo obligatorio, bloqueo de lotes en inspeccion activa,
+    lock global + transaccion con FOR UPDATE + actualizacion condicionada a
+    active = 1 (anti duplicados y condiciones de carrera) y registro de
+    auditoria con administrador, fecha, motivo y cantidades.
+    """
+    reason = " ".join(
+        str(
+            request.form.get("reason")
+            or request.form.get("motivo")
+            or ""
+        ).split()
     )
 
+    if len(reason) < BATCH_DELETION_MIN_REASON:
+        return _batch_deletion_reply(
+            400,
+            {
+                "ok": False,
+                "error": "El motivo de la eliminacion es obligatorio.",
+            },
+            "Debe indicar el motivo de la eliminacion "
+            f"(minimo {BATCH_DELETION_MIN_REASON} caracteres).",
+        )
+
+    reason = reason[:BATCH_DELETION_MAX_REASON]
+    admin_id = session.get("user_id")
+    admin_username = (
+        str(session.get("username") or "").strip() or None
+    )
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    locked = False
+
     try:
+        # Serializa eliminaciones y restauraciones entre hilos y procesos.
+        cur.execute(
+            "SELECT GET_LOCK(%s, 10) AS acquired",
+            (BATCH_DELETION_LOCK,),
+        )
+        locked = int(_first_value(cur.fetchone()) or 0) == 1
+
+        if not locked:
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "Ya hay una operacion sobre lotes en curso.",
+                },
+                "Ya hay una operacion sobre lotes en curso. "
+                "Intente de nuevo en unos segundos.",
+            )
+
         conn.start_transaction()
 
         cur.execute(
             """
             SELECT
                 b.id,
+                b.code,
                 b.status,
-                b.started_at,
-
+                b.active,
+                b.planned_quantity,
+                b.production_date,
                 (
                     SELECT COUNT(*)
                     FROM inspections i
                     WHERE i.batch_id = b.id
                 ) AS inspection_count
-
             FROM batches b
             WHERE b.id = %s
             FOR UPDATE
             """,
             (batch_id,),
         )
-
         batch = cur.fetchone()
 
         if batch is None:
             conn.rollback()
-            return redirect(
-                url_for("batches")
+            return _batch_deletion_reply(
+                404,
+                {"ok": False, "error": "El lote no existe."},
+                "El lote solicitado no existe.",
             )
 
-        inspection_count = int(
-            batch["inspection_count"]
-            or 0
-        )
+        # `active` llega como 0 cuando el lote ya fue eliminado: nunca se
+        # usa `or 1`, porque 0 es falsy y ocultaria la baja logica.
+        active_flag = batch.get("active")
+        already_deleted = active_flag is not None and int(active_flag) != 1
 
-        can_delete = (
-            inspection_count == 0
-            and (
-                (
-                    batch["status"] == "PREPARACION"
-                    and batch["started_at"] is None
-                )
-                or batch["status"] == "REVISION_PENDIENTE"
-            )
-        )
-
-        if not can_delete:
+        if already_deleted:
+            # Solicitud duplicada: el lote ya estaba eliminado.
             conn.rollback()
-            flash(
-                "Este lote no puede eliminarse porque ya tiene "
-                "inspecciones registradas o no está en un estado eliminable.",
-                "error",
-            )
-            return redirect(
-                url_for("batches")
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "El lote ya estaba eliminado.",
+                    "batch_id": batch_id,
+                    "already_deleted": True,
+                },
+                "Este lote ya estaba eliminado; "
+                "la operacion no se repitio.",
             )
 
+        if str(batch.get("status") or "") in BATCH_DELETION_BLOCKED_STATUSES:
+            conn.rollback()
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "El lote esta en inspeccion activa.",
+                    "batch_id": batch_id,
+                    "status": batch.get("status"),
+                },
+                "No se puede eliminar un lote con inspeccion activa. "
+                "Finalice o revise la inspeccion antes de eliminarlo.",
+            )
+
+        planned_quantity = int(batch.get("planned_quantity") or 0)
+        processed_quantity = int(batch.get("inspection_count") or 0)
+
+        # La condicion active = 1 cierra la carrera entre peticiones
+        # simultaneas: solo una consigue marcar el lote como eliminado.
         cur.execute(
             """
-            DELETE FROM batches
+            UPDATE batches
+            SET active = 0,
+                deleted_at = UTC_TIMESTAMP(),
+                deleted_by = %s,
+                deletion_reason = %s
             WHERE id = %s
-              AND status IN ('PREPARACION', 'REVISION_PENDIENTE')
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM inspections i
-                  WHERE i.batch_id = batches.id
-              )
+              AND active = 1
             """,
-            (batch_id,),
+            (admin_id, reason, batch_id),
         )
 
         if cur.rowcount != 1:
             conn.rollback()
-            return redirect(
-                url_for("batches")
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "El lote ya estaba eliminado.",
+                    "batch_id": batch_id,
+                    "already_deleted": True,
+                },
+                "Este lote ya estaba eliminado; "
+                "la operacion no se repitio.",
+            )
+
+        cur.execute(
+            """
+            INSERT INTO batch_deletion_audit (
+                batch_id,
+                batch_code,
+                action,
+                batch_status,
+                planned_quantity,
+                processed_quantity,
+                reason,
+                admin_id,
+                admin_username,
+                active_after
+            )
+            VALUES (%s, %s, 'ELIMINACION', %s, %s, %s, %s, %s, %s, 0)
+            """,
+            (
+                batch_id,
+                batch["code"],
+                batch["status"],
+                planned_quantity,
+                processed_quantity,
+                reason,
+                admin_id,
+                admin_username,
+            ),
+        )
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            return _batch_deletion_reply(
+                500,
+                {
+                    "ok": False,
+                    "error": "No se pudo registrar la auditoria.",
+                },
+                "No se pudo registrar la auditoria de la eliminacion.",
             )
 
         conn.commit()
 
-        flash(
-            "Lote accidental eliminado correctamente.",
-            "success",
+        # Las alertas en memoria del lote eliminado dejan de estar vigentes.
+        purged_alerts = purge_quality_alerts_for_batch(batch_id)
+
+        app.logger.info(
+            "Lote %s eliminado logicamente por %s. motivo=%s "
+            "planificadas=%s inspeccionadas=%s alertas_retiradas=%s",
+            batch["code"],
+            admin_username,
+            reason,
+            planned_quantity,
+            processed_quantity,
+            purged_alerts,
         )
 
-        return redirect(
-            url_for("batches")
+        return _batch_deletion_reply(
+            200,
+            {
+                "ok": True,
+                "batch_id": batch_id,
+                "batch_code": batch["code"],
+                "planned_quantity": planned_quantity,
+                "processed_quantity": processed_quantity,
+            },
+            f"Lote {batch['code']} eliminado. La evidencia se conserva "
+            "y puede restaurarse desde la auditoria de lotes.",
+            "success",
         )
 
     except Exception:
@@ -8325,18 +8736,311 @@ def delete_accidental_batch(batch_id):
             conn.rollback()
 
         app.logger.exception(
-            "No fue posible eliminar "
-            "el lote accidental %s.",
+            "No fue posible eliminar logicamente el lote %s.",
             batch_id,
         )
 
-        return redirect(
-            url_for("batches")
+        return _batch_deletion_reply(
+            500,
+            {"ok": False, "error": "No fue posible eliminar el lote."},
+            "No fue posible eliminar el lote.",
         )
 
     finally:
-        cur.close()
-        conn.close()
+        try:
+            if locked:
+                cur.execute(
+                    "SELECT RELEASE_LOCK(%s)",
+                    (BATCH_DELETION_LOCK,),
+                )
+                cur.fetchone()
+        except Exception:
+            app.logger.exception(
+                "No fue posible liberar el bloqueo de lotes."
+            )
+        finally:
+            cur.close()
+            conn.close()
+
+
+@app.route("/lotes/<int:batch_id>/restaurar", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def restore_batch(batch_id):
+    """Restaura administrativamente un lote eliminado (accion reversible)."""
+    reason = " ".join(
+        str(
+            request.form.get("reason")
+            or request.form.get("motivo")
+            or ""
+        ).split()
+    ) or "Restauracion administrativa"
+
+    reason = reason[:BATCH_DELETION_MAX_REASON]
+    admin_id = session.get("user_id")
+    admin_username = (
+        str(session.get("username") or "").strip() or None
+    )
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    locked = False
+
+    try:
+        cur.execute(
+            "SELECT GET_LOCK(%s, 10) AS acquired",
+            (BATCH_DELETION_LOCK,),
+        )
+        locked = int(_first_value(cur.fetchone()) or 0) == 1
+
+        if not locked:
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "Ya hay una operacion sobre lotes en curso.",
+                },
+                "Ya hay una operacion sobre lotes en curso. "
+                "Intente de nuevo en unos segundos.",
+            )
+
+        conn.start_transaction()
+
+        cur.execute(
+            """
+            SELECT
+                b.id,
+                b.code,
+                b.status,
+                b.active,
+                b.planned_quantity,
+                (
+                    SELECT COUNT(*)
+                    FROM inspections i
+                    WHERE i.batch_id = b.id
+                ) AS inspection_count
+            FROM batches b
+            WHERE b.id = %s
+            FOR UPDATE
+            """,
+            (batch_id,),
+        )
+        batch = cur.fetchone()
+
+        if batch is None:
+            conn.rollback()
+            return _batch_deletion_reply(
+                404,
+                {"ok": False, "error": "El lote no existe."},
+                "El lote solicitado no existe.",
+            )
+
+        active_flag = batch.get("active")
+        if active_flag is None or int(active_flag) == 1:
+            conn.rollback()
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "El lote no esta eliminado.",
+                    "batch_id": batch_id,
+                },
+                "Este lote ya estaba activo; no hay nada que restaurar.",
+            )
+
+        planned_quantity = int(batch.get("planned_quantity") or 0)
+        processed_quantity = int(batch.get("inspection_count") or 0)
+
+        cur.execute(
+            """
+            UPDATE batches
+            SET active = 1,
+                deleted_at = NULL,
+                deleted_by = NULL,
+                deletion_reason = NULL
+            WHERE id = %s
+              AND active = 0
+            """,
+            (batch_id,),
+        )
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "El estado del lote cambio.",
+                    "batch_id": batch_id,
+                },
+                "El lote cambio de estado. Refresque la pantalla.",
+            )
+
+        cur.execute(
+            """
+            INSERT INTO batch_deletion_audit (
+                batch_id,
+                batch_code,
+                action,
+                batch_status,
+                planned_quantity,
+                processed_quantity,
+                reason,
+                admin_id,
+                admin_username,
+                active_after
+            )
+            VALUES (%s, %s, 'RESTAURACION', %s, %s, %s, %s, %s, %s, 1)
+            """,
+            (
+                batch_id,
+                batch["code"],
+                batch["status"],
+                planned_quantity,
+                processed_quantity,
+                reason,
+                admin_id,
+                admin_username,
+            ),
+        )
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            return _batch_deletion_reply(
+                500,
+                {
+                    "ok": False,
+                    "error": "No se pudo registrar la auditoria.",
+                },
+                "No se pudo registrar la auditoria de la restauracion.",
+            )
+
+        conn.commit()
+
+        app.logger.info(
+            "Lote %s restaurado por %s. motivo=%s",
+            batch["code"],
+            admin_username,
+            reason,
+        )
+
+        return _batch_deletion_reply(
+            200,
+            {
+                "ok": True,
+                "batch_id": batch_id,
+                "batch_code": batch["code"],
+                "planned_quantity": planned_quantity,
+                "processed_quantity": processed_quantity,
+            },
+            f"Lote {batch['code']} restaurado y nuevamente activo.",
+            "success",
+        )
+
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+
+        app.logger.exception(
+            "No fue posible restaurar el lote %s.",
+            batch_id,
+        )
+
+        return _batch_deletion_reply(
+            500,
+            {"ok": False, "error": "No fue posible restaurar el lote."},
+            "No fue posible restaurar el lote.",
+        )
+
+    finally:
+        try:
+            if locked:
+                cur.execute(
+                    "SELECT RELEASE_LOCK(%s)",
+                    (BATCH_DELETION_LOCK,),
+                )
+                cur.fetchone()
+        except Exception:
+            app.logger.exception(
+                "No fue posible liberar el bloqueo de lotes."
+            )
+        finally:
+            cur.close()
+            conn.close()
+
+
+@app.route("/lotes/eliminados", methods=["GET"])
+@login_required
+@role_required(ROLE_ADMIN)
+def deleted_batches():
+    """Auditoria de lotes eliminados: lista, motivos y restauracion."""
+    return render_template(
+        "deleted_batches.html",
+        deleted_batches=get_deleted_batches(),
+        audit_entries=get_batch_deletion_audit(),
+    )
+
+
+@app.route(
+    "/lotes/eliminados/<int:batch_id>/auditoria",
+    methods=["GET"],
+)
+@login_required
+@role_required(ROLE_ADMIN)
+def batch_deletion_audit_detail(batch_id):
+    """Evidencia completa de un lote eliminado, legible pero inmutable."""
+    batch = fetch_one(
+        """
+        SELECT
+            b.*,
+            (
+                SELECT COUNT(*)
+                FROM inspections i
+                WHERE i.batch_id = b.id
+            ) AS processed_quantity
+        FROM batches b
+        WHERE b.id = %s
+        """,
+        (batch_id,),
+    )
+
+    if batch is None:
+        flash("El lote solicitado no existe.", "error")
+        return redirect(url_for("deleted_batches"))
+
+    inspections = fetch_all(
+        """
+        SELECT
+            i.id,
+            i.code,
+            i.batch_position,
+            i.created_at,
+            i.status,
+            i.ai_decision,
+            i.review_status,
+            i.human_validation,
+            i.reviewed_by,
+            i.reviewed_at,
+            i.review_notes,
+            i.defect_type,
+            i.zone,
+            i.confidence,
+            i.image_original,
+            i.image_result
+        FROM inspections i
+        WHERE i.batch_id = %s
+        ORDER BY i.batch_position, i.id
+        """,
+        (batch_id,),
+    )
+
+    return render_template(
+        "batch_audit_detail.html",
+        batch=batch,
+        inspections=inspections,
+        audit_entries=get_batch_deletion_audit(batch_id),
+    )
+
 
 
 @app.route("/lotes/<int:batch_id>/pausar", methods=["POST"])
@@ -8360,7 +9064,7 @@ def pause_batch(batch_id):
     cur=conn.cursor(dictionary=True)
     try:
         conn.start_transaction()
-        cur.execute("SELECT id,code,status FROM batches WHERE id=%s FOR UPDATE",(batch_id,))
+        cur.execute("SELECT id,code,status FROM batches WHERE id=%s AND active=1 FOR UPDATE",(batch_id,))
         batch=cur.fetchone()
         if not batch or batch["status"]!="EN_INSPECCION":
             conn.rollback()
@@ -8409,7 +9113,7 @@ def resume_batch(batch_id):
             FROM batches b
             LEFT JOIN garment_models gm ON gm.id=b.garment_model_id
             LEFT JOIN garment_ai_models ai ON ai.id=b.ai_model_id
-            WHERE b.id=%s FOR UPDATE""",(batch_id,))
+            WHERE b.id=%s AND b.active=1 FOR UPDATE""",(batch_id,))
         batch=cur.fetchone()
         if not batch or batch["status"]!="PAUSADO":
             conn.rollback()
@@ -8419,9 +9123,9 @@ def resume_batch(batch_id):
             int(batch.get("ai_active") or 0)!=1 or
             batch.get("ai_status")!="ACTIVO"):
             conn.rollback()
-            flash("El modelo o su IA ya no estan disponibles.","error")
+            flash("El modelo está inactivo o su IA no está activa. Se conserva el lote; revise su disponibilidad antes de reanudar.","error")
             return redirect(url_for("batches"))
-        cur.execute("SELECT id FROM batches WHERE status='EN_INSPECCION' AND id<>%s LIMIT 1 FOR UPDATE",(batch_id,))
+        cur.execute("SELECT id FROM batches WHERE status='EN_INSPECCION' AND active=1 AND id<>%s LIMIT 1 FOR UPDATE",(batch_id,))
         if cur.fetchone():
             conn.rollback()
             flash("Existe otro lote en inspeccion. Pauselo antes.","error")
@@ -8522,6 +9226,7 @@ def start_batch(batch_id):
               ON ai.id = b.ai_model_id
 
             WHERE b.id = %s
+              AND b.active = 1
 
             FOR UPDATE
             """,
@@ -8679,6 +9384,7 @@ def start_batch(batch_id):
                 code
             FROM batches
             WHERE status = 'EN_INSPECCION'
+              AND active = 1
               AND id <> %s
             ORDER BY id DESC
             LIMIT 1
@@ -8812,6 +9518,7 @@ def finish_batch_manual(batch_id):
                 inspection_line_id
             FROM batches
             WHERE id = %s
+              AND active = 1
             FOR UPDATE
             """,
             (batch_id,),
@@ -8997,6 +9704,7 @@ def complete_batch_review(batch_id):
                 status
             FROM batches
             WHERE id = %s
+              AND active = 1
             FOR UPDATE
             """,
             (batch_id,),
@@ -9639,9 +10347,14 @@ def station_auto_status():
         else:
             row = fetch_one(
                 """
-                SELECT *
-                FROM inspections
-                ORDER BY id DESC
+                -- BATCH_LOGICAL_DELETION_V1: sin lote activo no se muestra
+                -- el resultado de un lote eliminado como alerta vigente.
+                SELECT i.*
+                FROM inspections i
+                LEFT JOIN batches b
+                  ON b.id = i.batch_id
+                WHERE COALESCE(b.active, 1) = 1
+                ORDER BY i.id DESC
                 LIMIT 1
                 """
             )
@@ -9814,9 +10527,14 @@ def station_alerts_ack():
 def station_latest():
     row = fetch_one(
         """
-        SELECT *
-        FROM inspections
-        ORDER BY id DESC
+        -- BATCH_LOGICAL_DELETION_V1: la ultima inspeccion consultada nunca
+        -- pertenece a un lote eliminado.
+        SELECT i.*
+        FROM inspections i
+        LEFT JOIN batches b
+          ON b.id = i.batch_id
+        WHERE COALESCE(b.active, 1) = 1
+        ORDER BY i.id DESC
         LIMIT 1
         """
     )
@@ -10049,7 +10767,15 @@ def records():
         )
     """
 
-    conditions = []
+    conditions = [
+        # BATCH_LOGICAL_DELETION_V1: el historial operativo deja fuera las
+        # inspecciones de lotes eliminados; siguen en la auditoria.
+        # La condicion se escribe aqui en linea (y no se toma del modulo) porque
+        # esta vista se ejecuta tambien en el banco de pruebas aislado, que
+        # compila unicamente esta funcion sin el resto de app.py. Debe mantenerse
+        # identica a INSPECTION_FROM_ACTIVE_BATCH_SQL.
+        "COALESCE(b.active, 1) = 1",
+    ]
     params = []
 
     if q:
@@ -10805,6 +11531,8 @@ def get_informe_data():
         "i.batch_id IS NOT NULL",
         "i.created_at >= %s",
         "i.created_at < %s",
+        # BATCH_LOGICAL_DELETION_V1: los informes excluyen lotes eliminados.
+        INSPECTION_FROM_ACTIVE_BATCH_SQL,
     ]
 
     params = [
@@ -11992,10 +12720,13 @@ def get_goal_history_data(start_date, end_date):
             calendar_sql + """
             SELECT c.day, COUNT(*) AS inspected
             FROM inspections i
+            LEFT JOIN batches b
+              ON b.id = i.batch_id
             JOIN calendar c
               ON i.created_at >= c.start_utc
              AND i.created_at < c.end_utc
             WHERE i.created_at >= %s AND i.created_at < %s
+              AND COALESCE(b.active, 1) = 1
             GROUP BY c.day
             """,
             params,
@@ -12010,6 +12741,7 @@ def get_goal_history_data(start_date, end_date):
              AND b.inspection_completed_at < c.end_utc
             WHERE b.inspection_completed_at >= %s
               AND b.inspection_completed_at < %s
+              AND b.active = 1
               AND EXISTS (
                   SELECT 1 FROM inspections i WHERE i.batch_id = b.id
               )
@@ -12091,6 +12823,7 @@ def informes():
             id,
             code
         FROM batches
+        WHERE active = 1
         ORDER BY id DESC
         LIMIT 200
         """

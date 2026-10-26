@@ -1,5 +1,6 @@
 ﻿{% extends "base.html" %}
 {% block content %}
+{% include "_production_totals.html" %}
 
 <style>
 .lot-layout{
@@ -346,6 +347,199 @@
 .lot-delete-link:hover{
   text-decoration:underline;
   color:#711f1f;
+}
+
+
+/* BATCH_LOGICAL_DELETION_V1: modal de confirmacion con motivo obligatorio. */
+
+.batch-delete-dialog{
+  width:min(460px,calc(100vw - 32px));
+  box-sizing:border-box;
+  border:1px solid #e6ded2;
+  border-radius:12px;
+  padding:24px;
+  background:#fff;
+  color:#302a24;
+  box-shadow:0 20px 70px #0004;
+  max-height:calc(100dvh - 32px);
+  overflow:auto;
+}
+
+.batch-delete-dialog::backdrop{
+  background:rgba(20,16,12,.65);
+}
+
+.batch-delete-dialog h2{
+  margin:0 0 10px;
+  font-size:20px;
+}
+
+.batch-delete-dialog p{
+  margin:0 0 14px;
+  line-height:1.55;
+  font-size:13px;
+  color:#746a60;
+}
+
+.batch-delete-dialog label{
+  display:block;
+  font-size:12px;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.6px;
+  color:#496481;
+  margin-bottom:6px;
+}
+
+.batch-delete-dialog textarea{
+  width:100%;
+  box-sizing:border-box;
+  border:1px solid #d8d2ca;
+  border-radius:8px;
+  padding:10px;
+  font-family:inherit;
+  font-size:14px;
+  resize:vertical;
+  min-height:78px;
+}
+
+.batch-delete-dialog textarea:focus{
+  outline:2px solid var(--ui-navy, #0d2a66);
+  outline-offset:1px;
+}
+
+.batch-delete-error{
+  color:#a23b3b;
+  font-size:13px;
+  font-weight:700;
+}
+
+.batch-delete-actions{
+  display:flex;
+  justify-content:flex-end;
+  gap:10px;
+  flex-wrap:wrap;
+  margin-top:14px;
+}
+
+.lot-delete-confirm{
+  background:#a23b3b;
+  border-color:#a23b3b;
+  color:#fff;
+}
+
+.batch-delete-dialog button:disabled{
+  opacity:.6;
+  cursor:wait;
+}
+
+/* Panel de auditoria de lotes eliminados (solo administrador). */
+
+.deleted-lots{
+  margin:26px 0 0;
+  padding:18px;
+  border:1px solid #e6ded2;
+  border-left:4px solid var(--ui-navy, #0d2a66);
+  border-radius:12px;
+  background:#fbf9f6;
+}
+
+.deleted-lots h2{
+  margin:0;
+  font-size:17px;
+  color:var(--ui-text, #10275a);
+}
+
+.deleted-lots-head p{
+  margin:6px 0 14px;
+  font-size:13px;
+  color:#667794;
+  line-height:1.5;
+}
+
+.deleted-lots-list{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+
+.deleted-lot-card{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:14px;
+  flex-wrap:wrap;
+  background:#fff;
+  border:1px solid #eae4db;
+  border-radius:10px;
+  padding:12px 14px;
+}
+
+.deleted-lot-card strong{
+  font-size:14px;
+  color:#302a24;
+}
+
+.deleted-lot-status{
+  display:inline-block;
+  margin-left:8px;
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:.8px;
+  color:#6b6257;
+}
+
+.deleted-lot-reason{
+  margin:6px 0 0;
+  font-size:13px;
+  color:#746a60;
+}
+
+.deleted-lot-meta{
+  margin:4px 0 0;
+  font-size:12px;
+  color:#667794;
+}
+
+.deleted-lot-actions{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.deleted-lot-actions form{
+  margin:0;
+}
+
+.deleted-audit-table{
+  width:100%;
+  border-collapse:collapse;
+  margin-top:16px;
+  font-size:12px;
+  background:#fff;
+}
+
+.deleted-audit-table th,
+.deleted-audit-table td{
+  border-bottom:1px solid #eee7dd;
+  padding:8px 10px;
+  text-align:left;
+  vertical-align:top;
+}
+
+.deleted-audit-table th{
+  background:#f4f1ec;
+  color:#496481;
+  text-transform:uppercase;
+  letter-spacing:.6px;
+  font-size:11px;
+}
+
+@media (max-width:700px){
+  .deleted-lot-card{align-items:flex-start;}
+  .deleted-lot-actions{width:100%;}
+  .deleted-audit-table{display:block;overflow-x:auto;white-space:nowrap;}
 }
 
 
@@ -900,26 +1094,6 @@
         </button>
        </form>
 
-        {# ACCIDENTAL_BATCH_DELETE_UI_V2 #}
-        {% if session.get('role') == 'ADMIN' %}
-
-        <form
-         class="lot-delete-form"
-         method="post"
-         action="{{ url_for('delete_accidental_batch', batch_id=batch.id) }}"
-         onsubmit="return confirm('?Eliminar este lote? Esta acci?n solo aplica a lotes sin iniciar.');"
-        >
-         <button
-          class="lot-delete-link"
-          type="submit"
-         >
-          Eliminar
-         </button>
-        </form>
-
-        {% endif %}
-
-
       {% else %}
 
        <span class="lot-disabled">
@@ -928,48 +1102,97 @@
 
       {% endif %}
 
-     {% elif batch.status == 'PAUSADO' %}
+      {# BATCH_LOGICAL_DELETION_V1: confirmacion con motivo obligatorio. #}
+      {% if session.get('role') == 'ADMIN' %}
+
+       <form
+        class="lot-delete-form"
+        method="post"
+        action="{{ url_for('delete_batch', batch_id=batch.id) }}"
+       >
+        <button
+         class="lot-delete-link"
+         type="submit"
+         data-batch-delete
+         data-batch-code="{{ batch.code }}"
+         data-batch-planned="{{ batch.planned_quantity }}"
+         data-batch-processed="{{ processed }}"
+         data-batch-status="{{ batch.status }}"
+        >
+         Eliminar lote
+        </button>
+       </form>
+
+      {% endif %}
+
+    {% elif batch.status == 'PAUSADO' %}
       {% if session.get('role') in ['ADMIN','QUALITY_MANAGER'] %}
       <form method="post" action="{{ url_for('resume_batch',batch_id=batch.id) }}">
         <button class="lot-btn" type="submit">Reanudar inspecci&oacute;n</button>
       </form>
       {% endif %}
-     {% elif batch.status == 'EN_INSPECCION' %}
+    {% elif batch.status == 'EN_INSPECCION' %}
 
       <a class="lot-btn"  href="{{ url_for('station') }}">
        Continuar
       </a>
 
-     {% elif batch.status == 'REVISION_PENDIENTE' %}
+    {% elif batch.status == 'REVISION_PENDIENTE' %}
 
-      {% if session.get('role') == 'ADMIN' and processed == 0 %}
+      <a
+       class="lot-btn"
+       href="{{ url_for('batch_review', batch_id=batch.id) }}"
+      >
+       Revisar alertas
+      </a>
+
+      {% if session.get('role') == 'ADMIN' %}
 
        <form
         class="lot-delete-form"
         method="post"
-        action="{{ url_for('delete_accidental_batch', batch_id=batch.id) }}"
-        onsubmit="return confirm('¿Eliminar este lote accidental? Solo se permite porque no tiene inspecciones registradas.');"
+        action="{{ url_for('delete_batch', batch_id=batch.id) }}"
        >
         <button
          class="lot-delete-link"
          type="submit"
+         data-batch-delete
+         data-batch-code="{{ batch.code }}"
+         data-batch-planned="{{ batch.planned_quantity }}"
+         data-batch-processed="{{ processed }}"
+         data-batch-status="{{ batch.status }}"
         >
-         Eliminar lote accidental
+         Eliminar lote
         </button>
        </form>
 
-      {% else %}
+      {% endif %}
 
-       <a
-        class="lot-btn"
-        href="{{ url_for('batch_review', batch_id=batch.id) }}"
+    {% elif batch.status == 'COMPLETADO' %}
+
+      {% if session.get('role') == 'ADMIN' %}
+
+       <form
+        class="lot-delete-form"
+        method="post"
+        action="{{ url_for('delete_batch', batch_id=batch.id) }}"
        >
-        Revisar alertas
-       </a>
+        <button
+         class="lot-delete-link"
+         type="submit"
+         data-batch-delete
+         data-batch-code="{{ batch.code }}"
+         data-batch-planned="{{ batch.planned_quantity }}"
+         data-batch-processed="{{ processed }}"
+         data-batch-status="{{ batch.status }}"
+        >
+         Eliminar lote
+        </button>
+       </form>
 
       {% endif %}
 
-     {% endif %}
+    {% endif %}
 
     </div>
 
@@ -1013,6 +1236,164 @@
 </article>
 
 </section>
+
+
+{# BATCH_LOGICAL_DELETION_V1: auditoria de lotes eliminados (solo ADMIN). #}
+{% if session.get('role') == 'ADMIN' and (deleted_lots is defined or deletion_audit is defined) %}
+<section class="deleted-lots" aria-labelledby="deletedLotsTitle">
+  <div class="deleted-lots-head">
+    <h2 id="deletedLotsTitle">Lotes eliminados &middot; auditor&iacute;a</h2>
+    <p>
+     No cuentan en los indicadores operativos. Sus inspecciones, fotograf&iacute;as,
+     decisiones y alertas se conservan intactas y solo se consultan desde aqu&iacute;.
+    </p>
+  </div>
+
+  {% if deleted_lots %}
+  <div class="deleted-lots-list">
+   {% for item in deleted_lots %}
+    <article class="deleted-lot-card">
+     <div>
+      <strong>{{ item.code }}</strong>
+      <span class="deleted-lot-status">{{ item.status|replace('_',' ') }} &middot; ELIMINADO</span>
+      <p class="deleted-lot-reason">
+       Motivo: {{ item.last_audit_reason or item.deletion_reason or 'Sin motivo registrado' }}
+      </p>
+      <p class="deleted-lot-meta">
+       {{ item.deleted_at }} &middot; {{ item.deleted_by_name or 'administrador' }} &middot;
+       planificadas {{ item.planned_quantity }} &middot; inspeccionadas {{ item.processed_quantity }}
+      </p>
+     </div>
+     <div class="deleted-lot-actions">
+      <a class="lot-btn" href="{{ url_for('batch_deletion_audit_detail', batch_id=item.id) }}">
+       Ver evidencia
+      </a>
+      <form
+       method="post"
+       action="{{ url_for('restore_batch', batch_id=item.id) }}"
+       onsubmit="return confirm('¿Restaurar este lote? Volverá a aparecer en los listados y a contar en los indicadores.');"
+      >
+       <button class="lot-btn" type="submit">Restaurar lote</button>
+      </form>
+     </div>
+    </article>
+   {% endfor %}
+  </div>
+  {% else %}
+  <p>No hay lotes eliminados.</p>
+  {% endif %}
+
+  {% if deletion_audit %}
+  <table class="deleted-audit-table">
+   <thead>
+    <tr>
+     <th scope="col">Fecha</th>
+     <th scope="col">Lote</th>
+     <th scope="col">Acci&oacute;n</th>
+     <th scope="col">Administrador</th>
+     <th scope="col">Motivo</th>
+     <th scope="col">Planificadas</th>
+     <th scope="col">Inspeccionadas</th>
+    </tr>
+   </thead>
+   <tbody>
+    {% for entry in deletion_audit %}
+    <tr>
+     <td>{{ entry.created_at }}</td>
+     <td>{{ entry.batch_code }}</td>
+     <td>{{ entry.action }}{% if entry.active_after == 1 %} &rarr; activo{% else %} &rarr; eliminado{% endif %}</td>
+     <td>{{ entry.admin_username or entry.admin_id }}</td>
+     <td>{{ entry.reason }}</td>
+     <td>{{ entry.planned_quantity }}</td>
+     <td>{{ entry.processed_quantity }}</td>
+    </tr>
+    {% endfor %}
+   </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endif %}
+
+
+{# BATCH_LOGICAL_DELETION_V1: modal con motivo obligatorio. #}
+<dialog class="batch-delete-dialog" id="batchDeleteDialog" aria-labelledby="batchDeleteTitle">
+ <form method="post" id="batchDeleteForm">
+  <h2 id="batchDeleteTitle">Eliminar lote</h2>
+  <p id="batchDeleteSummary"></p>
+  <p>
+   El lote dejar&aacute; de contar en los indicadores, pero sus inspecciones,
+   fotograf&iacute;as y decisiones se conservan en la auditor&iacute;a y puede
+   restaurarse. La eliminaci&oacute;n no borra datos.
+  </p>
+  <label for="batchDeleteReason">Motivo de la eliminaci&oacute;n (obligatorio)</label>
+  <textarea
+   id="batchDeleteReason"
+   name="reason"
+   required
+   minlength="5"
+   maxlength="500"
+   rows="3"
+   placeholder="Ej.: Lote duplicado por error de captura"
+  ></textarea>
+  <p class="batch-delete-error" id="batchDeleteError" role="alert" hidden></p>
+  <div class="batch-delete-actions">
+   <button type="button" class="lot-btn" id="batchDeleteCancel">Cancelar</button>
+   <button type="submit" class="lot-btn lot-delete-confirm" id="batchDeleteConfirm">Eliminar lote</button>
+  </div>
+ </form>
+</dialog>
+
+<script>
+(() => {
+  const dialog = document.getElementById('batchDeleteDialog');
+  if (!dialog || typeof dialog.showModal !== 'function') return;
+  const form = document.getElementById('batchDeleteForm');
+  const reason = document.getElementById('batchDeleteReason');
+  const summary = document.getElementById('batchDeleteSummary');
+  const errorBox = document.getElementById('batchDeleteError');
+  const cancel = document.getElementById('batchDeleteCancel');
+  const confirm = document.getElementById('batchDeleteConfirm');
+  let committing = false;
+
+  document.addEventListener('submit', (event) => {
+    const trigger = event.submitter;
+    if (!trigger || !trigger.hasAttribute('data-batch-delete')) return;
+    if (committing || dialog.open) { event.preventDefault(); return; }
+    const owner = trigger.closest('form');
+    if (!owner) return;
+    event.preventDefault();
+    summary.textContent = `Lote ${trigger.dataset.batchCode || ''} · ` +
+      `${trigger.dataset.batchProcessed || 0}/${trigger.dataset.batchPlanned || 0} prendas · ` +
+      `estado ${String(trigger.dataset.batchStatus || '').replace(/_/g, ' ')}`;
+    form.action = owner.action;
+    reason.value = '';
+    errorBox.hidden = true;
+    committing = false;
+    confirm.disabled = cancel.disabled = false;
+    confirm.textContent = 'Eliminar lote';
+    dialog.showModal();
+    reason.focus({ preventScroll: true });
+  });
+
+  cancel.addEventListener('click', () => { if (!committing) dialog.close(); });
+  dialog.addEventListener('cancel', (event) => { if (committing) event.preventDefault(); });
+
+  form.addEventListener('submit', (event) => {
+    const value = reason.value.trim();
+    if (value.length < 5) {
+      event.preventDefault();
+      errorBox.hidden = false;
+      errorBox.textContent = 'Debe indicar el motivo de la eliminación (mínimo 5 caracteres).';
+      reason.focus({ preventScroll: true });
+      return;
+    }
+    if (committing) { event.preventDefault(); return; }
+    committing = true;
+    confirm.disabled = cancel.disabled = true;
+    confirm.textContent = 'Eliminando…';
+  });
+})();
+</script>
 
 
 <script>

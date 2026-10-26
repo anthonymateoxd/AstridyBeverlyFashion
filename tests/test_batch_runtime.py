@@ -78,6 +78,11 @@ class BatchRuntimeTests(unittest.TestCase):
         cls.A = importlib.import_module("app")
 
     def setUp(self):
+        # These tests isolate lot eligibility/creation; daily SQL totals have
+        # their own integration coverage in test_functional_stability.
+        totals = patch.object(self.A, "daily_production_totals", return_value={})
+        totals.start()
+        self.addCleanup(totals.stop)
         self.client = self.A.app.test_client()
         self.user = {
             "id": 1,
