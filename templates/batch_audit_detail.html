@@ -128,7 +128,7 @@
       {% else %}—{% endif %}
      </td>
      <td>
-      {% set result = inspection_evidence_url(item.image_result) %}
+      {% set result = url_for('static', filename=item.image_result) if item.image_result else '' %}
       {% if result %}<a href="{{ result }}" target="_blank" rel="noopener">Ver</a>{% else %}—{% endif %}
      </td>
     </tr>
