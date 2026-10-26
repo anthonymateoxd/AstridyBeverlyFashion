@@ -13,8 +13,15 @@ from unittest.mock import patch
 
 from tests.test_support import require_test_database
 
-CONFIG = require_test_database()
-A = importlib.import_module("app")
+try:
+    CONFIG = require_test_database()
+except unittest.SkipTest:
+    # Sin base desechable no se importa la app: las pruebas de este modulo
+    # se omiten en setUpClass en lugar de abortar la carga del resto de la
+    # suite (otro modulo puede haber cargado el .env real antes que este).
+    CONFIG = None
+
+A = importlib.import_module("app") if CONFIG is not None else None
 
 
 class DeletionDatabase:
@@ -194,6 +201,10 @@ class DeletionDatabase:
         return created
 
 
+@unittest.skipIf(
+    CONFIG is None,
+    "Base de pruebas desechable no disponible en este entorno.",
+)
 class BatchDeletionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
