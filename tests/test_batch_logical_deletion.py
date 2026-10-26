@@ -4,6 +4,7 @@ Todo corre contra una base MySQL desechable creada por test con datos
 ficticios; no se toca la base de produccion ni credenciales reales.
 """
 import importlib
+import os
 import threading
 import unittest
 import uuid
@@ -13,8 +14,33 @@ from unittest.mock import patch
 
 from tests.test_support import require_test_database
 
+
+def _configurar_base_desechable():
+    """Resuelve la base desechable y comprueba que no es la real.
+
+    Si otro modulo importo la app con el .env de produccion antes que este,
+    las variables MYSQL_* del proceso ya apuntan a la base real y el guardia
+    de test_support rechaza con razon. En ese caso se limpian esas variables
+    y se vuelve a resolver desde .env.test, que solo describe el contenedor
+    desechable local; la misma comprobacion de seguridad se ejecuta otra vez
+    sobre el resultado antes de escribir nada.
+    """
+    try:
+        return require_test_database()
+    except unittest.SkipTest:
+        for key in (
+            "MYSQL_HOST",
+            "MYSQL_PORT",
+            "MYSQL_USER",
+            "MYSQL_PASSWORD",
+            "MYSQL_DATABASE",
+        ):
+            os.environ.pop(key, None)
+        return require_test_database()
+
+
 try:
-    CONFIG = require_test_database()
+    CONFIG = _configurar_base_desechable()
 except unittest.SkipTest:
     # Sin base desechable no se importa la app: las pruebas de este modulo
     # se omiten en setUpClass en lugar de abortar la carga del resto de la
