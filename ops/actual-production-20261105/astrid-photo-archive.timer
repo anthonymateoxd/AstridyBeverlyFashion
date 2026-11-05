@@ -1,0 +1,13 @@
+[Unit]
+Description=ASTRID hourly safe photo upload after Guatemala midnight
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=astrid-photo-archive.service
+
+[Install]
+WantedBy=timers.target
+

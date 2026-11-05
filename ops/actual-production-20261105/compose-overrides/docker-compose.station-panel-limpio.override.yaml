@@ -1,0 +1,5 @@
+services:
+  app:
+    volumes:
+      - /opt/astrid-release-d733420/ui-station-20261027/station.html:/app/templates/station.html:ro
+      - /opt/astrid-release-d733420/ui-station-20261027/batches.html:/app/templates/batches.html:ro

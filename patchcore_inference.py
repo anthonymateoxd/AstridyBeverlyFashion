@@ -51,14 +51,24 @@ class PatchCoreInspector:
 
         self.image_size = (image_size, image_size)
 
-        # Debe conservar la misma configuración del entrenamiento.
-        self.model = Patchcore(
-            backbone="wide_resnet50_2",
-            layers=("layer2", "layer3"),
-            pre_trained=False,
-            coreset_sampling_ratio=0.05,
-            num_neighbors=9,
-        )
+        # La resolución debe coincidir con la del entrenamiento. En v1
+        # (256 px) se conserva exactamente el preprocesador histórico.
+        # En futuras versiones de mayor resolución se configura el mismo
+        # tamaño explícito utilizado por ai_training.py durante fit().
+        patchcore_args = {
+            "backbone": "wide_resnet50_2",
+            "layers": ("layer2", "layer3"),
+            "pre_trained": False,
+            "coreset_sampling_ratio": 0.05,
+            "num_neighbors": 9,
+        }
+        if image_size != 256:
+            patchcore_args["pre_processor"] = (
+                Patchcore.configure_pre_processor(
+                    image_size=self.image_size
+                )
+            )
+        self.model = Patchcore(**patchcore_args)
 
         self.engine = Engine(
             accelerator="cpu",
@@ -69,6 +79,9 @@ class PatchCoreInspector:
         print(f"[PATCHCORE] Checkpoint configurado: {self.checkpoint_path}")
         print(f"[PATCHCORE] Resolución configurada: {self.image_size}")
 
+    # CAPÍTULO V — Inferencia de inteligencia artificial con PatchCore.
+    # Se analiza una imagen con el modelo entrenado y se obtienen
+    # la clasificación, la puntuación y el mapa de anomalías.
     def inspect(self, image_path: str) -> dict:
         image = Path(image_path).resolve()
 

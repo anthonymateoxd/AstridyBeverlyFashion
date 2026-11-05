@@ -1,0 +1,9 @@
+services:
+  app:
+    image: astrid-candidate:d733420
+    environment:
+      PHOTO_ARCHIVE_ENABLED: "1"
+      PHOTO_ARCHIVE_BUCKET: "astrid-quality-backups-184140788070"
+      PHOTO_ARCHIVE_PREFIX: "astrid/inspection-images/v1"
+      PHOTO_ARCHIVE_REGION: "us-east-2"
+      PHOTO_ARCHIVE_ALLOW_LOCAL_DELETE: "0"

@@ -1,0 +1,4 @@
+services:
+  app:
+    volumes:
+      - /opt/astrid-release-d733420/ui-dashboard-simple-20261028/dashboard.html:/app/templates/dashboard.html:ro

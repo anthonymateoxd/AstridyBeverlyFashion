@@ -420,6 +420,7 @@
 </section>
 
 
+<div id="review-progress" style="display:contents">
 {% if completed %}
 
   <section class="review-complete">
@@ -442,7 +443,7 @@
         defectos confirmados
         &middot;
         {{ batch['discarded_alerts'] }}
-        alertas descartadas.
+        falsas alertas.
       </p>
 
     {% endif %}
@@ -525,7 +526,7 @@
       defectos confirmados
       &middot;
       {{ batch['discarded_alerts'] }}
-      alertas descartadas.
+      falsas alertas.
     </p>
 
     <form
@@ -557,6 +558,8 @@
 
 {% endif %}
 
+
+</div>
 
 <section class="review-list-section">
 
@@ -632,7 +635,7 @@
                 <img
                   src="{{
                     url_for(
-                      'static',
+                      'inspection_media',
                       filename=item['image_original']
                     )
                   }}"
@@ -647,7 +650,7 @@
                 <img
                   src="{{
                     url_for(
-                      'static',
+                      'inspection_media',
                       filename=item['image_result']
                     )
                   }}"
@@ -701,11 +704,11 @@
                 {% if is_normal %}
                   <strong>Sin anomal&iacute;as detectadas</strong>
                 {% elif is_pending_alert %}
-                  <strong>Alerta pendiente de revisi&oacute;n</strong>
+                  <strong>Alerta de IA pendiente de revisi&oacute;n</strong>
                 {% elif is_confirmed %}
-                  <strong>Defecto confirmado</strong>
+                  <strong>Defecto confirmado por revisi&oacute;n manual</strong>
                 {% elif is_discarded %}
-                  <strong>Alerta descartada</strong>
+                  <strong>Falsa alerta descartada en revisi&oacute;n</strong>
                 {% else %}
                   <strong>{{ item['status'] or '—' }}</strong>
                 {% endif %}
@@ -724,7 +727,7 @@
 
 
                 <div class="review-label">
-                  Detecci&oacute;n
+                  Detecci&oacute;n de IA
                 </div>
 
                 <div>
@@ -745,7 +748,7 @@
 
               {% if is_pending_alert %}
 
-                <form
+                <form data-async-review
                   method="post"
                   action="{{
                     url_for(
@@ -771,11 +774,14 @@
                   ></textarea>
 
 
+                  <p class="review-note-label">Descartar la alerta indica una falsa alarma y acepta la prenda.
+                    Confirmar el defecto rechaza esta prenda; no elimina el modelo ni el lote.</p>
                   <div class="review-actions">
 
                     <button
                       class="review-button confirm-defect"
                       type="submit"
+                      data-confirm="Va a registrar que el defecto detectado por la IA es real. La prenda se marcar&aacute; como rechazada por defecto. La detecci&oacute;n original de la IA se conserva. &iquest;Continuar?"
                     >
                       Confirmar defecto
                     </button>
@@ -791,8 +797,9 @@
                           decision='descartar'
                         )
                       }}"
+                      data-confirm="Va a registrar que la alerta de la IA era una falsa alarma. La prenda se marcar&aacute; como apta. La detecci&oacute;n original de la IA se conserva en el historial. &iquest;Continuar?"
                     >
-                      Descartar alerta
+                      Marcar como falsa alerta
                     </button>
 
                   </div>
@@ -871,6 +878,140 @@
   Volver a lotes
 </a>
 
+<style>
+.review-decision-dialog{width:min(440px,calc(100vw - 32px));box-sizing:border-box;border:1px solid #e6ded2;border-radius:12px;padding:26px;background:#fff;color:#302a24;box-shadow:0 20px 70px #0004;max-height:calc(100dvh - 32px);overflow:auto;}
+.review-decision-dialog::backdrop{background:rgba(20,16,12,.65);}
+.review-decision-dialog h2{margin:0 0 14px;font-size:22px;}
+.review-decision-dialog p{line-height:1.6;color:#746a60;margin:0 0 22px;}
+.review-decision-dialog .review-actions{display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap;}
+.review-decision-dialog button:disabled{opacity:.6;cursor:wait;}
+</style>
+<dialog class="review-decision-dialog" id="review-decision-dialog" aria-labelledby="review-decision-title" aria-describedby="review-decision-description">
+  <h2 id="review-decision-title">¿Confirmar decisión?</h2>
+  <p id="review-decision-description"></p>
+  <div class="review-actions">
+    <button type="button" class="review-button" data-review-cancel>Cancelar</button>
+    <button type="button" class="review-button confirm-defect" data-review-confirm>Confirmar</button>
+  </div>
+</dialog>
+<script>
+(() => {
+  const dialog = document.getElementById('review-decision-dialog');
+  const cancel = dialog.querySelector('[data-review-cancel]');
+  const confirm = dialog.querySelector('[data-review-confirm]');
+  let resolveDecision = null;
+  let returnFocus = null;
+  let returnPosition = null;
+  let committing = false;
+  const closeDecision = () => {
+    if (dialog.open) dialog.close();
+    returnFocus?.focus({preventScroll: true});
+    const position = returnPosition;
+    if (position) {
+      window.scrollTo(position.x, position.y);
+      requestAnimationFrame(() => window.scrollTo(position.x, position.y));
+    }
+  };
+  const cancelDecision = () => {
+    if (committing) return;
+    const resolve = resolveDecision;
+    resolveDecision = null;
+    closeDecision();
+    resolve?.(false);
+  };
+  cancel.addEventListener('click', cancelDecision);
+  dialog.addEventListener('cancel', event => { event.preventDefault(); cancelDecision(); });
+  confirm.addEventListener('click', () => {
+    if (!resolveDecision || committing) return;
+    committing = true;
+    cancel.disabled = confirm.disabled = true;
+    const resolve = resolveDecision;
+    resolveDecision = null;
+    resolve(true);
+  });
+  const askDecision = (message, button) => new Promise(resolve => {
+    returnFocus = button;
+    returnPosition = {x: window.scrollX, y: window.scrollY};
+    committing = false;
+    cancel.disabled = confirm.disabled = false;
+    dialog.querySelector('p').textContent = message;
+    resolveDecision = resolve;
+    dialog.showModal();
+    cancel.focus({preventScroll: true});
+  });
+
+  document.addEventListener('submit', async (event) => {
+    const form = event.target;
+    if (!form.matches('form[data-async-review]')) return;
+    event.preventDefault();
+    if (form.dataset.saving || form.dataset.saved || dialog.open) return;
+    if (!form.reportValidity()) return;
+    const button = event.submitter || form.querySelector('button[type="submit"]');
+    const confirmation = button && button.getAttribute('data-confirm');
+    if (!await askDecision(confirmation || 'Se guardará esta decisión de revisión.', button)) return;
+    const endpoint = button && button.getAttribute('formaction') || form.action;
+    const data = new FormData(form); // Includes all existing hidden/CSRF fields.
+    const card = form.closest('.review-card');
+    let position = null;
+    const controls = [...form.querySelectorAll('button[type="submit"]')];
+    const disabled = controls.map(control => control.disabled);
+    let status = form.querySelector('[data-review-message]');
+    if (!status) {
+      status = document.createElement('p');
+      status.dataset.reviewMessage = '';
+      status.className = 'review-note-label';
+      status.setAttribute('role', 'status');
+      status.setAttribute('aria-live', 'polite');
+      form.append(status);
+    }
+    form.dataset.saving = 'true';
+    controls.forEach(control => control.disabled = true);
+    status.textContent = 'Guardando decisión…';
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST', body: data, credentials: 'same-origin',
+        headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+      });
+      if (response.redirected || !response.headers.get('content-type')?.includes('application/json')) {
+        throw new Error('No se pudo confirmar el guardado. Verifique su sesión e inténtelo de nuevo.');
+      }
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.message || 'No se pudo guardar la decisión. Inténtelo de nuevo.');
+      form.dataset.saved = 'true';
+      closeDecision();
+      status.textContent = 'Decisión guardada. Actualizando tarjeta…';
+      const refreshed = await fetch(window.location.href, {credentials: 'same-origin', headers: {'Accept': 'text/html'}, cache: 'no-store'});
+      if (!refreshed.ok || refreshed.redirected) throw new Error('Decisión guardada; no se pudo actualizar la vista. No vuelva a enviarla.');
+      const documentCopy = new DOMParser().parseFromString(await refreshed.text(), 'text/html');
+      const updated = documentCopy.getElementById(card.id);
+      if (!updated || updated.querySelector('form[data-async-review]')) throw new Error('Decisión guardada; la vista no pudo confirmarse. No vuelva a enviarla.');
+      // Keep the card's occupied space so reviewing does not move the page.
+      updated.style.minHeight = card.getBoundingClientRect().height + 'px';
+      position = {x: window.scrollX, y: window.scrollY};
+      card.replaceWith(updated);
+      const currentCounts = document.querySelectorAll('.review-summary strong');
+      documentCopy.querySelectorAll('.review-summary strong').forEach((next, index) => {
+        if (currentCounts[index] && currentCounts[index].textContent !== next.textContent) currentCounts[index].textContent = next.textContent;
+      });
+      for (const selector of ['.review-status', '#review-progress']) {
+        const current = document.querySelector(selector);
+        const next = documentCopy.querySelector(selector);
+        if (current && next && current.outerHTML !== next.outerHTML) current.replaceWith(next);
+      }
+    } catch (error) {
+      closeDecision();
+      status.textContent = form.dataset.saved ? 'Decisión guardada; no se pudo actualizar la vista. No vuelva a enviarla.' : (error.message || 'Error de conexión. Se conserva su observación; inténtelo de nuevo.');
+    } finally {
+      delete form.dataset.saving;
+      if (!form.dataset.saved) controls.forEach((control, index) => control.disabled = disabled[index]);
+      if (position) {
+        window.scrollTo(position.x, position.y);
+        requestAnimationFrame(() => window.scrollTo(position.x, position.y));
+      }
+    }
+  });
+})();
+</script>
 
 {% endblock %}
 

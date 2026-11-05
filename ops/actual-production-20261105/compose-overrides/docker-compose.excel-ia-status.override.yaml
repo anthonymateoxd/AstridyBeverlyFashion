@@ -1,0 +1,4 @@
+services:
+  app:
+    volumes:
+      - /opt/astrid-release-d733420/excel-ia-status-20261027/app.py:/app/app.py:ro

@@ -67,6 +67,15 @@
             font-family: Arial, Helvetica, sans-serif;
         }
 
+
+        .global-flash { display: flex; align-items: flex-start; gap: 12px; transition: opacity .2s ease, transform .2s ease; }
+        .global-flash-message { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .global-flash .global-flash-close { flex: 0 0 36px; min-height: 36px; margin: -6px -7px -6px 0; padding: 6px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: 18px/24px Arial,sans-serif; cursor: pointer; }
+        .global-flash .global-flash-close[hidden] { display: none !important; }
+        .global-flash .global-flash-close:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+        .global-flash.is-leaving { opacity: 0; transform: translateY(-4px); pointer-events: none; }
+        @media (prefers-reduced-motion: reduce) { .global-flash { transition: none; } .global-flash.is-leaving { transform: none; } }
+
         .global-flash.success {
             background: var(--ui-green-soft);
             color: #1f7b4d;
@@ -156,7 +165,8 @@
         .sidebar nav a span {
             min-width: 0;
             flex: 1 1 auto;
-            white-space: nowrap;
+            white-space: normal;
+            overflow-wrap: anywhere;
         }
 
         .sidebar nav a:hover {
@@ -252,6 +262,8 @@
       &#9776;
     </button>
 
+    {# CAPÍTULO V — Estructura común de la aplicación: navegación lateral,
+   marca empresarial y opciones disponibles según el rol del usuario. #}
     <aside class="sidebar" id="appSidebar">
 
         <div class="brand">
@@ -315,7 +327,7 @@
                 href="{{ url_for('station') }}"
             >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4v-.2a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
-                <span>Estación automática</span>
+                <span>Estación automática<small id="station-live-progress" role="status" aria-live="polite" style="display:none;font-size:11px;line-height:1.5;white-space:normal" hidden></small></span>
             </a>
 
             <a
@@ -323,7 +335,7 @@
                 href="{{ url_for('inspection') }}"
             >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.7"/></svg>
-                <span>Inspección en vivo</span>
+                <span>Inspección en tiempo real</span>
             </a>
             {% endif %}
 
@@ -384,7 +396,10 @@
           {% if messages %}
             <div class="global-flash-wrap" aria-live="polite">
               {% for category, message in messages %}
-                <div class="global-flash {{ category }}">{{ message }}</div>
+                <div class="global-flash {{ category }}" data-flash-category="{{ category }}" data-flash-event="{{ range(0, 2147483647)|random }}-{{ range(0, 2147483647)|random }}-{{ loop.index }}">
+                  <span class="global-flash-message">{{ message }}</span>
+                  <button type="button" class="global-flash-close" aria-label="Cerrar aviso" hidden>X</button>
+                </div>
               {% endfor %}
             </div>
           {% endif %}
@@ -442,5 +457,35 @@
       })();
     </script>
 
+    {% if current_role in ['ADMIN', 'QUALITY_MANAGER'] %}
+    <script>
+      (() => {
+        const label = document.getElementById('station-live-progress');
+        if (!label) return;
+        async function refreshStationProgress() {
+          if (!document.hidden) {
+            try {
+              const response = await fetch("{{ url_for('station_auto_status') }}", {
+                credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(5000)
+              });
+              if (!response.ok) throw new Error('Estado no disponible');
+              const state = await response.json();
+              const batch = state.active_batch;
+              label.hidden = !batch;
+              label.style.display = batch ? 'block' : 'none';
+              label.textContent = batch ? `Lote #${batch.id}: ${batch.processed_quantity}/${batch.planned_quantity} · ${state.automatic ? 'Automático' : state.worker_running ? 'Deteniendo' : 'Manual'}` : '';
+            } catch (error) {
+              label.hidden = false;
+              label.style.display = 'block';
+              label.textContent = 'Estado no disponible';
+            }
+          }
+          setTimeout(refreshStationProgress, 3000);
+        }
+        refreshStationProgress();
+      })();
+    </script>
+    {% endif %}
+    <script src="{{ url_for('static', filename='js/global-flash.js') }}" defer></script>
   </body>
 </html>

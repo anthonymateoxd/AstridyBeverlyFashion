@@ -100,6 +100,9 @@ def build_patchcore_regions(image, garment_mask, roi_bounds, *, cv2_mod=None):
     return roi_image, roi_garment_mask, patchcore_input
 
 
+# CAPÍTULO V — Preprocesamiento de imágenes para PatchCore.
+# Extrae la región de inspección y separa la prenda del fondo
+# para preparar una entrada comparable con las imágenes de entrenamiento.
 def build_patchcore_input(image, garment_mask, roi_bounds, *, cv2_mod=None):
     """Recorta el ROI y pinta de blanco el fondo. Devuelve el ROI."""
     return build_patchcore_regions(
@@ -110,6 +113,9 @@ def build_patchcore_input(image, garment_mask, roi_bounds, *, cv2_mod=None):
     )[2]
 
 
+# CAPÍTULO V — Segmentación de la prenda.
+# Construye una máscara a partir de la región de interés para
+# distinguir la tela del entorno antes del análisis de anomalías.
 def create_garment_mask(image, roi_bounds, *, cv2_mod=None, np_mod=None):
     """
     Obtiene la silueta completa de la blusa rosa talla S.

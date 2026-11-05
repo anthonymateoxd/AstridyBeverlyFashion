@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
 
 <style>
@@ -247,6 +247,10 @@
 
 .result-badge {
     display: inline-block;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+    border: 1px solid currentColor;
     border-radius: 18px;
     padding: 5px 9px;
     font-size: 11px;
@@ -266,6 +270,11 @@
 .result-badge.pending {
     background: #fff0cf;
     color: #8a6014;
+}
+
+.result-badge.reviewed {
+    background: #e8efff;
+    color: #244b87;
 }
 
 .detail-head {
@@ -671,6 +680,64 @@
 
 }
 
+
+/* Colores del historial alineados con la navegacion de la aplicacion. */
+.reg-head h1, .reg-card h2, .lot-title, .lot-number strong { color: #10275a; }
+.reg-card, .lot-card { border-color: #dce5f2; border-radius: 12px; }
+.lot-number { background: #f3f6fc; border-radius: 8px; }
+.lot-number span, .reg-field label { color: #617694; }
+.reg-submit, .reg-action { background: #0d2a66; color: #fff; border-radius: 8px; }
+.lot-actions a { border-color: #cddbef; border-radius: 7px; color: #10275a; }
+.lot-actions a.primary { background: #0d2a66; color: #fff; }
+
+
+/* El buscador comparte la jerarquia y los controles de las tarjetas de lotes. */
+.reg-filter-card { padding: 24px; border: 1px solid #dce5f2; box-shadow: 0 8px 24px rgba(16,39,90,.035); }
+.reg-filter-card .reg-period-panel { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px 20px; align-items: center; margin: 0 0 22px; padding: 0 0 20px; border-bottom: 1px solid #e4ebf5; }
+.reg-filter-card .reg-period-title { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0; text-transform: none; color: #10275a; }
+.reg-filter-card .reg-periods { display: flex; gap: 8px; margin: 0; flex-wrap: wrap; }
+.reg-filter-card .reg-period-btn { min-height: 40px; padding: 9px 15px; border: 1px solid #d8e3f2; border-radius: 8px; background: #f5f8fd; color: #24487f; font: 600 13px Arial, sans-serif; letter-spacing: 0; text-transform: none; flex: 0 1 auto; }
+.reg-filter-card .reg-period-btn:hover { background: #eaf1fc; border-color: #9eb7da; }
+.reg-filter-card .reg-period-btn.active { background: #0d2a66; border-color: #0d2a66; color: #fff; }
+.reg-filter-card .reg-period-help { grid-column: 1 / -1; margin: 0; font-size: 12px; line-height: 1.5; color: #657b98; }
+.reg-filter-card .reg-filters { grid-template-columns: repeat(4,minmax(0,1fr)); gap: 18px 16px; }
+.reg-filter-card .reg-field { min-width: 0; }
+.reg-filter-card .reg-field label { margin-bottom: 7px; font: 600 12px Arial,sans-serif; color: #415a7b; letter-spacing: 0; text-transform: none; }
+.reg-filter-card .reg-field input, .reg-filter-card .reg-field select { display: block; min-width: 0; max-width: 100%; min-height: 44px; border: 1px solid #d8e3f2; border-radius: 8px; padding: 10px 12px; font: 14px Arial,sans-serif; color: #10275a; background: #fff; }
+.reg-filter-card input:focus-visible, .reg-filter-card select:focus-visible, .reg-filter-card button:focus-visible, .reg-filter-card a:focus-visible { outline: 2px solid #1597dc; outline-offset: 2px; }
+.reg-filter-actions { display: flex; align-items: center; align-self: end; justify-content: flex-end; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.reg-filter-card .reg-submit { min-height: 44px; padding: 11px 18px; border-radius: 8px; font: 700 14px Arial,sans-serif; letter-spacing: 0; text-transform: none; }
+.reg-filter-card .reg-clear { margin: 0; padding: 10px 0; color: #496889; font: 13px Arial,sans-serif; text-underline-offset: 3px; }
+@media (max-width: 1050px) { .reg-filter-card .reg-filters { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 600px) {
+ .reg-filter-card { padding: 18px 16px; }
+ .reg-filter-card .reg-period-panel { grid-template-columns: minmax(0,1fr); gap: 12px; }
+ .reg-filter-card .reg-periods { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
+ .reg-filter-card .reg-period-btn { width: 100%; min-width: 0; padding: 10px 5px; }
+ .reg-filter-card .reg-filters { grid-template-columns: minmax(0,1fr); gap: 15px; }
+ .reg-filter-actions { justify-content: stretch; }
+ .reg-filter-card .reg-submit { flex: 1 1 100%; }
+ .reg-filter-card .reg-clear { flex: 1 1 100%; text-align: center; }
+}
+
+
+/* The model photograph is shared with the catalog; inspection evidence remains linked. */
+.lot-top{display:flex;align-items:center;justify-content:flex-start;gap:24px;flex-wrap:wrap}
+.reg-model-presentation{display:block;flex:0 0 210px;width:210px;height:210px;background:#fff;border:1px solid #e0e7ef;border-radius:10px;overflow:hidden}
+.reg-model-presentation img{display:block;width:100%;height:100%;object-fit:contain}
+.reg-model-pending{color:#64748b;font-size:13px}
+.reg-evidence-link{display:block;margin-top:8px;font-size:13px;text-decoration:underline}
+@media(max-width:600px){.reg-model-presentation{flex-basis:100%;width:100%;height:280px}.reg-inspection-image{max-height:340px}}
+
+.records-model-picker { position: relative; min-width: 0; }
+.records-model-picker #recordsModel[hidden], .records-model-popup[hidden], .records-model-status[hidden] { display: none !important; }
+.reg-filter-card .records-model-picker input { padding-right: 44px; }
+.records-model-toggle { position: absolute; right: 1px; top: 1px; width: 40px; min-height: 42px; border: 0; border-radius: 0 8px 8px 0; color: #415a7b; background: transparent; cursor: pointer; font-size: 18px; }
+.records-model-popup { position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 30; max-height: min(260px, 40vh); overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; border: 1px solid #cddbef; border-radius: 8px; background: #fff; box-shadow: 0 8px 24px rgba(16,39,90,.14); }
+.records-model-option { min-height: 44px; box-sizing: border-box; padding: 11px 12px; color: #10275a; font: 14px/1.5 Arial,sans-serif; overflow-wrap: anywhere; cursor: pointer; }
+.records-model-option:hover, .records-model-option.is-active { background: #eaf1fc; }
+.records-model-option[aria-selected="true"] { font-weight: 700; }
+.records-model-status { padding: 10px 12px; color: #617694; font: 13px/1.5 Arial,sans-serif; }
 </style>
 
 <div class="reg-wrap">
@@ -683,7 +750,7 @@
 </div>
 
 
-<section class="reg-card">
+<section class="reg-card reg-filter-card" aria-label="Filtros del historial">
 
 
 <div class="reg-period-panel">
@@ -718,6 +785,10 @@
    Este mes
   </button>
 
+  <button type="button" class="reg-period-btn" data-period="last30">
+   &Uacute;ltimos 30 d&iacute;as
+  </button>
+
  </div>
 
  <div class="reg-period-help">
@@ -727,12 +798,14 @@
 
 </div>
 
+{# CAPÍTULO V — Filtros del historial de inspecciones.
+   Envía los criterios seleccionados para consultar registros anteriores. #}
 <form id="recordsFilterForm" method="get" class="reg-filters">
 
  <div class="reg-field">
-  <label>Buscar</label>
+  <label for="recordsSearch">Buscar</label>
   <input
-   name="q"
+   id="recordsSearch" name="q"
    type="text"
    value="{{ request.args.get('q','') }}"
    placeholder="ID, defecto, zona..."
@@ -740,18 +813,18 @@
  </div>
 
  <div class="reg-field">
-  <label>Desde</label>
+  <label for="recordsDateFrom">Desde</label>
   <input id="recordsDateFrom" type="date" name="date_from" value="{{ date_from }}">
  </div>
 
  <div class="reg-field">
-  <label>Hasta</label>
+  <label for="recordsDateTo">Hasta</label>
   <input id="recordsDateTo" type="date" name="date_to" value="{{ date_to }}">
  </div>
 
  <div class="reg-field">
-  <label>Lote</label>
-  <select name="batch_id">
+  <label for="recordsBatch">Lote</label>
+  <select id="recordsBatch" name="batch_id">
    <option value="">Seleccione</option>
    {% for batch in batches_options %}
    <option value="{{ batch.id }}"
@@ -763,8 +836,9 @@
  </div>
 
  <div class="reg-field">
-  <label>Modelo</label>
-  <select name="model_id">
+  <label for="recordsModel">Modelo</label>
+  <div class="records-model-picker">
+  <select id="recordsModel" name="model_id">
    <option value="">Todos</option>
    {% for model in models_options %}
    <option value="{{ model.id }}"
@@ -773,11 +847,12 @@
    </option>
    {% endfor %}
   </select>
+  </div>
  </div>
 
  <div class="reg-field">
-  <label>Responsable</label>
-  <select name="reviewer_id">
+  <label for="recordsReviewer">Responsable</label>
+  <select id="recordsReviewer" name="reviewer_id">
    <option value="">Todos</option>
    {% for user in reviewers_options %}
    <option value="{{ user.id }}"
@@ -789,8 +864,8 @@
  </div>
 
  <div class="reg-field">
-  <label>Resultado</label>
-  <select name="result">
+  <label for="recordsResult">Resultado</label>
+  <select id="recordsResult" name="result">
    <option value="">Todos</option>
    <option value="APTAS"
     {% if result_filter == 'APTAS' %}selected{% endif %}>
@@ -811,15 +886,12 @@
   </select>
  </div>
 
- <button class="reg-submit" type="submit">
-  Consultar
- </button>
+ <div class="reg-filter-actions">
+  <button class="reg-submit" type="submit">Consultar</button>
+  <a class="reg-clear" href="{{ url_for('records') }}">Limpiar consulta</a>
+ </div>
 
 </form>
-
-<a class="reg-clear" href="{{ url_for('records') }}">
- Limpiar consulta
-</a>
 
 </section>
 
@@ -870,6 +942,13 @@
 <div class="lot-box">
 
  <div class="lot-top">
+  {% if lot.model_presentation_url %}
+  <a class="reg-model-presentation" href="{{ url_for('garment_model_detail', model_id=lot.garment_model_id) }}">
+   <img src="{{ lot.model_presentation_url }}" alt="Fotograf&iacute;a de referencia de {{ lot.garment_model_name }}" loading="lazy">
+  </a>
+  {% elif lot.garment_model_id %}
+  <p class="reg-model-pending">Este modelo no tiene una fotograf&iacute;a disponible.</p>
+  {% endif %}
 
   <div>
    <div class="lot-code">
@@ -925,7 +1004,7 @@
 
   <div class="lot-number">
    <strong>{{ lot.discarded or 0 }}</strong>
-   <span>Alertas descartadas</span>
+   <span>Falsas alertas</span>
   </div>
 
  </div>
@@ -1016,6 +1095,9 @@
 
   {% else %}
    <h2>Todas las prendas</h2>
+{% if summary.inspected|int > 120 %}
+<p style="font-size:12px;color:#506482;line-height:1.5">Se muestran las 120 inspecciones m&aacute;s recientes del per&iacute;odo. Use Desde y Hasta para consultar otras fechas.</p>
+{% endif %}
 
   {% endif %}
 
@@ -1052,30 +1134,18 @@
 <article class="reg-inspection-card">
 
  <div>
-
-  {% if row.image_result or row.image_original %}
-
-  {% set inspection_image = row.image_result or row.image_original %}
-
-  <a
-   href="{{ url_for('static', filename=inspection_image) }}"
-   target="_blank"
-  >
-   <img
-    class="reg-inspection-image"
-    src="{{ url_for('static', filename=inspection_image) }}"
-    alt="Imagen de la prenda inspeccionada"
-   >
+  {% set capture = inspection_capture_url(row.image_original) %}
+  {% if capture %}
+  <a class="reg-original-link" href="{{ capture }}" target="_blank" rel="noopener">
+   <img class="reg-inspection-image" data-inspection-id="{{ row.id }}" src="{{ capture }}" alt="Captura original de la inspección {{ row.id }}" loading="lazy">
   </a>
-
   {% else %}
-
-  <div class="reg-inspection-no-image">
-   Sin imagen registrada
-  </div>
-
+  <div class="reg-inspection-no-image">Captura de inspección no disponible</div>
   {% endif %}
-
+  {% set result = inspection_capture_url(row.image_result) %}
+  {% if result %}
+  <a class="reg-evidence-link" href="{{ result }}" target="_blank" rel="noopener">Ver resultado de IA (evidencia complementaria)</a>
+  {% endif %}
  </div>
 
 
@@ -1118,19 +1188,9 @@
    <strong>Decisi&oacute;n final</strong>
 
    <small>
-    {% if row.ai_decision == 'NORMAL' or row.status == 'Aprobado' %}
-    <span class="result-badge passed">
-     Aceptada
-    </span>
-    {% elif row.review_status == 'ALERTA_DESCARTADA' %}
-    <span class="result-badge passed">
-     Aceptada - alerta descartada
-    </span>
-    {% else %}
-    <span class="result-badge {{ row.decision_class }}">
+    <span class="result-badge {{ 'reviewed' if row.review_status == 'ALERTA_DESCARTADA' else row.decision_class }}">
      {{ row.decision_label }}
     </span>
-    {% endif %}
    </small>
 
   </div>
@@ -1148,6 +1208,9 @@
      {{ row.reviewed_at_gt.strftime('%d/%m/%Y %H:%M') }}
     </small>
     {% endif %}
+
+   {% elif row.ai_decision == 'NORMAL' or row.review_status == 'NO_REQUIERE_REVISION' %}
+    <small>No requiere revisi&oacute;n humana</small>
 
    {% elif row.decision_class == 'pending' %}
     <small>Pendiente de revisi&oacute;n</small>
@@ -1193,6 +1256,7 @@
 
 <div class="reg-empty">
  No hay prendas para este criterio.
+ <p style="margin-top:12px"><a href="{{ url_for('records') }}">Consultar los &uacute;ltimos 30 d&iacute;as</a></p>
 </div>
 
 {% endif %}
@@ -1276,6 +1340,10 @@ document.addEventListener("DOMContentLoaded", function () {
             );
         }
 
+        else if (period === "last30") {
+            start.setDate(today.getDate() - 29);
+        }
+
         else if (period === "last7") {
             start.setDate(
                 today.getDate() - 6
@@ -1345,5 +1413,6 @@ document.addEventListener("DOMContentLoaded", function () {
 });
 </script>
 
+<script src="{{ url_for('static', filename='js/records-model-picker.js') }}" defer></script>
 {% endblock %}
 

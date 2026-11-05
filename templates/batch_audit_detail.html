@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block content %}
+
+{# BATCH_LOGICAL_DELETION_V1: evidencia historica de un lote eliminado. #}
+
+<style>
+.audit-page{font-family:Arial,Helvetica,sans-serif;max-width:1200px;}
+.audit-page h1{margin:0;font-size:24px;color:var(--ui-text,#10275a);}
+.audit-lead{margin:8px 0 18px;font-size:14px;line-height:1.6;color:#667794;}
+.audit-toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;}
+.audit-card{background:#fff;border:1px solid #e6ded2;border-radius:12px;padding:16px;margin-bottom:14px;}
+.audit-card h2{margin:0 0 10px;font-size:17px;color:#302a24;}
+.audit-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;}
+.audit-fact strong{display:block;font-size:15px;color:#302a24;}
+.audit-fact span{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:#667794;}
+.audit-note{background:#fff6f6;border-left:4px solid #a23b3b;padding:12px 14px;border-radius:8px;font-size:13px;color:#711f1f;line-height:1.55;}
+.audit-table{width:100%;border-collapse:collapse;background:#fff;font-size:13px;}
+.audit-table th,.audit-table td{border-bottom:1px solid #eee7dd;padding:9px;text-align:left;vertical-align:top;}
+.audit-table th{background:#f4f1ec;color:#496481;text-transform:uppercase;letter-spacing:.6px;font-size:11px;}
+.audit-thumb{width:74px;height:74px;object-fit:cover;border-radius:6px;border:1px solid #eae4db;background:#f7f5f1;}
+.lot-btn{display:inline-block;padding:9px 14px;border:1px solid var(--ui-navy,#0d2a66);border-radius:8px;background:#fff;color:var(--ui-navy,#0d2a66);font-size:13px;font-weight:700;text-decoration:none;}
+.state-pending{color:#a23b3b;font-weight:700;}
+@media (max-width:820px){
+  .audit-page h1{font-size:20px;}
+  .audit-table{display:block;overflow-x:auto;}
+}
+</style>
+
+<article class="audit-page">
+ <h1>Evidencia del lote {{ batch.code }}</h1>
+ <p class="audit-lead">
+  {% if batch.deleted_at %}
+  Lote eliminado el {{ batch.deleted_at }}{% if batch.deletion_reason %} &mdash;
+  motivo: {{ batch.deletion_reason }}{% endif %}.
+  {% else %}
+  Este lote est&aacute; restaurado y vuelve a estar activo; su historial de
+  auditor&iacute;a se conserva a continuaci&oacute;n.
+  {% endif %}
+  Esta pantalla es de solo lectura: conserva la evidencia hist&oacute;rica completa
+  y ninguna acci&oacute;n modificable desde aqu&iacute; altera las inspecciones.
+ </p>
+
+ <div class="audit-toolbar">
+  <a class="lot-btn" href="{{ url_for('deleted_batches') }}">Volver a lotes eliminados</a>
+  <a class="lot-btn" href="{{ url_for('batches') }}">Lotes</a>
+ </div>
+
+ <section class="audit-card" aria-labelledby="auditBatchFacts">
+  <h2 id="auditBatchFacts">Datos del lote</h2>
+  <div class="audit-facts">
+   <div class="audit-fact"><strong>{{ batch.status|replace('_',' ') }}</strong><span>Estado</span></div>
+   <div class="audit-fact"><strong>{{ batch.planned_quantity }}</strong><span>Prendas planificadas</span></div>
+   <div class="audit-fact"><strong>{{ batch.processed_quantity }}</strong><span>Inspecciones conservadas</span></div>
+   <div class="audit-fact"><strong>{{ batch.production_date or '—' }}</strong><span>Fecha de producci&oacute;n</span></div>
+   <div class="audit-fact"><strong>{{ batch.active == 0 and 'Eliminado' or 'Activo' }}</strong><span>Clase de lote</span></div>
+  </div>
+ </section>
+
+ <section class="audit-card" aria-labelledby="auditTrailTitle">
+  <h2 id="auditTrailTitle">Auditor&iacute;a de eliminaci&oacute;n</h2>
+  <table class="audit-table">
+   <thead>
+    <tr>
+     <th scope="col">Fecha</th>
+     <th scope="col">Acci&oacute;n</th>
+     <th scope="col">Administrador</th>
+     <th scope="col">Motivo</th>
+     <th scope="col">Planificadas</th>
+     <th scope="col">Inspeccionadas</th>
+    </tr>
+   </thead>
+   <tbody>
+    {% for entry in audit_entries %}
+    <tr>
+     <td>{{ entry.created_at }}</td>
+     <td>{{ entry.action }}</td>
+     <td>{{ entry.admin_username or entry.admin_id }}</td>
+     <td>{{ entry.reason }}</td>
+     <td>{{ entry.planned_quantity }}</td>
+     <td>{{ entry.processed_quantity }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6">Sin registros de auditor&iacute;a.</td></tr>
+    {% endfor %}
+   </tbody>
+  </table>
+ </section>
+
+ <section class="audit-card" aria-labelledby="auditEvidenceTitle">
+  <h2 id="auditEvidenceTitle">Inspecciones, decisiones y fotograf&iacute;as</h2>
+  <p class="audit-note">
+   Estas inspecciones quedan fuera de los indicadores operativos mientras el
+   lote permanezca eliminado, pero <strong>no se han borrado</strong>: siguen
+   siendo evidencia de auditor&iacute;a con sus fotograf&iacute;as y decisiones originales.
+  </p>
+
+  <table class="audit-table">
+   <thead>
+    <tr>
+     <th scope="col">C&oacute;digo</th>
+     <th scope="col">Pos.</th>
+     <th scope="col">Fecha</th>
+     <th scope="col">Decisi&oacute;n IA</th>
+     <th scope="col">Revisi&oacute;n</th>
+     <th scope="col">Resultado</th>
+     <th scope="col">Original</th>
+     <th scope="col">Resultado IA</th>
+    </tr>
+   </thead>
+   <tbody>
+    {% for item in inspections %}
+    <tr>
+     <td>{{ item.code or '—' }}</td>
+     <td>{{ item.batch_position if item.batch_position is not none else '—' }}</td>
+     <td>{{ item.created_at }}</td>
+     <td>{{ item.ai_decision or '—' }}</td>
+     <td>{{ item.review_status or 'PENDIENTE' }}</td>
+     <td>
+      {{ item.status or '—' }}
+      {% if item.defect_type %}<br><small>{{ item.defect_type }}{% if item.zone %} · {{ item.zone }}{% endif %}</small>{% endif %}
+     </td>
+     <td>
+      {% set original = url_for('inspection_media', filename=item.image_original) if item.image_original else '' %}
+      {% if original %}
+      <a href="{{ original }}" target="_blank" rel="noopener">
+       <img class="audit-thumb" src="{{ original }}" alt="Captura original de la inspecci&oacute;n {{ item.id }}" loading="lazy">
+      </a>
+      {% else %}—{% endif %}
+     </td>
+     <td>
+      {% set result = url_for('inspection_media', filename=item.image_result) if item.image_result else '' %}
+      {% if result %}<a href="{{ result }}" target="_blank" rel="noopener">Ver</a>{% else %}—{% endif %}
+     </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8">Este lote no tiene inspecciones registradas.</td></tr>
+    {% endfor %}
+   </tbody>
+  </table>
+ </section>
+</article>
+
+{% endblock %}

@@ -1,0 +1,4 @@
+services:
+  app:
+    volumes:
+      - /opt/astrid-release-d733420/ui-lotes-completados-colapsados-20261028/batches.html:/app/templates/batches.html:ro

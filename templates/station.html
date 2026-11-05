@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %} {% block content %}
+{% extends "base.html" %} {% block content %}
 <style>
   .station-page {
     min-height: calc(100vh - 80px);
@@ -14,9 +14,10 @@
   .station-camera-card,
   .station-control-card {
     background: #ffffff;
-    border: 1px solid #e6ded2;
-    border-radius: 8px;
+    border: 1px solid var(--ui-line, #e4e9f1);
+    border-radius: 12px;
     padding: 18px;
+    box-shadow: 0 5px 22px rgba(16, 39, 90, .035);
   }
 
   .station-camera-card {
@@ -33,7 +34,7 @@
     font-size: 12px;
     letter-spacing: 2px;
     text-transform: uppercase;
-    color: #7a6d5f;
+    color: #697e9b;
   }
 
   .station-camera-frame {
@@ -54,17 +55,6 @@
     object-fit: contain;
     display: block;
     background: #111;
-  }
-
-  .station-scan-line {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 50%;
-    height: 2px;
-    background: #d8b760;
-    box-shadow: 0 0 16px rgba(216, 183, 96, 0.85);
-    pointer-events: none;
   }
 
   .station-overlay-bottom {
@@ -89,43 +79,106 @@
   }
 
   .station-control-card h2 {
-    margin-top: 0;
+    margin: 0 0 17px;
+    color: var(--ui-text, #10275a);
+    font-size: 24px;
+    line-height: 1.2;
+    font-weight: 800;
+    letter-spacing: -.35px;
   }
 
   .station-actions {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
     margin-top: 18px;
   }
 
   .station-actions button {
-    border: none;
-    background: #111;
-    color: #ffffff;
-    padding: 16px 18px;
-    font-weight: bold;
-    letter-spacing: 2px;
+    width: 100%;
+    min-height: 48px;
+    border: 1px solid var(--ui-navy, #0d2a66);
+    border-radius: 8px;
+    background: var(--ui-navy, #0d2a66);
+    color: #fff;
+    padding: 12px 16px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.3;
+    letter-spacing: .55px;
     text-transform: uppercase;
+    text-align: center;
     cursor: pointer;
+    transition: background .18s ease, border-color .18s ease;
+  }
+
+  .station-actions button:not(:disabled):hover {
+    background: var(--ui-navy-soft, #24487f);
+    border-color: var(--ui-navy-soft, #24487f);
   }
 
   .station-actions button.secondary {
-    background: #4a4a4a;
+    background: #eef4fc;
+    border-color: #d8e3f4;
+    color: var(--ui-navy, #0d2a66);
+  }
+
+  .station-actions button.secondary:not(:disabled):hover {
+    background: #e2edfb;
+    border-color: #bfd2eb;
+  }
+
+  .station-actions button#finishBatchBtn {
+    background: #fff8f8;
+    border-color: #efd8db;
+    color: #a33745;
+  }
+
+  .station-actions button#finishBatchBtn:not(:disabled):hover {
+    background: #feecef;
+    border-color: #e9bfc5;
   }
 
   .station-actions button:disabled {
-    opacity: 0.6;
+    background: #edf1f7;
+    border-color: #e2e8f1;
+    color: #8796af;
+    opacity: 1;
     cursor: not-allowed;
+  }
+
+  .station-actions button.secondary:disabled,
+  .station-actions button#finishBatchBtn:disabled {
+    background: #edf1f7;
+    border-color: #e2e8f1;
+    color: #8796af;
+  }
+
+  .station-actions button:focus-visible {
+    outline: 2px solid var(--ui-blue, #1597dc);
+    outline-offset: 2px;
   }
 
   .station-info {
     margin-top: 18px;
-    padding: 14px;
-    background: #f5efe6;
-    color: #4f463d;
+    padding: 16px 18px;
+    background: #f4f7fc;
+    color: #354d71;
+    border: 1px solid #e0e8f4;
+    border-radius: 10px;
     font-size: 14px;
-    line-height: 1.5;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+  }
+
+  .station-info strong {
+    color: var(--ui-text, #10275a);
+    font-weight: 750;
+  }
+
+  .station-info p:last-child {
+    margin-bottom: 0;
   }
 
   .camera-status-tools {
@@ -177,6 +230,50 @@
 
   .station-camera-alert.hidden {
     display: none;
+  }
+
+  .station-camera-alert.checking {
+    background: #fff8e8;
+    color: #6f5312;
+    border-color: #ead39a;
+    border-left-color: #c99a2e;
+  }
+
+  .camera-alert-action {
+    margin: 9px 0 0;
+    font-size: 13px;
+  }
+
+  .camera-alert-action strong {
+    display: inline;
+    margin: 0;
+    font-size: inherit;
+  }
+
+  .camera-technical-details {
+    margin-top: 10px;
+    font-size: 12px;
+  }
+
+  .camera-technical-details summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  .camera-technical-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 10px;
+    margin: 8px 0 0;
+  }
+
+  .camera-technical-grid dt {
+    font-weight: 600;
+  }
+
+  .camera-technical-grid dd {
+    margin: 0;
+    overflow-wrap: anywhere;
   }
 
   .quality-alarm {
@@ -259,10 +356,12 @@
 
   .station-message {
     margin-top: 18px;
-    padding: 14px;
-    background: #f3f3f3;
-    color: #333;
-    border-left: 4px solid #999;
+    padding: 14px 16px;
+    background: #f1f5fc;
+    color: #355075;
+    border: 1px solid #dce6f3;
+    border-left: 4px solid var(--ui-navy-soft, #24487f);
+    border-radius: 8px;
   }
 
   .station-message.success {
@@ -280,11 +379,13 @@
   .station-last-result {
     margin-top: 20px;
     padding-top: 14px;
-    border-top: 1px solid #e6ded2;
+    border-top: 1px solid var(--ui-line, #e4e9f1);
   }
 
   .station-last-result h3 {
     margin-top: 0;
+    color: var(--ui-text, #10275a);
+    font-size: 17px;
   }
 
   .station-last-result p {
@@ -296,6 +397,23 @@
     background: #1a0505;
     color: #ff6b6b;
     border-color: rgba(255, 107, 107, 0.35);
+  }
+
+  /* Inspecci?n junto al v?deo; panel derecho informativo. */
+  .station-camera-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 16px;
+  }
+  .station-camera-actions #manualModeHelp {
+    grid-column: 1 / -1;
+    margin: 0;
+  }
+  @media (max-width: 700px) {
+    .station-camera-actions {
+      grid-template-columns: 1fr;
+    }
   }
 
   @media (max-width: 1100px) {
@@ -324,6 +442,8 @@
     >
   </header>
 
+  {# CAPÍTULO V — Estación de inspección de prendas.
+   Organiza la vista de cámara y los controles de operación. #}
   <section class="station-layout">
     <article class="station-camera-card">
       <div class="station-camera-topbar">
@@ -349,12 +469,16 @@
           alt="Cámara de estación de inspección"
         / id="cameraFeed">
 
-        <div class="station-scan-line"></div>
-
         <div class="station-overlay-bottom">
           <span style="display: none;">Visión artificial · Control de calidad textil</span>
           <span id="autoStateText" style="display: none;">Automático detenido</span>
         </div>
+      </div>
+      <div class="station-actions station-camera-actions">
+        <button id="manualBtn" type="button" disabled>Inspeccionar ahora</button>
+        <button id="autoStartBtn" type="button" disabled>Iniciar autom&aacute;tico</button>
+        <button id="autoStopBtn" type="button" class="secondary">Detener autom&aacute;tico</button>
+        <p id="manualModeHelp" role="status"></p>
       </div>
     </article>
 
@@ -426,6 +550,22 @@
         <span id="cameraAlertMessage">
           Verificando conexión con la cámara de inspección.
         </span>
+
+        <p
+          id="cameraAlertAction"
+          class="camera-alert-action"
+        ></p>
+
+        <details
+          id="cameraTechnicalDetails"
+          class="camera-technical-details"
+        >
+          <summary>Ver detalles técnicos</summary>
+          <dl
+            id="cameraTechnicalGrid"
+            class="camera-technical-grid"
+          ></dl>
+        </details>
       </div>
 
 
@@ -449,55 +589,6 @@
       </div>
 
 
-
-      <div class="station-actions">
-        <button
-          id="manualBtn"
-          type="button"
-          disabled
-        >
-          Inspeccionar ahora
-        </button>
-
-        <button
-          id="autoStartBtn"
-          type="button"
-          disabled
-        >
-          Iniciar automático
-        </button>
-
-        <button
-          id="autoStopBtn"
-          type="button"
-          class="secondary"
-        >
-          Detener automático
-        </button>
-
-        {% if active_batch %}
-        <form
-          method="post"
-          action="{{ url_for(
-            'finish_batch_manual',
-            batch_id=active_batch.id
-          ) }}"
-          style="margin:0"
-          onsubmit="return confirm(
-            '&iquest;Finalizar este lote? Las inspecciones registradas se conservar&aacute;n y el lote dejar&aacute; de aceptar nuevas prendas.'
-          );"
-        >
-          <button
-            id="finishBatchBtn"
-            type="submit"
-            class="secondary"
-            style="width:100%"
-          >
-            Finalizar lote
-          </button>
-        </form>
-        {% endif %}
-      </div>
 
       <div class="station-info">
         <p>
@@ -532,6 +623,32 @@
 </div>
 
 <script>
+  let stationAutomatic = true; // fail closed until the server state arrives
+  let stationWorkerRunning = false;
+  let stationManualBusy = false;
+  let manualRequestPending = false;
+  let modeRequestPending = false;
+  let statusRequestPending = false;
+  let alertPollPending = false;
+  let statusKnown = false;
+  let serverClock = null;
+  let alarmNodes = [];
+  function stopAlarmSound() {
+    for (const node of alarmNodes) { try { node.stop(); } catch (_) {} }
+    alarmNodes = [];
+  }
+  const requestJson = async (url, options = {}) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.method === 'POST' ? 30000 : 4000);
+    try {
+      const response = await fetch(url, {...options, signal: controller.signal});
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw Error(error.message || 'No se pudo consultar la estación.');
+      }
+      return await response.json();
+    } finally { clearTimeout(timer); }
+  };
   const manualBtn = document.getElementById('manualBtn');
   const autoStartBtn = document.getElementById('autoStartBtn');
   const autoStopBtn = document.getElementById('autoStopBtn');
@@ -542,6 +659,9 @@
   const cameraAlert = document.getElementById('cameraAlert');
   const cameraAlertTitle = document.getElementById('cameraAlertTitle');
   const cameraAlertMessage = document.getElementById('cameraAlertMessage');
+  const cameraAlertAction = document.getElementById('cameraAlertAction');
+  const cameraTechnicalDetails = document.getElementById('cameraTechnicalDetails');
+  const cameraTechnicalGrid = document.getElementById('cameraTechnicalGrid');
   const cameraFeed = document.getElementById('cameraFeed');
   const cameraReconnectBtn = document.getElementById('cameraReconnectBtn');
 
@@ -551,7 +671,7 @@
   let lastCameraFeedReloadAt = 0;
   let cameraFeedReloadTimer = null;
 
-  const hasActiveBatch = {{ 'true' if active_batch else 'false' }};
+  let hasActiveBatch = {{ 'true' if active_batch else 'false' }};
 
   function reloadCameraFeed(force = false) {
     if (!cameraFeed) {
@@ -650,9 +770,78 @@
   }
 
 
+  function renderCameraTechnicalDetails(camera) {
+    if (!cameraTechnicalGrid || !cameraTechnicalDetails) {
+      return;
+    }
+
+    const diagnostic = camera?.diagnostic || {};
+    const technical = diagnostic.technical || {};
+
+    const labels = {
+      code: 'Código',
+      ip: 'IP',
+      rtsp_port: 'Puerto RTSP',
+      channel: 'Canal',
+      stream: 'Stream',
+      rtsp_transport: 'Transporte',
+      discovery_enabled: 'Descubrimiento IP',
+      failure_count: 'Fallos consecutivos',
+      open_timeout_ms: 'Timeout apertura',
+      read_timeout_ms: 'Timeout lectura',
+      last_ok_at: 'Último frame correcto',
+    };
+
+    const rows = [
+      ['code', diagnostic.code || '-'],
+      ['ip', technical.ip || '-'],
+      ['rtsp_port', technical.rtsp_port ?? '-'],
+      ['channel', technical.channel ?? '-'],
+      ['stream', technical.stream || '-'],
+      ['rtsp_transport', technical.rtsp_transport || '-'],
+      [
+        'discovery_enabled',
+        technical.discovery_enabled === true
+          ? 'Activo'
+          : technical.discovery_enabled === false
+            ? 'Desactivado'
+            : '-',
+      ],
+      ['failure_count', technical.failure_count ?? '0'],
+      [
+        'open_timeout_ms',
+        technical.open_timeout_ms
+          ? technical.open_timeout_ms + ' ms'
+          : '-',
+      ],
+      [
+        'read_timeout_ms',
+        technical.read_timeout_ms
+          ? technical.read_timeout_ms + ' ms'
+          : '-',
+      ],
+      ['last_ok_at', camera?.last_ok_at || technical.last_ok_at || '-'],
+    ];
+
+    cameraTechnicalGrid.textContent = '';
+
+    rows.forEach(([key, value]) => {
+      const dt = document.createElement('dt');
+      dt.textContent = labels[key] || key;
+
+      const dd = document.createElement('dd');
+      dd.textContent = String(value);
+
+      cameraTechnicalGrid.appendChild(dt);
+      cameraTechnicalGrid.appendChild(dd);
+    });
+  }
+
+
   function updateCameraState(camera) {
     const connected = Boolean(camera && camera.connected);
     const state = camera ? camera.state : 'DISCONNECTED';
+    const diagnostic = camera?.diagnostic || {};
 
     cameraText.classList.remove(
       'connected',
@@ -660,15 +849,24 @@
       'checking',
     );
 
+    cameraAlert.classList.remove('checking');
+
     if (connected) {
       cameraText.textContent = '● CÁMARA CONECTADA';
       cameraText.classList.add('connected');
-
       cameraAlert.classList.add('hidden');
 
-      manualBtn.disabled = !hasActiveBatch;
-      autoStartBtn.disabled = !hasActiveBatch;
+      if (cameraAlertAction) {
+        cameraAlertAction.textContent = '';
+      }
 
+      manualBtn.disabled = !statusKnown || !hasActiveBatch || stationAutomatic || stationWorkerRunning || stationManualBusy || manualRequestPending || modeRequestPending;
+      autoStartBtn.disabled = !statusKnown || !hasActiveBatch || stationAutomatic || stationWorkerRunning || stationManualBusy || manualRequestPending || modeRequestPending;
+      autoStopBtn.disabled = !stationAutomatic || modeRequestPending;
+      const reason = stationAutomatic || stationWorkerRunning
+        ? 'Para inspeccionar manualmente, primero detenga el automático.'
+        : (stationManualBusy || manualRequestPending ? 'Inspección manual en curso. Espere el resultado.' : '');
+      document.getElementById('manualModeHelp').textContent = reason;
       return;
     }
 
@@ -676,15 +874,30 @@
     autoStartBtn.disabled = true;
 
     cameraAlert.classList.remove('hidden');
+    renderCameraTechnicalDetails(camera);
+
+    if (cameraAlertAction) {
+      cameraAlertAction.textContent = '';
+      if (diagnostic.action) {
+        const strong = document.createElement('strong');
+        strong.textContent = 'Qué hacer: ';
+        cameraAlertAction.appendChild(strong);
+        cameraAlertAction.appendChild(
+          document.createTextNode(diagnostic.action),
+        );
+      }
+    }
 
     if (state === 'CHECKING') {
       cameraText.textContent = '● COMPROBANDO';
       cameraText.classList.add('checking');
+      cameraAlert.classList.add('checking');
 
       cameraAlertTitle.textContent =
-        'Comprobando cámara';
+        diagnostic.title || 'Comprobando cámara';
 
       cameraAlertMessage.textContent =
+        diagnostic.cause ||
         camera?.message ||
         'Verificando conexión con la cámara.';
 
@@ -695,15 +908,16 @@
     cameraText.classList.add('disconnected');
 
     cameraAlertTitle.textContent =
-      'Cámara no disponible';
+      diagnostic.title || 'Cámara no disponible';
 
     cameraAlertMessage.textContent =
+      diagnostic.cause ||
       camera?.message ||
       'No se recibe video de la cámara de inspección.';
 
-    autoStateText.textContent =
-      'Cámara desconectada';
+    autoStateText.textContent = 'Cámara desconectada';
   }
+
 
   function setMessage(text, type = 'normal') {
     stationMessage.textContent = text;
@@ -759,9 +973,17 @@
     }
   }
 
+  // A gesture enables future alarms after navigation; never replay one.
+  const unlockStationAudio = () => {
+    if (!qualityAudioCtx || qualityAudioCtx.state !== 'running') ensureAudioContext();
+  };
+  document.addEventListener('pointerdown', unlockStationAudio);
+  document.addEventListener('keydown', unlockStationAudio);
+
   function playDefectAlarm() {
     const ctx = qualityAudioCtx;
-    if (!ctx) return;
+    // Never schedule a delayed sound into a suspended/background context.
+    if (!ctx || ctx.state !== 'running' || document.hidden) return false;
 
     try {
       if (ctx.state === 'suspended') {
@@ -788,7 +1010,10 @@
         gain.connect(ctx.destination);
         osc.start(t0);
         osc.stop(t0 + 0.24);
+        alarmNodes.push(osc);
+        osc.onended = () => { alarmNodes = alarmNodes.filter(node => node !== osc); };
       }
+      return true;
     } catch (error) {
       console.warn('Error al reproducir alarma:', error);
     }
@@ -812,6 +1037,7 @@
     if (position) {
       parts.push('Prenda ' + position);
     }
+    if (event.inspection_id) parts.push('Inspección #' + event.inspection_id);
     parts.push('token ' + token);
     if (code) {
       parts.push(code);
@@ -827,7 +1053,7 @@
     }
   }
 
-  function sendAlertAck(event, browserReceivedAtMs, audioStartedAtMs) {
+  function sendAlertAck(event, browserReceivedAtMs, audioStartedAtMs, receivedPerf, played) {
     const payload = {
       event_id: event.event_id || event.alert_id || '',
       alert_id: event.alert_id || '',
@@ -839,6 +1065,9 @@
       server_emitted_at_ms: Number(event.server_emitted_at_ms) || 0,
       browser_received_at_ms: browserReceivedAtMs,
       audio_started_at_ms: audioStartedAtMs,
+      inspection_id: event.inspection_id,
+      received_to_audio_ms: played ? performance.now() - receivedPerf : null,
+      audio_state: played ? 'scheduled-running' : 'unavailable',
     };
 
     try {
@@ -856,6 +1085,17 @@
   function handleQualityAlertEvent(event) {
     if (!event) return;
 
+    const seq = Number(event.seq) || 0;
+    alertPollSeq = Math.max(alertPollSeq, seq);
+    const estimatedServerNow = serverClock ? serverClock.time + performance.now() - serverClock.at : null;
+    const age = Math.max(Number(event.age_ms) || 0, estimatedServerNow === null ? Infinity : estimatedServerNow - Number(event.server_emitted_at_ms));
+    if (!event.committed || !event.inspection_id || document.hidden || age > 5000) return;
+    if (window.stationTrackedBatchId && Number(event.batch_id) !== Number(window.stationTrackedBatchId)) return;
+    const receivedPerf = performance.now();
+    if (event.inspection) {
+      setLastResult(event.inspection);
+      updateBatchFromResult(event.inspection);
+    }
     const alertId = String(event.alert_id || '');
     if (!alertId) return;
 
@@ -889,9 +1129,10 @@
     }
 
     const audioStartedAtMs = Date.now();
-    playDefectAlarm();
+    const played = playDefectAlarm();
     showQualityAlarm(event);
-    sendAlertAck(event, browserReceivedAtMs, audioStartedAtMs);
+    if (!played) qualityAlarmDetail.textContent += ' · Sonido no disponible: pulse la pantalla para habilitar futuras alertas.';
+    sendAlertAck(event, browserReceivedAtMs, played ? audioStartedAtMs : 0, receivedPerf, played);
   }
 
   function processAlertEvents(events) {
@@ -970,19 +1211,19 @@
     if (alertPollTimer) return;
 
     const poll = async function () {
+      if (alertPollPending || document.hidden) return;
+      alertPollPending = true;
+      const requestStarted = performance.now();
       try {
         let url = "{{ url_for('station_alerts_last') }}";
         if (alertStreamReady || alertPollSeq > 0) {
           url += '?after=' + encodeURIComponent(alertPollSeq);
         }
 
-        const response = await fetch(url, {
-          cache: 'no-store',
-        });
-        const data = await response.json();
+        const data = await requestJson(url, {cache: 'no-store'});
         if (data && data.ok) {
           alertStreamReady = true;
-          processAlertEvents(data.events);
+          processAlertEvents((data.events || []).map(event => ({...event, age_ms: Number(event.age_ms || 0) + performance.now() - requestStarted})));
           if (typeof data.seq === 'number') {
             alertPollSeq = Math.max(
               alertPollSeq,
@@ -992,7 +1233,7 @@
         }
       } catch (error) {
         /* Silencioso: se reintenta en el siguiente tick. */
-      }
+      } finally { alertPollPending = false; }
     };
 
     poll();
@@ -1066,16 +1307,14 @@
   }
 
   async function manualInspect() {
+    if (manualBtn.disabled || manualRequestPending || modeRequestPending || stationAutomatic || stationWorkerRunning || stationManualBusy) return;
+    manualRequestPending = true;
     ensureAudioContext();
     manualBtn.disabled = true;
     setMessage('Ejecutando inspección manual...', 'normal');
 
     try {
-      const response = await fetch("{{ url_for('station_manual_inspect') }}", {
-        method: 'POST',
-      });
-
-      const data = await response.json();
+      const data = await requestJson("{{ url_for('station_manual_inspect') }}", {method: 'POST'});
 
       if (data.ok) {
         setMessage(data.message, 'success');
@@ -1091,26 +1330,28 @@
       setMessage('Error de conexión con el servidor.', 'error');
     }
 
-    manualBtn.disabled = false;
+    manualRequestPending = false;
+    await refreshAutoStatus();
   }
 
   async function startAuto() {
+    if (modeRequestPending || manualRequestPending || stationManualBusy || stationAutomatic || stationWorkerRunning || autoStartBtn.disabled) return;
+    modeRequestPending = true;
+    manualBtn.disabled = autoStartBtn.disabled = autoStopBtn.disabled = true;
     /* Desbloquear AudioContext en la interacción del usuario. */
     ensureAudioContext();
     hideQualityAlarm();
     setMessage('Iniciando modo automático...', 'normal');
 
     try {
-      const response = await fetch("{{ url_for('station_auto_start') }}", {
-        method: 'POST',
-      });
-
-      const data = await response.json();
+      const data = await requestJson("{{ url_for('station_auto_start') }}", {method: 'POST'});
 
       if (data.ok) {
+        stationAutomatic = true;
         stationModeBadge.textContent = '● Modo automático';
         stationModeBadge.classList.remove('offline');
         autoStateText.textContent = 'Automático activo';
+        manualBtn.disabled = true;
         setMessage(data.message, 'success');
         connectAlertStream();
       } else {
@@ -1122,22 +1363,24 @@
     } catch (error) {
       setMessage('Error de conexión con el servidor.', 'error');
     }
+    modeRequestPending = false;
+    await refreshAutoStatus();
   }
 
   async function stopAuto() {
+    if (modeRequestPending) return;
+    modeRequestPending = true;
+    manualBtn.disabled = autoStartBtn.disabled = autoStopBtn.disabled = true;
     setMessage('Deteniendo modo automático...', 'normal');
 
     try {
-      const response = await fetch("{{ url_for('station_auto_stop') }}", {
-        method: 'POST',
-      });
-
-      const data = await response.json();
+      const data = await requestJson("{{ url_for('station_auto_stop') }}", {method: 'POST'});
 
       if (data.ok) {
         stationModeBadge.textContent = '● Modo manual';
         stationModeBadge.classList.remove('offline');
         autoStateText.textContent = 'Automático detenido';
+        manualBtn.disabled = false;
         setMessage(data.message, 'success');
       } else {
         setMessage(
@@ -1148,26 +1391,34 @@
     } catch (error) {
       setMessage('Error de conexión con el servidor.', 'error');
     }
+    modeRequestPending = false;
+    await refreshAutoStatus();
   }
 
   async function refreshAutoStatus() {
+    if (statusRequestPending || document.hidden) return;
+    statusRequestPending = true;
     try {
-      const response = await fetch("{{ url_for('station_auto_status') }}", {
-        cache: 'no-store',
-      });
+      const data = await requestJson("{{ url_for('station_auto_status') }}", {cache: 'no-store'});
 
-      const data = await response.json();
-
+      statusKnown = true;
+      serverClock = {time: Number(data.server_time_ms), at: performance.now()};
+      stationAutomatic = Boolean(data.automatic);
+      stationWorkerRunning = Boolean(data.worker_running);
+      stationManualBusy = Boolean(data.manual_busy);
+      hasActiveBatch = Boolean(data.active_batch);
       updateCameraState(data.camera);
 
       if (data.automatic) {
         stationModeBadge.textContent = '● Modo automático';
         stationModeBadge.classList.remove('offline');
         autoStateText.textContent = 'Automático activo';
+        manualBtn.disabled = true;
       } else {
         stationModeBadge.textContent = '● Modo manual';
         stationModeBadge.classList.remove('offline');
         autoStateText.textContent = 'Automático detenido';
+        manualBtn.disabled = false;
       }
 
       if (data.last_result) {
@@ -1285,14 +1536,21 @@
       }
 
       if (data.last_error) {
+        if (!data.automatic && !data.worker_running) {
+          stationModeBadge.textContent = '● Error en automático';
+          stationModeBadge.classList.add('offline');
+          autoStateText.textContent = 'Automático detenido por error';
+        }
         setMessage(data.last_error, 'error');
       }
     } catch (error) {
       stationModeBadge.textContent = '● Sin conexión';
       stationModeBadge.classList.add('offline');
       autoStateText.textContent = 'Servidor no disponible';
+      statusKnown = false;
+      manualBtn.disabled = autoStartBtn.disabled = true;
       setMessage('No se pudo consultar el estado de la estación.', 'error');
-    }
+    } finally { statusRequestPending = false; }
   }
 
   manualBtn.addEventListener('click', manualInspect);
@@ -1322,7 +1580,17 @@
     'visibilitychange',
     () => {
       if (!document.hidden) {
+        alertStreamReady = false;
+        alertPollSeq = 0;
+        hideQualityAlarm();
+        refreshAutoStatus();
+        connectAlertStream();
         scheduleCameraFeedReload();
+      } else {
+        stopAlarmSound();
+        if (alertEventSource) { alertEventSource.close(); alertEventSource = null; }
+        if (alertPollTimer) { clearInterval(alertPollTimer); alertPollTimer = null; }
+        if (qualityAudioCtx) qualityAudioCtx.suspend();
       }
     },
   );
@@ -1338,7 +1606,7 @@
   );
 
   refreshAutoStatus();
-  setInterval(refreshAutoStatus, 3000);
+  setInterval(refreshAutoStatus, 500);
   connectAlertStream();
 </script>
 {% endblock %}

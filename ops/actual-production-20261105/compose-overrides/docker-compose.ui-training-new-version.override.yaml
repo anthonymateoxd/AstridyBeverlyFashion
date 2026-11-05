@@ -1,0 +1,5 @@
+services:
+  app:
+    volumes:
+      - /opt/astrid-release-d733420/ui-training-new-version-20261027/ai_training.py:/app/ai_training.py:ro
+      - /opt/astrid-release-d733420/ui-training-new-version-20261027/garment_model_detail.html:/app/templates/garment_model_detail.html:ro

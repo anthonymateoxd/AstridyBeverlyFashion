@@ -1,0 +1,7 @@
+services:
+  app:
+    volumes:
+      - /opt/astrid-release-d733420/ui-only/dashboard.html:/app/templates/dashboard.html:ro
+      - /opt/astrid-release-d733420/ui-only/batches.html:/app/templates/batches.html:ro
+      - /opt/astrid-quality-control/station_empty_reference.jpg:/app/station_empty_reference.jpg:ro
+      - /opt/astrid-quality-control/station_empty_reference.json:/app/station_empty_reference.json:ro

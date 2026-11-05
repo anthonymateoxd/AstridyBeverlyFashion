@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
 
 <style>
@@ -196,14 +196,190 @@
  .goal-history .goal-stat strong{font-size:22px}
  .goal-history .goal-field{max-width:none}
 }
+/* Comparativa mensual — producción y calidad entre meses */
+.cmp-card{border-top:4px solid #193654;scroll-margin-top:24px}
+.cmp-quick{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px}
+.cmp-button{display:inline-block;border:1px solid #dce4ed;border-radius:8px;padding:10px 14px;background:#f5f8fc;color:#193654;text-decoration:none;font-size:12px;font-weight:700;cursor:pointer}
+.cmp-button[aria-current="true"]{background:#e7f1fb;border-color:#193654}
+.cmp-form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin-bottom:16px}
+.cmp-field{display:flex;flex-direction:column;gap:6px;min-width:130px}
+.cmp-field label{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#63758a}
+.cmp-field select{box-sizing:border-box;padding:10px;border:1px solid #dce4ed;border-radius:8px;background:#fff;color:#193654;font:inherit;min-width:130px}
+.cmp-vs{font-weight:700;color:#63758a;padding-bottom:10px}
+.cmp-note{margin:0 0 14px;color:#63758a;font-size:13px;line-height:1.6}
+.cmp-verdict{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;padding:13px 15px;border-radius:8px;margin:0 0 16px;background:#edf2f7;color:#52677d}
+.cmp-verdict strong{font-size:15px}
+.cmp-verdict span{font-size:12px;line-height:1.5}
+.cmp-verdict.cmp-good{background:#e7f4ee;color:#246249}
+.cmp-verdict.cmp-bad{background:#fbeaf0;color:#89445c}
+.cmp-verdict.cmp-flat{background:#fff9e8;color:#715d25}
+.cmp-verdict.cmp-none{background:#eef2f7;color:#52677d}
+.cmp-periods{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+.cmp-period{min-width:0;border:1px solid #e2e9f1;border-radius:10px;padding:12px 14px;background:#f7f9fc}
+.cmp-period .cmp-period-name{display:block;font-weight:700}
+.cmp-period .cmp-period-range{display:block;margin-top:3px;color:#63758a;font-size:12px}
+.cmp-tag{display:inline-block;margin-top:8px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;background:#e7f1fb;color:#1d4f7a}
+.cmp-tag.tag-b{background:#fbeaf0;color:#89445c}
+.cmp-tag.tag-empty{background:#eef2f7;color:#52677d}
+.cmp-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:18px}
+.cmp-kpi{min-width:0;border:1px solid #e2e9f1;border-radius:10px;padding:12px 14px;background:#fff}
+.cmp-kpi > span{display:block;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#63758a}
+.cmp-values{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.cmp-value{min-width:0}
+.cmp-value strong{display:block;font-size:22px;color:#193654;overflow-wrap:anywhere}
+.cmp-value span{display:block;font-size:11px;color:#63758a}
+.cmp-value.cmp-value-b strong{color:#89445c}
+.cmp-delta{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:10px;font-size:12px;font-weight:700}
+.cmp-delta .cmp-delta-abs,.cmp-delta .cmp-delta-pct,.cmp-delta .cmp-trend{padding:3px 8px;border-radius:6px;background:#f3f6fa;color:#52677d}
+.cmp-delta.cmp-good .cmp-trend{background:#e7f4ee;color:#246249}
+.cmp-delta.cmp-bad .cmp-trend{background:#fbeaf0;color:#89445c}
+.cmp-delta.cmp-flat .cmp-trend{background:#fff9e8;color:#715d25}
+.cmp-delta.cmp-neutral .cmp-trend,.cmp-delta.cmp-na .cmp-trend{background:#eef2f7;color:#52677d}
+.cmp-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px}
+.cmp-grid:last-of-type{margin-bottom:0}
+.cmp-chart{min-width:0;border:1px solid #e2e9f1;border-radius:10px;background:#f7f9fc;padding:14px}
+.cmp-chart h3{margin:0 0 3px;font-size:15px}
+.cmp-chart .cmp-chart-sub{margin:0 0 12px;color:#63758a;font-size:12px;line-height:1.5}
+.cmp-legend{display:flex;flex-wrap:wrap;gap:10px 14px;margin-bottom:8px;font-size:12px;color:#52677d}
+.cmp-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.cmp-swatch-a{background:#193654}
+.cmp-swatch-b{background:#e8a9ba}
+.cmp-swatch-rej{background:#e8a9ba}
+.cmp-swatch-pend{background:#c9d4e0}
+.cmp-svg{display:block;width:100%;height:auto}
+.cmp-grid-line{stroke:#e2e9f1;stroke-width:1}
+.cmp-axis{fill:#63758a;font-size:11px}
+.cmp-bar-a{fill:#193654}
+.cmp-bar-b{fill:#e8a9ba}
+.cmp-flow-row + .cmp-flow-row{margin-top:14px}
+.cmp-flow-head{display:flex;justify-content:space-between;gap:10px;margin-bottom:5px;font-size:12px;color:#52677d}
+.cmp-flow-head strong{color:#193654}
+.cmp-flow-track{display:flex;height:16px;border-radius:4px;overflow:hidden;background:#edf1f6}
+.cmp-seg-a{background:#193654}
+.cmp-seg-rej{background:#e8a9ba}
+.cmp-seg-pend{background:#c9d4e0}
+.cmp-defect-row + .cmp-defect-row{margin-top:11px}
+.cmp-defect-head{display:flex;justify-content:space-between;gap:10px;margin-bottom:5px;font-size:12px;color:#52677d}
+.cmp-defect-bars{display:grid;gap:4px}
+.cmp-track{height:8px;border-radius:4px;overflow:hidden;background:#edf1f6}
+.cmp-fill{height:100%}
+.cmp-fill-a{background:#193654}
+.cmp-fill-b{background:#e8a9ba}
+.cmp-model-table{min-width:640px}
+.cmp-rate-up{color:#246249}
+.cmp-rate-down{color:#89445c}
+.cmp-rate-flat{color:#52677d}
+.cmp-empty{margin:0;padding:16px;border-radius:8px;background:#f3f6fa;color:#63758a;text-align:center;font-weight:700}
+.cmp-message{padding:14px;border-radius:8px;background:#fff9e8;color:#715d25;line-height:1.5}
+.cmp-message.cmp-error{background:#fbeaf0;color:#89445c}
+.cmp-card a:focus-visible,.cmp-card button:focus-visible,.cmp-card select:focus-visible,.cmp-card .ana-table-wrap:focus-visible{outline:3px solid #e8a9ba;outline-offset:3px}
+@media(max-width:1150px){
+ .cmp-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .cmp-grid{grid-template-columns:1fr}
+}
+@media(max-width:700px){
+ .cmp-kpis,.cmp-periods{grid-template-columns:1fr}
+ .cmp-form{flex-direction:column;align-items:stretch}
+ .cmp-field,.cmp-field select{min-width:0;width:100%}
+ .cmp-vs{padding-bottom:0}
+ .cmp-chart{padding:12px}
+}
+
+/* Vista ejecutiva de Informes: prioridad a comparación y resultados por prenda */
+.ana-wrap{max-width:1480px}
+.ana-head{margin-bottom:14px}
+.ana-head h1{font-size:clamp(28px,3vw,38px);letter-spacing:-.04em}
+.cmp-card{padding:clamp(16px,2.5vw,28px);border-top:0}
+.cmp-card > .ana-title{align-items:flex-start}
+.cmp-card > .ana-title h2{font-size:clamp(20px,2.5vw,28px)}
+.cmp-quick{margin:10px 0 16px}
+.cmp-form{background:#f4f7fa;border:1px solid #e0e9f2;border-radius:12px;padding:14px}
+.cmp-form .ana-btn{min-height:42px}
+.cmp-note{background:#f2f7fd;padding:11px 13px;border-radius:9px}
+.report-intro{margin:0 0 15px;color:#526980;line-height:1.6;max-width:80ch;font-size:14px}
+.report-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:16px 0}
+.report-stat{padding:18px;border:1px solid #e1e8f0;border-radius:13px;background:#fff;min-width:0}
+.report-stat span{display:block;color:#576e82;font-size:12px;font-weight:700}
+.report-stat strong{display:block;font-size:clamp(26px,3vw,38px);line-height:1.2;margin:8px 0;overflow-wrap:anywhere}
+.report-stat small{display:block;color:#60768c;font-size:12px;line-height:1.5}
+.report-stat-primary{background:#173459;color:#fff;border-color:#173459}
+.report-stat-primary span,.report-stat-primary small{color:#e3ebf3}
+.report-stat-warn{background:#fff8ea;border-color:#eddcb8}
+.report-stat-warn strong{color:#805220}
+.report-stat-bad strong{color:#ad4057}
+.report-stat .report-difference{display:block;font-weight:700;font-size:12px;margin-top:8px}
+.report-period-label{font-size:13px;color:#526980;line-height:1.6}
+.report-callout{margin:14px 0;background:#f1f6fc;border:1px solid #dee8f3;border-radius:11px;padding:14px 17px;line-height:1.55}
+.report-callout strong{display:block;color:#15385d;margin-bottom:3px}
+.report-callout p{margin:0;color:#526980;font-size:13px}
+.report-explainer{font-size:12px;color:#61748a;line-height:1.6;margin:12px 0 0}
+.report-dashboard{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:16px;margin-top:14px}
+.report-panel{background:#fff;border:1px solid #e0e8f0;border-radius:13px;padding:20px;min-width:0}
+.report-panel h3{margin:0 0 5px;color:#193654;font-size:19px}
+.report-panel > p{margin:0 0 15px;color:#60748b;font-size:13px;line-height:1.55}
+.report-graph-row{padding:11px 0;border-bottom:1px solid #edf1f5}
+.report-graph-row:last-child{border-bottom:0}
+.report-graph-head{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;margin-bottom:8px}
+.report-graph-head strong{color:#193654}
+.report-graph-pair{display:grid;grid-template-columns:minmax(70px,94px) 1fr auto;align-items:center;gap:8px;margin:5px 0;font-size:12px}
+.report-graph-pair .report-period-short{color:#5a7087}
+.report-graph-pair b{min-width:40px;text-align:right;font-variant-numeric:tabular-nums}
+.report-graph-track{height:12px;border-radius:4px;background:#edf2f6;overflow:hidden}
+.report-graph-fill{height:100%;min-width:0;border-radius:4px;background:#15375c}
+.report-graph-fill.previous{background:#d89bad}
+.report-highlights{display:grid;gap:11px}
+.report-highlight{padding:13px;border:1px solid #e6ecf3;border-radius:10px;background:#fbfcfe}
+.report-highlight em{display:block;font-style:normal;text-transform:uppercase;font-size:10px;font-weight:800;letter-spacing:.07em;color:#66798c}
+.report-highlight strong{display:block;font-size:17px;color:#193654;margin:5px 0 0}
+.report-highlight span{display:block;font-size:12px;color:#576f87;margin-top:3px;line-height:1.5}
+.report-ranking{margin-top:18px}
+.report-ranking-list{list-style:none;margin:0;padding:0}
+.report-ranking-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:12px 0;border-bottom:1px solid #edf1f5;align-items:center}
+.report-ranking-list li:last-child{border-bottom:0}
+.report-ranking-list strong{display:block;font-size:13px}
+.report-ranking-list small{display:block;font-size:12px;color:#62788c;margin-top:3px}
+.report-ranking-list .report-rank-percent{font-size:16px;font-weight:750;color:#193654;text-align:right;white-space:nowrap}
+.report-ranking-list .report-rank-percent small{font-weight:400}
+.report-details{margin-top:16px;border:1px solid #e0e8f0;border-radius:12px;background:#f7f9fc}
+.report-details > summary{padding:16px 18px;cursor:pointer;color:#193654;font-weight:750}
+.report-details > div{padding:0 16px 16px}
+.report-details .cmp-grid{margin:0 0 18px}
+.ana-analysis{margin-top:18px}
+.goal-history{margin-bottom:0}
+.report-details .goal-history{border-top:0}
+@media(max-width:1150px){
+ .report-overview{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .report-dashboard{grid-template-columns:1fr}
+}
+@media(max-width:700px){
+ .report-overview{grid-template-columns:1fr;gap:9px}
+ .report-stat{padding:13px}
+ .report-stat strong{font-size:25px}
+ .report-panel{padding:13px}
+ .report-graph-pair{grid-template-columns:72px 1fr auto}
+}
+
+
+/* Comparación ejecutiva sin saturación visual. */
+.report-rate-legend{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0;color:#526980;font-size:12px}
+.report-dot{display:inline-block;width:9px;height:9px;margin-right:5px;border-radius:50%;background:#1e527f}
+.report-dot.previous{background:#b76c87}
+.report-quality-row{margin:18px 0 22px}
+.report-quality-label{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:8px;color:#244565;font-size:12px}
+.report-quality-label strong{font-size:20px;font-variant-numeric:tabular-nums}
+.report-quality-track{width:100%;height:18px;border-radius:100px;background:#e9f0f6;overflow:hidden}
+.report-quality-fill{height:100%;border-radius:100px;background:#1e527f}
+.report-quality-fill.previous{background:#b76c87}
+.report-quality-fill.current{background:#1e527f}
+.report-details .report-ranking{margin-top:0}
 </style>
 
 
 <div class="ana-wrap">
 
-{% set export_ready = not goal_history.error and goal_history.start_date and goal_history.end_date and goal_history.start_date <= goal_history.end_date %}
-{% set export_from = goal_history.date_from %}
-{% set export_to = goal_history.date_to %}
+{% set export_ready = date_from and date_to and date_from <= date_to %}
+{% set export_from = date_from %}
+{% set export_to = date_to %}
 
 <header class="ana-head">
 
@@ -218,12 +394,12 @@
  <div class="ana-actions">
   {% if export_ready %}
   <a class="ana-btn primary"
-     href="{{ url_for('informe_excel', date_from=export_from, date_to=export_to, batch_id=batch_id, model_id=model_id) }}">
+     href="{{ url_for('informe_comparativa_excel', cmp_month_a=comparison.selection.month_a, cmp_year_a=comparison.selection.year_a, cmp_month_b=comparison.selection.month_b, cmp_year_b=comparison.selection.year_b, cmp_model_id=comparison.model_id or '') }}">
    Excel
   </a>
 
   <a class="ana-btn"
-     href="{{ url_for('informe_pdf', date_from=export_from, date_to=export_to, batch_id=batch_id, model_id=model_id) }}">
+     href="{{ url_for('informe_comparativa_pdf', cmp_month_a=comparison.selection.month_a, cmp_year_a=comparison.selection.year_a, cmp_month_b=comparison.selection.month_b, cmp_year_b=comparison.selection.year_b, cmp_model_id=comparison.model_id or '') }}">
    PDF
   </a>
   {% else %}
@@ -233,11 +409,397 @@
  </div>
 
 </header>
+<p class="ana-muted" style="margin:0 0 12px;font-size:12px">PDF: comparativa mensual seleccionada. Excel: misma comparativa mensual seleccionada.</p>
 
 {% if not export_ready %}
 <p class="ana-muted" id="export-period-message" role="status">Para exportar, seleccione un período válido de Cumplimiento de metas.</p>
 {% endif %}
 
+{# CAPÍTULO V — Comparativa mensual de producción y calidad.
+   Usa el mismo motor de cálculo que el resto de informes. #}
+<section class="ana-card cmp-card" id="comparativa-mensual" aria-labelledby="cmp-title">
+
+ <div class="ana-title">
+  <h2 id="cmp-title">Comparativa mensual</h2>
+  <span class="ana-muted">Producci&oacute;n y calidad entre meses &middot; horario America/Guatemala</span>
+ </div>
+
+ {% set cmp = comparison %}
+ {% set sel = cmp.selection %}
+ {% set cmp_hidden = {
+      'date_from': date_from,
+      'date_to': date_to,
+      'batch_id': batch_id,
+      'model_id': model_id,
+      'goal_period': goal_history.period,
+      'goal_from': goal_history.date_from,
+      'goal_to': goal_history.date_to
+    } %}
+
+
+
+
+ <form method="get" action="{{ url_for('informes', _anchor='comparativa-mensual') }}" class="cmp-form">
+  {% for key, value in cmp_hidden.items() %}
+  <input type="hidden" name="{{ key }}" value="{{ value }}">
+  {% endfor %}
+  <input type="hidden" name="cmp_mode" value="full">
+
+  <div class="cmp-field">
+   <label for="cmp-month-a">Mes A</label>
+   <select id="cmp-month-a" name="cmp_month_a">
+    {% for month in range(1, 13) %}
+    <option value="{{ month }}" {% if sel.month_a == month %}selected{% endif %}>{{ cmp.month_names[month - 1] }}</option>
+    {% endfor %}
+   </select>
+  </div>
+
+  <div class="cmp-field">
+   <label for="cmp-year-a">A&ntilde;o A</label>
+   <select id="cmp-year-a" name="cmp_year_a">
+    {% for year in cmp.years_options %}
+    <option value="{{ year }}" {% if sel.year_a == year %}selected{% endif %}>{{ year }}</option>
+    {% endfor %}
+   </select>
+  </div>
+
+  <span class="cmp-vs">contra</span>
+
+  <div class="cmp-field">
+   <label for="cmp-month-b">Mes B</label>
+   <select id="cmp-month-b" name="cmp_month_b">
+    {% for month in range(1, 13) %}
+    <option value="{{ month }}" {% if sel.month_b == month %}selected{% endif %}>{{ cmp.month_names[month - 1] }}</option>
+    {% endfor %}
+   </select>
+  </div>
+
+  <div class="cmp-field">
+   <label for="cmp-year-b">A&ntilde;o B</label>
+   <select id="cmp-year-b" name="cmp_year_b">
+    {% for year in cmp.years_options %}
+    <option value="{{ year }}" {% if sel.year_b == year %}selected{% endif %}>{{ year }}</option>
+    {% endfor %}
+   </select>
+  </div>
+
+  <div class="cmp-field">
+   <label for="cmp-model-id">Modelo de prenda</label>
+   <select id="cmp-model-id" name="cmp_model_id">
+    <option value="" {% if cmp.model_id is none %}selected{% endif %}>Todos los modelos</option>
+    {% for model in models_options %}
+    <option value="{{ model.id }}" {% if cmp.model_id == model.id|int %}selected{% endif %}>{{ model.code }} — {{ model.name }}</option>
+    {% endfor %}
+   </select>
+  </div>
+  <button type="submit" class="ana-btn primary">Comparar</button>
+ </form>
+
+
+
+ {% if cmp.notice %}
+ <p class="cmp-note">{{ cmp.notice }}</p>
+ {% endif %}
+
+
+ {% if cmp.error %}
+ <p class="cmp-message cmp-error" role="alert">{{ cmp.error }}</p>
+ {% elif cmp.a and cmp.b %}
+ <p class="report-period-label">
+  <strong>{{ cmp.a.label }}</strong> frente a <strong>{{ cmp.b.label }}</strong>.
+  {% if cmp.mode == 'parcial' %}Se comparan los mismos días de cada mes.{% else %}Se comparan meses completos.{% endif %}
+ </p>
+ {% if cmp.mode == "full" and sel.month_a == sel.month_b and sel.year_a == sel.year_b %}
+ <p class="cmp-message" role="status">Ha seleccionado el mismo mes en ambos lados. Para comparar una evoluci&oacute;n real, seleccione dos meses distintos.</p>
+ {% endif %}
+ {% if cmp.model_id and not cmp.a.has_data and not cmp.b.has_data %}
+ <p class="cmp-message" role="status">El modelo seleccionado no tiene inspecciones en estos per&iacute;odos. Seleccione &laquo;Todos los modelos&raquo; para ver los resultados generales.</p>
+ {% endif %}
+ {% if not cmp.a.has_data or not cmp.b.has_data or (cmp.mode == "full" and sel.month_a == sel.month_b and sel.year_a == sel.year_b) %}
+ <p><a class="cmp-button" href="{{ url_for('informes', _anchor='comparativa-mensual') }}">Ver comparativa general con meses anteriores</a></p>
+ {% endif %}
+ {% if not cmp.a.has_data or not cmp.b.has_data %}
+ <p class="cmp-message" role="status">Alguno de los períodos no tiene inspecciones. Se muestran los datos disponibles, pero no se interpretan cambios de calidad sin ambos períodos.</p>
+ {% endif %}
+ <div class="report-overview" aria-label="Resumen mensual en tres datos">
+  <article class="report-stat report-stat-primary">
+   <span>Prendas inspeccionadas</span>
+   <strong>{{ cmp.a.inspected }}</strong>
+   <small>Mes anterior: {{ cmp.b.inspected }}</small>
+  </article>
+  <article class="report-stat">
+   <span>Prendas aprobadas</span>
+   <strong>{{ cmp.a.passed }}</strong>
+   <small>Mes anterior: {{ cmp.b.passed }} · Resultado registrado</small>
+  </article>
+  <article class="report-stat report-stat-bad">
+   <span>Rechazos confirmados</span>
+   <strong>{{ cmp.a.rejected }}</strong>
+   <small>Mes anterior: {{ cmp.b.rejected }} · Tras revisión humana</small>
+  </article>
+ </div>
+ {% if cmp.a.has_data and cmp.b.has_data %}
+ <div class="report-callout" role="status">
+  <strong>{% if cmp.a.rejection_rate < cmp.b.rejection_rate %}Menos rechazos confirmados por cada 100 prendas{% elif cmp.a.rejection_rate > cmp.b.rejection_rate %}Más rechazos confirmados por cada 100 prendas{% else %}Misma tasa de rechazos confirmados{% endif %}</strong>
+  <p>{{ cmp.a.rejection_rate }} % en {{ cmp.a.label }} frente a {{ cmp.b.rejection_rate }} % en {{ cmp.b.label }}.
+    {% if cmp.a.pending or cmp.b.pending %}Actualmente hay {{ cmp.a.pending }} alertas del período A y {{ cmp.b.pending }} del B pendientes de revisión; no deben interpretarse como prendas sin defectos.{% endif %}
+  </p>
+ </div>
+ {% endif %}
+ <div class="report-dashboard">
+  <section class="report-panel" aria-labelledby="report-comparison-graph">
+   <h3 id="report-comparison-graph">¿La calidad mejoró?</h3>
+   <p>Porcentaje de prendas con rechazo confirmado. Cuanto menor, mejor. Se comparan períodos equivalentes.</p>
+   {% if cmp.a.has_data and cmp.b.has_data %}
+   <div class="report-rate-legend"><span><i class="report-dot"></i>{{ cmp.a.label }}</span><span><i class="report-dot previous"></i>{{ cmp.b.label }}</span></div>
+   {% for line in [
+      {'label':cmp.a.label, 'value':cmp.a.rejection_rate, 'cls':'current'},
+      {'label':cmp.b.label, 'value':cmp.b.rejection_rate, 'cls':'previous'}
+   ] %}
+   <div class="report-quality-row" role="group" aria-label="{{ line.label }}: {{ line.value }} por ciento de rechazo confirmado">
+     <div class="report-quality-label"><span>{{ line.label }}</span><strong>{{ line.value }} %</strong></div>
+     <div class="report-quality-track"><div class="report-quality-fill {{ line.cls }}" style="width:{{ [line.value,100]|min }}%"></div></div>
+   </div>
+   {% endfor %}
+   <p class="report-explainer">El gráfico muestra porcentaje, no cantidad. Una diferencia de volumen entre meses no altera la escala.</p>
+   {% else %}
+   <p class="cmp-empty">Faltan inspecciones en uno de los períodos; aún no se puede comparar la tasa de rechazo.</p>
+   {% endif %}
+  </section>
+  <section class="report-panel" aria-labelledby="report-model-highlights">
+   <h3 id="report-model-highlights">¿Qué modelos salieron mejor?</h3>
+   <p>Resumen de modelos con al menos 10 inspecciones. Las alertas pendientes pueden cambiar los resultados.</p>
+   {% set model_candidates = cmp.charts.models | selectattr('a_inspected','ge',10) | list %}
+   {% if model_candidates %}
+    {% set best = (model_candidates|sort(attribute='a_rate'))|first %}
+    {% set worst = (model_candidates|sort(attribute='a_rate',reverse=true))|first %}
+    {% set most = (model_candidates|sort(attribute='a_inspected',reverse=true))|first %}
+    <div class="report-highlights">
+     <article class="report-highlight">
+      <em>Menor tasa de rechazo confirmado</em>
+      <strong>{{ best.code }}</strong>
+      <span>{{ best.name }} · {{ best.a_rejected }} rechazos confirmados de {{ best.a_inspected }} inspecciones ({{ best.a_rate }} %).</span>
+      {% if best.a_rejected == 0 %}<span>Sin rechazos confirmados en la muestra; las alertas pendientes pueden modificar el resultado.</span>{% endif %}
+     </article>
+     <article class="report-highlight">
+      <em>Modelo que más se inspeccionó</em>
+      <strong>{{ most.code }}</strong>
+      <span>{{ most.name }} · {{ most.a_inspected }} prendas revisadas; {{ most.a_rejected }} rechazos confirmados.</span>
+     </article>
+     <article class="report-highlight">
+      <em>Mayor tasa de rechazo confirmado</em>
+      <strong>{{ worst.code }}</strong>
+      <span>{{ worst.name }} · {{ worst.a_rejected }} de {{ worst.a_inspected }} inspecciones ({{ worst.a_rate }} %).</span>
+     </article>
+    </div>
+   {% else %}
+    <p class="cmp-empty">Todavía no hay modelos con 10 inspecciones para compararlos de forma útil.</p>
+   {% endif %}
+   <p class="report-explainer">Se destacan los modelos más activos disponibles en el informe. Para conocer la calidad definitiva, hay que revisar las alertas pendientes.</p>
+  </section>
+ </div>
+ <details class="report-details" id="ranking-modelos-completo">
+  <summary>Ver clasificación de todos los modelos destacados</summary>
+  <div>
+ <div class="report-panel report-ranking" aria-labelledby="report-ranking-title">
+  <h3 id="report-ranking-title">Hasta ocho modelos más activos (ordenados por rechazo confirmado)</h3>
+  <p>Resultados de {{ cmp.a.label }} · Se muestran los modelos con inspecciones registradas. Los que no tengan rechazos confirmados se indican como tales, no como «libres de defectos».</p>
+  {% set sorted_models = cmp.charts.models|selectattr('a_inspected','gt',0)|sort(attribute='a_rate')|list %}
+  {% if sorted_models %}
+   <ol class="report-ranking-list">
+    {% for row in sorted_models %}
+    <li>
+     <div>
+      <strong>{{ row.code }} · {{ row.name }}</strong>
+      <small>{{ row.a_inspected }} inspeccionadas · {{ row.a_rejected }} rechazos confirmados{% if row.a_rejected == 0 %} · Sin rechazo confirmado{% endif %}</small>
+      {% if row.b_inspected > 0 %}<small>Mes B: {{ row.b_rate }} % · {% if row.rate_trend == 'mejora' %}Menor tasa{% elif row.rate_trend == 'empeora' %}Mayor tasa{% else %}Tasa similar{% endif %}</small>{% else %}<small>Sin inspecciones para comparar en mes B</small>{% endif %}
+     </div>
+     <div class="report-rank-percent">{{ row.a_rate }} %<small>rechazo</small></div>
+    </li>
+    {% endfor %}
+   </ol>
+  {% else %}<p class="cmp-empty">Sin modelos inspeccionados en este período.</p>{% endif %}
+ </div>
+  </div>
+ </details>
+ <p class="report-explainer">Importante: «Aprobada» significa que el sistema la registró como apta. La IA puede cometer errores; las tasas y rankings no prueban por sí solos la ausencia de defectos.</p>
+ <details class="report-details" id="graficos-detallados">
+  <summary>Ver producción diaria, tipos de defecto y tablas completas</summary>
+  <div>
+ {% set production = cmp.charts.production %}
+
+ <div class="cmp-grid">
+
+  <section class="cmp-chart" aria-labelledby="cmp-production-title">
+   <h3 id="cmp-production-title">Producci&oacute;n mensual</h3>
+   <p class="cmp-chart-sub">Prendas inspeccionadas por d&iacute;a, alineadas por n&uacute;mero de d&iacute;a en ambos meses.</p>
+
+   {% if production.empty %}
+   <p class="cmp-empty">Sin datos suficientes</p>
+   {% else %}
+
+   <div class="cmp-legend">
+    <span><i class="cmp-swatch-a"></i>{{ cmp.a.label }}</span>
+    <span><i class="cmp-swatch-b"></i>{{ cmp.b.label }}</span>
+    <span>M&aacute;ximo diario: {{ production.peak }}</span>
+   </div>
+
+   <svg class="cmp-svg" viewBox="0 0 {{ production.width }} {{ production.height }}"
+        role="img" aria-label="Gr&aacute;fica de producci&oacute;n diaria comparada"
+        preserveAspectRatio="xMidYMid meet">
+    {% for line in production.gridlines %}
+    <line class="cmp-grid-line" x1="{{ production.left }}" y1="{{ line.y }}" x2="{{ production.right }}" y2="{{ line.y }}"></line>
+    <text class="cmp-axis" x="{{ production.left - 8 }}" y="{{ line.y + 4 }}" text-anchor="end">{{ line.label }}</text>
+    {% endfor %}
+    {% for tick in production.ticks %}
+    <text class="cmp-axis" x="{{ tick.x }}" y="{{ production.height - 10 }}" text-anchor="middle">{{ tick.label }}</text>
+    {% endfor %}
+    {% for bar in production.bars %}
+    <rect class="{{ 'cmp-bar-a' if bar.period == 'a' else 'cmp-bar-b' }}"
+          x="{{ bar.x }}" y="{{ bar.y }}"
+          width="{{ bar.width }}" height="{{ bar.height }}"
+          rx="2">
+     <title>D&iacute;a {{ bar.day }} &middot; {{ bar.value }} prendas</title>
+    </rect>
+    {% endfor %}
+   </svg>
+
+   {% endif %}
+  </section>
+
+  <section class="cmp-chart" aria-labelledby="cmp-flow-title">
+   <h3 id="cmp-flow-title">Aceptadas y rechazadas</h3>
+   <p class="cmp-chart-sub">Reparto de las prendas inspeccionadas: solo los defectos confirmados por revisi&oacute;n humana cuentan como rechazo.</p>
+
+   {% if not cmp.a.has_data and not cmp.b.has_data %}
+   <p class="cmp-empty">Sin datos suficientes</p>
+   {% else %}
+
+   <div class="cmp-flow-row">
+    <div class="cmp-flow-head">
+     <strong>{{ cmp.a.label }}</strong>
+     <span>{{ cmp.a.inspected }} prendas inspeccionadas</span>
+    </div>
+    {% if cmp.charts.flow_a %}
+    <div class="cmp-flow-track">
+     {% for seg in cmp.charts.flow_a %}
+     <div class="{{ seg.cls }}" style="width:{{ seg.pct }}%" title="{{ seg.label }}: {{ seg.value }} ({{ seg.pct }} %)"></div>
+     {% endfor %}
+    </div>
+    {% else %}
+    <p class="cmp-empty">Sin datos suficientes</p>
+    {% endif %}
+   </div>
+
+   <div class="cmp-flow-row">
+    <div class="cmp-flow-head">
+     <strong>{{ cmp.b.label }}</strong>
+     <span>{{ cmp.b.inspected }} prendas inspeccionadas</span>
+    </div>
+    {% if cmp.charts.flow_b %}
+    <div class="cmp-flow-track">
+     {% for seg in cmp.charts.flow_b %}
+     <div class="{{ seg.cls }}" style="width:{{ seg.pct }}%" title="{{ seg.label }}: {{ seg.value }} ({{ seg.pct }} %)"></div>
+     {% endfor %}
+    </div>
+    {% else %}
+    <p class="cmp-empty">Sin datos suficientes</p>
+    {% endif %}
+   </div>
+
+   <div class="cmp-legend">
+    <span><i class="cmp-swatch-a"></i>Aceptadas</span>
+    <span><i class="cmp-swatch-rej"></i>Rechazadas</span>
+    <span><i class="cmp-swatch-pend"></i>Pendientes de revisi&oacute;n</span>
+   </div>
+
+   {% endif %}
+  </section>
+
+ </div>
+
+ <div class="cmp-grid">
+
+  <section class="cmp-chart" aria-labelledby="cmp-defects-title">
+   <h3 id="cmp-defects-title">Defectos m&aacute;s frecuentes</h3>
+   <p class="cmp-chart-sub">Defectos confirmados; las alertas descartadas no se incluyen.</p>
+
+   {% if cmp.charts.defects %}
+   <div class="cmp-legend">
+    <span><i class="cmp-swatch-a"></i>{{ cmp.a.label }}</span>
+    <span><i class="cmp-swatch-b"></i>{{ cmp.b.label }}</span>
+   </div>
+
+   {% for row in cmp.charts.defects %}
+   <div class="cmp-defect-row">
+    <div class="cmp-defect-head">
+     <span>{{ row.label }}</span>
+     <span><strong>{{ row.a }}</strong> / <strong>{{ row.b }}</strong></span>
+    </div>
+    <div class="cmp-defect-bars">
+     <div class="cmp-track"><div class="cmp-fill cmp-fill-a" style="width:{{ row.a_pct }}%" title="{{ cmp.a.label }}: {{ row.a }}"></div></div>
+     <div class="cmp-track"><div class="cmp-fill cmp-fill-b" style="width:{{ row.b_pct }}%" title="{{ cmp.b.label }}: {{ row.b }}"></div></div>
+    </div>
+   </div>
+   {% endfor %}
+
+   {% else %}
+   <p class="cmp-empty">Sin defectos confirmados en ning&uacute;n per&iacute;odo.</p>
+   {% endif %}
+  </section>
+
+  <section class="cmp-chart" aria-labelledby="cmp-models-title">
+   <h3 id="cmp-models-title">Rendimiento por modelo de prenda</h3>
+   <p class="cmp-chart-sub">Inspecci&oacute;n y tasa de rechazo de los modelos con mayor actividad.</p>
+
+   {% if cmp.charts.models %}
+   <div class="ana-table-wrap" role="region" aria-label="Rendimiento por modelo comparado" tabindex="0">
+    <table class="ana-table cmp-model-table">
+     <thead>
+      <tr>
+       <th>Modelo</th>
+       <th>{{ cmp.a.label }} insp.</th>
+       <th>{{ cmp.a.label }} rech.</th>
+       <th>{{ cmp.b.label }} insp.</th>
+       <th>{{ cmp.b.label }} rech.</th>
+       <th>Tasa rechazo A vs B</th>
+      </tr>
+     </thead>
+     <tbody>
+      {% for row in cmp.charts.models %}
+      <tr>
+       <td><strong>{{ row.code }}</strong><small>{{ row.name }}</small></td>
+       <td>{{ row.a_inspected }}</td>
+       <td>{{ row.a_rejected }}</td>
+       <td>{{ row.b_inspected }}</td>
+       <td>{{ row.b_rejected }}</td>
+       <td class="ana-rate">
+        {{ row.a_rate }} % / {{ row.b_rate }} %
+        <small class="{{ 'cmp-rate-up' if row.rate_trend == 'mejora' else 'cmp-rate-down' if row.rate_trend == 'empeora' else 'cmp-rate-flat' }}">
+         {% if row.rate_trend == 'mejora' %}Mejor&oacute;{% elif row.rate_trend == 'empeora' %}Empeor&oacute;{% elif row.rate_trend == 'estable' %}Sin cambios{% else %}&mdash;{% endif %}
+        </small>
+       </td>
+      </tr>
+      {% endfor %}
+     </tbody>
+    </table>
+   </div>
+   {% else %}
+   <p class="cmp-empty">Sin inspecciones vinculadas a modelos en los per&iacute;odos seleccionados.</p>
+   {% endif %}
+  </section>
+
+ </div>
+
+
+  </div>
+ </details>
+ {% endif %}
+</section>
+
+<details class="report-details" id="resumen-metas">
+ <summary>Metas del día y otros indicadores</summary>
+ <div>
 <section class="ana-card goal-history" id="cumplimiento-metas" aria-labelledby="goal-history-title">
  <h2 id="goal-history-title">Cumplimiento de metas</h2>
 
@@ -245,7 +807,7 @@
   {% for key, label in [('hoy', 'HOY'), ('ayer', 'AYER'), ('esta_semana', 'ESTA SEMANA'), ('semana_pasada', 'SEMANA PASADA'), ('este_mes', 'ESTE MES')] %}
 
   <a class="goal-button" aria-current="{{ 'true' if goal_history.period == key else 'false' }}"
-     href="{{ url_for('informes', goal_period=key, date_from=date_from, date_to=date_to, batch_id=batch_id, model_id=model_id, _anchor='cumplimiento-metas') }}">{{ label }}</a>
+     href="{{ url_for('informes', goal_period=key, date_from=date_from, date_to=date_to, batch_id=batch_id, model_id=model_id, cmp_mode=comparison.mode, cmp_model_id=comparison.model_id or '', cmp_month_a=comparison.selection.month_a, cmp_year_a=comparison.selection.year_a, cmp_month_b=comparison.selection.month_b, cmp_year_b=comparison.selection.year_b, _anchor='cumplimiento-metas') }}">{{ label }}</a>
   {% endfor %}
  </nav>
 
@@ -257,6 +819,12 @@
   <input type="hidden" name="date_to" value="{{ date_to }}">
   <input type="hidden" name="batch_id" value="{{ batch_id }}">
   <input type="hidden" name="model_id" value="{{ model_id }}">
+  <input type="hidden" name="cmp_mode" value="{{ comparison.mode }}">
+  <input type="hidden" name="cmp_model_id" value="{{ comparison.model_id or '' }}">
+  <input type="hidden" name="cmp_month_a" value="{{ comparison.selection.month_a }}">
+  <input type="hidden" name="cmp_year_a" value="{{ comparison.selection.year_a }}">
+  <input type="hidden" name="cmp_month_b" value="{{ comparison.selection.month_b }}">
+  <input type="hidden" name="cmp_year_b" value="{{ comparison.selection.year_b }}">
   <div class="goal-field">
    <label for="goal-from">Desde</label>
    <input id="goal-from" type="date" name="goal_from" value="{{ goal_history.custom_date_from }}" max="{{ goal_history.max_date }}" required>
@@ -358,19 +926,28 @@
  </dl>
 </section>
 
+
+ </div>
+</details>
 <details class="ana-analysis" id="analisis-detallado">
  <summary>Análisis detallado</summary>
  <div class="ana-analysis-body">
 
 <section class="ana-card">
 
-<div class="ana-title"><h2>Filtros de calidad</h2><span class="ana-muted">Las fechas aplican a calidad y análisis. PDF y Excel usan el período de metas y conservan los filtros de modelo y lote.</span></div>
+<div class="ana-title"><h2>Filtros de calidad</h2><span class="ana-muted">Las fechas aplican a calidad y análisis. PDF y Excel usan este intervalo de calidad y los filtros de modelo y lote.</span></div>
 
 <form method="get" class="ana-filters">
 
  <input type="hidden" name="goal_period" value="{{ goal_history.period }}">
  <input type="hidden" name="goal_from" value="{{ goal_history.date_from }}">
  <input type="hidden" name="goal_to" value="{{ goal_history.date_to }}">
+ <input type="hidden" name="cmp_mode" value="{{ comparison.mode }}">
+  <input type="hidden" name="cmp_model_id" value="{{ comparison.model_id or '' }}">
+ <input type="hidden" name="cmp_month_a" value="{{ comparison.selection.month_a }}">
+ <input type="hidden" name="cmp_year_a" value="{{ comparison.selection.year_a }}">
+ <input type="hidden" name="cmp_month_b" value="{{ comparison.selection.month_b }}">
+ <input type="hidden" name="cmp_year_b" value="{{ comparison.selection.year_b }}">
 
  <div class="ana-field">
   <label>Desde</label>
@@ -415,14 +992,16 @@
 </form>
 
 <div class="ana-quick">
-  <a href="{{ url_for('informes', date_from=today_text, date_to=today_text, goal_period=goal_history.period, goal_from=goal_history.date_from, goal_to=goal_history.date_to) }}">Hoy</a>
-  <a href="{{ url_for('informes', date_from=quick_7_from, date_to=today_text, goal_period=goal_history.period, goal_from=goal_history.date_from, goal_to=goal_history.date_to) }}">7 d&iacute;as</a>
-  <a href="{{ url_for('informes', date_from=quick_30_from, date_to=today_text, goal_period=goal_history.period, goal_from=goal_history.date_from, goal_to=goal_history.date_to) }}">30 d&iacute;as</a>
+  <a href="{{ url_for('informes', date_from=today_text, date_to=today_text, goal_period=goal_history.period, goal_from=goal_history.date_from, goal_to=goal_history.date_to, cmp_mode=comparison.mode, cmp_model_id=comparison.model_id or '', cmp_month_a=comparison.selection.month_a, cmp_year_a=comparison.selection.year_a, cmp_month_b=comparison.selection.month_b, cmp_year_b=comparison.selection.year_b) }}">Hoy</a>
+  <a href="{{ url_for('informes', date_from=quick_7_from, date_to=today_text, goal_period=goal_history.period, goal_from=goal_history.date_from, goal_to=goal_history.date_to, cmp_mode=comparison.mode, cmp_model_id=comparison.model_id or '', cmp_month_a=comparison.selection.month_a, cmp_year_a=comparison.selection.year_a, cmp_month_b=comparison.selection.month_b, cmp_year_b=comparison.selection.year_b) }}">7 d&iacute;as</a>
+  <a href="{{ url_for('informes', date_from=quick_30_from, date_to=today_text, goal_period=goal_history.period, goal_from=goal_history.date_from, goal_to=goal_history.date_to, cmp_mode=comparison.mode, cmp_model_id=comparison.model_id or '', cmp_month_a=comparison.selection.month_a, cmp_year_a=comparison.selection.year_a, cmp_month_b=comparison.selection.month_b, cmp_year_b=comparison.selection.year_b) }}">30 d&iacute;as</a>
 </div>
 
 </section>
 
 
+{# CAPÍTULO V — Presentación de indicadores de calidad.
+   Muestra las métricas elaboradas por el backend a partir de los registros. #}
 <section class="ana-card ana-main-kpis" aria-label="Indicadores detallados de calidad">
 
  <article class="ana-kpi">

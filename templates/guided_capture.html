@@ -35,6 +35,8 @@
   }
 
   .guide-panel {
+    container: guided-panel / inline-size;
+    min-width: 0;
     background: #fff;
     border: 1px solid #dbe3f0;
     border-radius: 16px;
@@ -165,7 +167,25 @@
     background: #187f50;
   }
 
-  .guide-capture-block {
+  .guide-help {
+  margin-top: 12px;
+  border: 1px solid #e3e9f2;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fafbfd;
+}
+
+.guide-help summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #38547c;
+}
+
+.guide-help .guide-steps {
+  margin-top: 10px;
+}
+
+.guide-capture-block {
     margin-top: 16px;
     padding-top: 16px;
     border-top: 1px solid #e6ecf7;
@@ -237,8 +257,19 @@
   }
 
   .guide-review-actions .guide-button {
-    min-height: 52px;
-    font-size: 13px;
+    min-height: 48px;
+    min-width: 0;
+    padding: 10px 7px;
+    font-size: 12px;
+    letter-spacing: .025em;
+  }
+  @container guided-panel (max-width: 360px) {
+    .guide-review-actions {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .guide-review-actions [data-review="discard"] {
+      grid-column: 1 / -1;
+    }
   }
 
   .guide-button.accept { background: #187f50; color: #fff; }
@@ -413,6 +444,37 @@
       grid-template-columns: minmax(0, 1fr);
     }
   }
+  .guide-occupied {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin: 0 0 18px;
+    padding: 16px 18px;
+    border: 1px solid #d7e5f8;
+    border-left: 4px solid var(--ui-blue, #1597dc);
+    border-radius: 12px;
+    background: #f2f7fd;
+    color: var(--ui-text, #10275a);
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  .guide-occupied-copy { flex: 1 1 300px; }
+  .guide-occupied-copy strong { display: block; font-size: 15px; }
+  .guide-occupied-copy p { margin: 7px 0 0; color: #506887; font-size: 13px; line-height: 1.55; }
+  .guide-occupied-button {
+    border: 0;
+    border-radius: 8px;
+    background: var(--ui-navy, #0d2a66);
+    color: white;
+    padding: 12px 16px;
+    font: 700 13px Arial, Helvetica, sans-serif;
+    cursor: pointer;
+  }
+  .guide-occupied-button:hover { background: #24487f; }
+  .guide-occupied-button:focus-visible { outline: 2px solid var(--ui-blue, #1597dc); outline-offset: 3px; }
+  .guide-occupied-help { margin: 0; color: #506887; font-size: 13px; }
+
 </style>
 
 <header class="page-header">
@@ -437,6 +499,30 @@
   </div>
 </header>
 
+{% if occupied_capture %}
+<section class="guide-occupied" role="alert">
+  <div class="guide-occupied-copy">
+    <strong>La cámara está ocupada por otra captura de IA</strong>
+    <p>
+      La sesión del modelo <b>{{ occupied_capture.model_code }}</b>
+      {% if occupied_capture.model_archived %}(modelo retirado del catálogo){% endif %}
+      sigue abierta. Pausar un lote de producción no pausa esta sesión.
+      Puede liberarla sin borrar las imágenes que se hayan guardado.
+    </p>
+  </div>
+  {% if session.get('role') == 'ADMIN' %}
+  <form method="post" action="{{ url_for('pause_busy_capture') }}"
+        onsubmit="return confirm('Pausar la captura anterior y conservar sus imágenes para liberar la cámara?');">
+    <input type="hidden" name="capture_session_id" value="{{ occupied_capture.session_id }}">
+    <input type="hidden" name="return_model_id" value="{{ model.id }}">
+    <input type="hidden" name="return_to_capture" value="1">
+    <button class="guide-occupied-button" type="submit">Pausar sesión anterior y continuar</button>
+  </form>
+  {% else %}
+  <p class="guide-occupied-help">Solicite al administrador que pause la sesión anterior.</p>
+  {% endif %}
+</section>
+{% endif %}
 <section class="guide-wrap">
   <figure class="guide-video">
     <img
@@ -450,22 +536,18 @@
   </figure>
 
   <article class="guide-panel" aria-live="polite">
-    <h2>Estado de la captura</h2>
+    <h2>Captura de imágenes</h2>
     <p class="guide-sub">
-      Siga los pasos de la izquierda. La imagen se guarda solo
-      cuando usted lo pide con el botón.
+      Siga la indicación que aparece abajo y capture cuando la prenda esté bien colocada.
     </p>
     {% if ai_capture and ai_capture.normal_augmentation %}
     <div class="guide-info" style="display:block">
-      <strong>{{ ai_capture.normal_augmentation.version }} · ampliación del patrón NORMAL</strong><br>
-      Capture únicamente prendas BUENAS. No se aceptan MANCHAS ni AGUJEROS en training.<br>
-      <span id="augInherited">{{ ai_capture.normal_augmentation.inherited_good_images }}</span> imágenes normales heredadas +
-      <span id="augNew">{{ ai_capture.normal_augmentation.new_good_images }}</span> nuevas =
-      <span id="augTotal">{{ ai_capture.normal_augmentation.total_available }}</span> disponibles para {{ ai_capture.normal_augmentation.version }}.<br>
-      Mínimo antes de entrenar: <strong>{{ ai_capture.normal_augmentation.minimum_new_good_images }} capturas nuevas</strong> · objetivo recomendado: <strong>{{ ai_capture.normal_augmentation.recommended_new_good_images }}</strong>.
-      El mínimo cuenta solo capturas nuevas completadas, nunca las heredadas.<br>
-      Variaciones normales recomendadas: desplazamiento leve izquierda/derecha y arriba/abajo, inclinación suave, tensión de tela ligeramente distinta, arrugas naturales y pequeñas diferencias de colocación de producción.<br>
-      No use giros de 90°/180°, prendas de cabeza, escalas extremas ni posiciones que no ocurren en producción.
+      <strong>Solo prendas buenas</strong><br>
+      Capture imágenes normales de la prenda, con pequeñas variaciones naturales de posición.
+      No utilice prendas con manchas o agujeros.
+      <span id="augInherited" hidden>{{ ai_capture.normal_augmentation.inherited_good_images }}</span>
+      <span id="augNew" hidden>{{ ai_capture.normal_augmentation.new_good_images }}</span>
+      <span id="augTotal" hidden>{{ ai_capture.normal_augmentation.total_available }}</span>
     </div>
     {% endif %}
 
@@ -479,16 +561,17 @@
 
     <div class="guide-info" id="guideInfo" hidden></div>
 
-    <ol class="guide-steps" id="guideSteps">
-      <li data-step="sin_prenda">Sin prenda</li>
-      <li data-step="colocar">Coloque la prenda dentro del área</li>
-      <li data-step="mover">
-        Mueva un poco a la izquierda, derecha, arriba o abajo
-      </li>
-      <li data-step="manos">Antes de capturar, retire las manos del área</li>
-      <li data-step="posicion">Posición correcta</li>
-      <li data-step="lista">Lista para capturar</li>
-    </ol>
+    <details class="guide-help">
+      <summary>Ver guía de posicionamiento</summary>
+      <ol class="guide-steps" id="guideSteps">
+        <li data-step="sin_prenda">Sin prenda</li>
+        <li data-step="colocar">Coloque la prenda dentro del área</li>
+        <li data-step="mover">Ajuste ligeramente la posición</li>
+        <li data-step="manos">Retire las manos del área</li>
+        <li data-step="posicion">Posición correcta</li>
+        <li data-step="lista">Lista para capturar</li>
+      </ol>
+    </details>
 
     <div class="guide-capture-block">
       <button
@@ -500,8 +583,7 @@
         CAPTURAR IMAGEN
       </button>
       <p class="guide-hint" id="captureHint">
-        Se activa cuando la cámara tiene una imagen reciente. La guía
-        automática es una asistencia, no un bloqueo.
+        El botón se habilita cuando la cámara esté lista.
       </p>
     </div>
 
@@ -553,26 +635,21 @@
         <strong id="guideAccepted">0 / 40</strong>
       </div>
       <div class="guide-stat">
-        <span>Descartadas</span>
-        <strong id="guideRejected">0</strong>
-      </div>
-      <div class="guide-stat">
-        <span>Mínimo para entrenar</span>
+        <span>Mínimo necesario</span>
         <strong id="guideMin">20</strong>
       </div>
       <div class="guide-stat">
-        <span>Objetivo</span>
-        <strong id="guideTarget">40</strong>
-      </div>
-      <div class="guide-stat">
-        <span>Sesión</span>
-        <strong id="guideSession">—</strong>
-      </div>
-      <div class="guide-stat">
-        <span>Faltan para el mínimo</span>
+        <span>Faltan</span>
         <strong id="guideMissing">20</strong>
       </div>
     </div>
+    <a class="guide-button neutral" style="display:inline-flex;margin:12px 0 4px;text-decoration:none"
+       href="{{ url_for('training_image_gallery', model_id=model.id) }}">
+      Revisar imagenes aceptadas
+    </a>
+    <span id="guideRejected" hidden>0</span>
+    <span id="guideTarget" hidden>40</span>
+    <span id="guideSession" hidden>—</span>
 
     <div class="guide-progress">
       <div class="guide-progress-bar"><i id="guideBar"></i></div>
@@ -592,6 +669,7 @@
     <div class="guide-training-note" id="guideTrainingNote" hidden></div>
 
     <div class="guide-actions">
+      {% if not occupied_capture %}
       <form
         method="post"
         action="{{ url_for('guided_capture_finish', model_id=model.id) }}"
@@ -607,6 +685,14 @@
         </button>
       </form>
 
+      <form method="post"
+            action="{{ url_for('guided_capture_pause', model_id=model.id) }}"
+            data-single-submit="true">
+        <button class="guide-button neutral" type="submit">
+          PAUSAR Y GUARDAR
+        </button>
+      </form>
+
       <form
         method="post"
         action="{{ url_for('guided_capture_cancel', model_id=model.id) }}"
@@ -617,6 +703,7 @@
         </button>
       </form>
 
+      {% endif %}
       <a
         class="guide-button neutral"
         href="{{ url_for('garment_model_detail', model_id=model.id) }}"
@@ -643,7 +730,8 @@
                          model_id=model.id,
                          image_id=0)
     },
-    'state': ai_capture
+    'state': ai_capture,
+    'stationBusy': occupied_capture is not none
   }|tojson }};
 </script>
 
@@ -955,7 +1043,10 @@
       if (total) total.textContent = Number(augmentation.total_available || 0);
     }
 
-    if (guide && guide.active) {
+    if (config.stationBusy) {
+      setStateLabel("ESTACI\u00d3N OCUPADA", null);
+      elMessage.textContent = "Primero pause la captura anterior para utilizar esta c\u00e1mara.";
+    } else if (guide && guide.active) {
       setStateLabel(guide.state_label, guide.state);
       elMessage.textContent = guide.ready
         ? (guide.ready_message || "Lista para capturar")
@@ -1056,6 +1147,11 @@
     clearError();
 
     try {
+      if (config.stationBusy) {
+        // No intentar iniciar otra sesión sobre una cámara ocupada.
+        started = false;
+        return;
+      }
       if (state.has_preparation_version === false) {
         showError(
           "Este modelo aún no tiene una versión de preparación. " +

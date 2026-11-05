@@ -378,7 +378,7 @@
 
 .detail-images-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
   gap: 16px;
 }
 
@@ -391,10 +391,10 @@
 
 .detail-image-card img {
   width: 100%;
-  height: 240px;
-  object-fit: cover;
+  height: clamp(280px, 35vw, 440px);
+  object-fit: contain;
   display: block;
-  background: #f3f5f8;
+  background: #fff;
 }
 
 .detail-image-card figcaption {
@@ -499,6 +499,79 @@
 .detail-button.primary:hover { background: #163979; }
 .detail-button.success { background: #e5f7ed; color: #187f50; border-color: #ccebd9; }
 .detail-button.danger { background: #fdeaea; color: #a33c3c; border-color: #efcece; }
+
+/* Edicion en linea del nombre comercial del modelo */
+.detail-card-head-name { flex-wrap: wrap; }
+.detail-card-head-name > div { flex: 1 1 100%; min-width: 0; }
+.detail-inline-edit {
+  position: relative;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.detail-inline-edit > summary {
+  list-style: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.detail-inline-edit > summary::-webkit-details-marker { display: none; }
+
+.detail-inline-edit-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  background: #f9fbfd;
+  border: 1px solid #e5eaf2;
+  border-radius: 14px;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.detail-inline-edit-form label {
+  color: #8996ad;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+
+.detail-inline-edit-form input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 11px 14px;
+  border: 1px solid #dfe5ef;
+  border-radius: 12px;
+  background: #fff;
+  color: #10275a;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+}
+
+.detail-inline-edit-form input:focus {
+  outline: 2px solid #1597dc;
+  outline-offset: 1px;
+  border-color: #1597dc;
+}
+
+.detail-inline-edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.detail-inline-edit-form small {
+  color: #7a88a2;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  line-height: 1.5;
+}
 
 .detail-muted {
   margin: 0;
@@ -929,6 +1002,53 @@
   margin-top: 20px;
 }
 
+
+.detail-ai-meta-simple {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.detail-ai-history {
+  margin-top: 12px;
+  border-top: 1px solid #e4e9f1;
+  padding-top: 12px;
+}
+
+.detail-ai-history summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #344b72;
+  list-style: none;
+}
+
+.detail-ai-history summary::-webkit-details-marker {
+  display: none;
+}
+
+.detail-ai-history summary::after {
+  content: " +";
+}
+
+.detail-ai-history[open] summary::after {
+  content: " −";
+}
+
+.detail-ai-history-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.detail-ai-history-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f7f9fc;
+  color: #5c6b82;
+  font-size: 14px;
+}
+
 @media (max-width: 1180px) {
   .detail-content-grid { grid-template-columns: 1fr; }
   .detail-images-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1118,13 +1238,51 @@
     </div>
   </section>
 
+  {% if can_manage %}
+  <div style="margin:0 0 16px">
+    <a class="detail-button neutral" href="{{ url_for('training_image_gallery', model_id=model.id) }}">
+      Revisar imagenes del entrenamiento
+    </a>
+  </div>
+  {% endif %}
+
   <div class="detail-content-grid">
     <section class="detail-card">
-      <div class="detail-card-head">
+      <div class="detail-card-head detail-card-head-name">
         <div>
           <h2>Información general</h2>
           <p>Datos principales del modelo registrados para su operación y seguimiento.</p>
         </div>
+        {% if can_manage %}
+        <details class="detail-inline-edit">
+          <summary class="detail-button neutral">Editar nombre</summary>
+          <form
+            class="detail-inline-edit-form"
+            method="post"
+            action="{{ url_for('garment_model_rename', model_id=model.id) }}"
+          >
+            <label for="garmentModelNameInput">Nombre del modelo</label>
+            <input
+              id="garmentModelNameInput"
+              name="name"
+              type="text"
+              maxlength="150"
+              value="{{ model.name }}"
+              autocomplete="off"
+              required
+            >
+            <div class="detail-inline-edit-actions">
+              <button class="detail-button primary" type="submit">
+                Guardar nombre
+              </button>
+            </div>
+            <small>
+              Solo cambia la etiqueta comercial. El código, las fotografías,
+              las versiones de IA y los lotes se conservan.
+            </small>
+          </form>
+        </details>
+        {% endif %}
       </div>
 
       <div class="detail-info-grid">
@@ -1231,15 +1389,35 @@
       <span class="detail-chip">{{ images|length }} imagen{{ '' if images|length == 1 else 'es' }}</span>
     </div>
 
+    {% if can_manage %}
+    <form data-presentation-form data-presentation-endpoint="{{ url_for('garment_reference_camera_cutout') }}" method="post" action="{{ url_for('garment_model_reference_replace',model_id=model.id) }}"
+          enctype="multipart/form-data"
+          style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin:0 0 18px">
+      <label style="flex:1 1 230px;min-width:0;font-size:13px;color:var(--ui-text,#10275a);font-weight:700">
+        Cambiar imagen de referencia
+        <input type="file" name="reference_photo" accept="image/jpeg,image/png,image/webp" required
+               style="display:block;width:100%;margin-top:8px;border:1px solid #d8e1ee;border-radius:8px;padding:11px;background:#fff">
+      </label>
+      <button type="submit" class="detail-button primary">Guardar fotografia</button>
+      <small style="flex:1 0 100%;color:#687a99">
+        JPG, PNG o WEBP (maximo 8 MB). Solo cambia la foto informativa; no modifica las capturas de IA.
+      </small>
+    </form>
+    {% endif %}
     {% if images %}
       <div class="detail-images-grid">
         {% for image in images %}
         <figure class="detail-image-card">
           <img
-            src="{{ url_for('static', filename=image.image_path) }}"
-            alt="Referencia del modelo {{ model.name }}"
+            src="{{ image.visual_url }}"
+            alt="{{ image.visual_label }} del modelo {{ model.name }}"
+            onerror="this.hidden=true;this.nextElementSibling.hidden=false"
           >
-          <figcaption>Referencia {{ loop.index }} · {{ model.code }}</figcaption>
+          <div hidden role="status" style="min-height:140px;padding:18px;background:#f4f6fa;color:#64758f;font-size:13px">
+            La foto de referencia anterior ya no esta disponible. Puede volver a subirla arriba.
+          </div>
+          <figcaption>Referencia {{ loop.index }} · {{ model.code }} · {{ 'Prenda sobre fondo blanco' if image.has_visual_cutout else 'Original' }}{% if image.original_url %} &middot; <a href="{{ image.original_url }}" target="_blank" rel="noopener">Ver original</a>{% endif %}</figcaption>
+          {% if not image.has_visual_cutout %}<p role="status" style="padding:0 14px 14px;color:#64748b;font-size:13px">Presentaci&oacute;n pendiente: ajuste el contorno para aislar la prenda. La imagen mostrada es el original.</p>{% endif %}
         </figure>
         {% endfor %}
       </div>
@@ -1261,24 +1439,24 @@
           MODO PREPARACIÓN DE IA
         </span>
 
-        {% if can_prepare_ai %}
+        {% if can_prepare_ai and latest_ai_preparation %}
         <a
           class="detail-button success"
           id="startGuidedPreparation"
           href="{{ url_for('guided_capture_page', model_id=model.id) }}"
         >
-          Iniciar preparación · Abrir estación guiada
+          Continuar captura
         </a>
         {% endif %}
 
-        {% if can_prepare_ai and not ai_in_progress %}
+        {% if can_prepare_ai and not latest_ai_preparation and not ai_in_progress %}
         <form
           id="prepareAiForm"
           method="post"
           action="{{ url_for('garment_ai_prepare', model_id=model.id) }}"
         >
           <button class="detail-button primary" type="submit">
-            Preparar nueva versión
+            {{ 'Iniciar captura de fotografías' if not has_ai_history else 'Preparar nueva versión' }}
           </button>
         </form>
         {% endif %}
@@ -1350,7 +1528,7 @@
     ></div>
     {% endif %}
 
-    {% if can_prepare_ai and ai_training %}
+    {% if can_prepare_ai and ai_training and (not model.ai_ready or latest_ai_preparation) %}
     <section
       class="ai-train-panel"
       id="aiTrainingPanel"
@@ -1379,98 +1557,98 @@
 
     {% if not ai_versions and not ai_in_progress %}
       <p class="detail-muted">Este modelo todavía no tiene versiones de IA registradas.</p>
-    {% elif ai_in_progress %}
-      <p class="detail-muted">Ya existe una versión de IA en proceso.</p>
+    {% elif ai_in_progress and (ai_versions|selectattr('status','equalto','ENTRENANDO')|list) %}
+      <p class="detail-muted">El entrenamiento de IA esta ejecutandose.</p>
     {% endif %}
 
     {% if ai_versions %}
+    {% set current_ai = ai_versions[0] %}
     <div class="detail-ai-list">
-      {% for ai in ai_versions %}
-      <article class="detail-ai-item">
+      <article class="detail-ai-item ai-current-version">
         <div class="detail-ai-item-head">
-          <h3>{{ ai.version }} · {{ ai.model_type }}</h3>
+          <h3>Versión de IA</h3>
 
-          {% if ai.technically_invalidated %}
-            <span class="detail-badge detail-badge-history">
-              Histórica · no apta para validación
-            </span>
-          {% elif ai.active and ai.status == 'ACTIVO' %}
-            <span class="detail-badge detail-badge-success">Activa</span>
-          {% elif ai.status == 'PREPARACION' %}
-            <span class="detail-badge detail-badge-warning">En preparación</span>
-          {% elif ai.status == 'ENTRENANDO' %}
-            <span class="detail-badge detail-badge-warning">En entrenamiento</span>
-          {% elif ai.status == 'VALIDADO' %}
-            <span class="detail-badge detail-badge-success">Validado · pendiente de prueba final</span>
-          {% elif ai.status in ['ENTRENADO', 'VALIDACION'] %}
+          {% if current_ai.active and current_ai.status == 'ACTIVO' %}
+            <span class="detail-badge detail-badge-success">Lista para inspección</span>
+          {% elif current_ai.status == 'PREPARACION' %}
+            <span class="detail-badge detail-badge-warning">Preparación en curso</span>
+          {% elif current_ai.status == 'ENTRENANDO' %}
+            <span class="detail-badge detail-badge-warning">Entrenando</span>
+          {% elif current_ai.status == 'VALIDADO' %}
+            <span class="detail-badge detail-badge-success">Validada</span>
+          {% elif current_ai.status in ['ENTRENADO', 'VALIDACION'] %}
             <span class="detail-badge detail-badge-warning">Pendiente de validación</span>
+          {% elif current_ai.status == 'RETIRADO' %}
+            <span class="detail-badge detail-badge-neutral">No activa</span>
           {% else %}
-            <span class="detail-badge detail-badge-neutral">{{ ai.status }}</span>
+            <span class="detail-badge detail-badge-neutral">{{ current_ai.status }}</span>
           {% endif %}
         </div>
 
-        <div class="detail-ai-meta">
+        <div class="detail-ai-meta detail-ai-meta-simple">
+          <div>
+            <span class="detail-label">Versión</span>
+            <span class="detail-value">{{ current_ai.model_type }} {{ current_ai.version }}</span>
+          </div>
+
           <div>
             <span class="detail-label">Estado</span>
             <span class="detail-value">
-              {% if ai.technically_invalidated %}
-                {{ ai.status }} · versión histórica
-              {% elif loop.first and ai_training and ai_training.ui_status == 'ENTRENADO' %}
-                {{ ai.status }} · {{ ai_training.ui_label }}
-              {% elif ai.status == 'PREPARACION' %}
-                Pendiente de entrenamiento
-              {% elif ai.status == 'ACTIVO' %}
-                Lista para inspección
-              {% elif ai.status == 'ENTRENANDO' %}
-                En proceso
-              {% elif ai.status == 'VALIDACION' %}
-                En proceso
-              {% elif ai.status == 'VALIDADO' %}
-                Validado · listo para prueba final
+              {% if current_ai.status == 'ACTIVO' %}
+                En uso para las inspecciones
+              {% elif current_ai.status == 'PREPARACION' %}
+                {{ 'Capturas suficientes; listo para entrenar' if ai_training and ai_training.can_train else 'Falta completar las capturas para entrenar' }}
+              {% elif current_ai.status == 'ENTRENANDO' %}
+                Entrenamiento en proceso
+              {% elif current_ai.status == 'VALIDADO' %}
+                Lista para la prueba final
+              {% elif current_ai.status in ['ENTRENADO', 'VALIDACION'] %}
+                Debe continuar con la validación
               {% else %}
-                {{ ai.status }}
+                {{ current_ai.status }}
               {% endif %}
             </span>
           </div>
 
+          {% if current_ai.status == 'PREPARACION' and ai_training %}
           <div>
-            <span class="detail-label">Imágenes normales</span>
-            <span class="detail-value">{{ ai.normal_images_count if ai.normal_images_count is not none else 'Sin registro' }}</span>
+            <span class="detail-label">Capturas válidas</span>
+            <span class="detail-value">
+              {{ ai_training.accepted_count }} / {{ ai_training.min_count }} normales finalizadas (mínimo)
+            </span>
           </div>
-
-          {% if loop.first and ai_training %}
-          <div>
-            <span class="detail-label">Dataset</span>
-            <span class="detail-value">{{ ai_training.image_count }} imágenes</span>
-          </div>
-
           <div>
             <span class="detail-label">Entrenamiento</span>
             <span class="detail-value">
-              {% if ai_training.ui_status == 'HISTORICA' %}
-                Completado · versión histórica
-              {% elif ai_training.ui_status == 'ENTRENADO' %}
-                Completado
-              {% elif ai_training.ui_status == 'ENTRENANDO' %}
-                En proceso
-              {% elif ai_training.ui_status == 'FALLIDO' %}
-                Fallido
-              {% elif ai_training.ui_status == 'DISPONIBLE' %}
-                Pendiente de entrenamiento
-              {% else %}
-                No disponible
-              {% endif %}
+              {{ 'Disponible para iniciar manualmente' if ai_training.can_train else 'Se habilita al alcanzar el mínimo; no inicia automáticamente' }}
             </span>
           </div>
-          {% endif %}
-
+          {% elif current_ai.normal_images_count is not none %}
           <div>
-            <span class="detail-label">Responsable</span>
-            <span class="detail-value">{{ ai.creator_name or 'Histórico' }}</span>
+            <span class="detail-label">Imágenes preparadas</span>
+            <span class="detail-value">{{ current_ai.normal_images_count }}</span>
           </div>
+          {% endif %}
         </div>
       </article>
-      {% endfor %}
+
+      {% if ai_versions|length > 1 %}
+      <details class="detail-ai-history">
+        <summary>Ver versiones anteriores ({{ ai_versions|length - 1 }})</summary>
+        <div class="detail-ai-history-list">
+          {% for ai in ai_versions[1:] %}
+          <div class="detail-ai-history-row">
+            <span><strong>{{ ai.version }}</strong> · {{ ai.model_type }}</span>
+            <span>
+              {% if ai.status == 'RETIRADO' %}Retirada
+              {% elif ai.technically_invalidated %}Histórica
+              {% else %}{{ ai.status }}{% endif %}
+            </span>
+          </div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
     </div>
     {% endif %}
   </section>
@@ -1846,13 +2024,28 @@
   }
 
   function stationBusyHtml() {
+    const activeId = Number(state.station_busy_model_id);
+    const busyLink = Number.isInteger(activeId) && activeId > 0 &&
+      state.station_busy_model_active !== false
+      ? '<a class="detail-button" href="/modelos-prenda/' + activeId +
+        '/captura-ia">Ir a la sesion activa para pausarla</a>' : "";
+    const sid = Number(state.station_busy_session_id);
+    const adminForm = state.can_pause_busy &&
+        Number.isInteger(sid) && sid > 0
+      ? '<form method="post" action="/modelos-prenda/captura-ia/pausar-ocupada">' +
+        '<input type="hidden" name="capture_session_id" value="' + sid + '">' +
+        '<input type="hidden" name="return_model_id" value="' + Number(config.modelId) + '">' +
+        '<button type="submit" class="detail-button">Pausar sesion anterior y liberar camara</button>' +
+        '</form>' : "";
     const code = state.station_busy_model_code
       ? ` (${esc(state.station_busy_model_code)})`
       : "";
     return `
       <div class="ai-capture-notice warn">
         Hay una sesión de captura activa para otro modelo${code}.
-        Finalícele o cancélela antes de iniciar aquí.
+        ${busyLink}
+        ${adminForm}
+        Páusela, finalícela o cancélela antes de iniciar aquí.
       </div>
     `;
   }
@@ -1876,7 +2069,11 @@
       </p>
     `);
     html.push(`<div class="ai-capture-notice">${esc(START_NOTICE)}</div>`);
-    html.push(countRowHtml(0, goal));
+    html.push(countRowHtml(state.status === "PAUSADA" ? counts().accepted : 0, goal));
+    if (state.status === "PAUSADA") {
+      html.push('<div class="ai-capture-notice">Captura pausada: ' +
+        counts().accepted + ' imagenes validas guardadas. Puede continuar.</div>');
+    }
 
     if (state.allowed === false) {
       html.push(permissionHtml());
@@ -1899,7 +2096,7 @@
 
     html.push(`
       <div class="ai-actions">
-        ${startButtonHtml("INICIAR CAPTURA")}
+        ${startButtonHtml(state.status === "PAUSADA" ? "REANUDAR CAPTURA" : "INICIAR CAPTURA")}
       </div>
     `);
 
@@ -2222,7 +2419,8 @@
       'start': url_for('ai_training_start'),
       'retrain': url_for('ai_training_retrain'),
       'cancel': url_for('ai_training_cancel'),
-      'status': url_for('ai_training_status')
+      'status': url_for('ai_training_status'),
+      'models': url_for('garment_models_page')
     },
     'state': ai_training
   }|tojson }};
@@ -2245,6 +2443,7 @@
   let errorMessage = "";
   let modalConfirmFn = null;
   let pollTimer = null;
+  const demoReturnKey = "astrid_ai_demo_return_" + config.modelId;
 
   const esc = (value) =>
     String(value === null || value === undefined ? "" : value).replace(
@@ -2270,25 +2469,14 @@
 
   function metaHtml() {
     const items = [
-      ["Imágenes del dataset", `${Number(state.image_count || 0)}`],
-      ["Mínimo requerido", `${Number(state.min_count || 0)}`],
-      ["Imágenes aceptadas", `${Number(state.accepted_count || 0)}`]
+      ["Capturas válidas", `${Number(state.accepted_count || 0)}`],
+      ["Mínimo necesario", `${Number(state.min_count || 0)}`]
     ];
 
-    if (state.version) {
-      items.push(["Versión", String(state.version)]);
-    }
-
-    if (state.ui_status === "HISTORICA" && state.next_version) {
-      items.push(["Próxima versión", String(state.next_version)]);
-    }
-
-    if (state.ui_status === "HISTORICA" && state.retrain_image_count) {
-      items.push(["Imágenes disponibles", `${Number(state.retrain_image_count)}`]);
-    }
-
-    if (state.elapsed_seconds !== null && state.elapsed_seconds !== undefined) {
-      items.push(["Tiempo transcurrido", elapsedLabel(state.elapsed_seconds)]);
+    if (state.ui_status === "ENTRENANDO" &&
+        state.elapsed_seconds !== null &&
+        state.elapsed_seconds !== undefined) {
+      items.push(["Tiempo", elapsedLabel(state.elapsed_seconds)]);
     }
 
     return `
@@ -2468,7 +2656,15 @@
     panel.innerHTML = `
       <div class="ai-capture-top">
         <span class="ai-state-badge ai-state-${esc(state.ui_status)}">
-          ${esc(state.ui_label || state.ui_status)}
+          ${esc(
+            state.ui_status === "NO_DISPONIBLE" ? "Preparación pendiente" :
+            state.ui_status === "DISPONIBLE" ? "Lista para entrenar" :
+            state.ui_status === "ENTRENANDO" ? "Entrenando" :
+            state.ui_status === "ENTRENADO" ? (state.model_status === "VALIDADO" ? "Validada" : "Validación pendiente") :
+            state.ui_status === "FALLIDO" ? "Requiere atención" :
+            state.ui_status === "HISTORICA" ? "Versión anterior" :
+            (state.ui_label || state.ui_status)
+          )}
         </span>
         ${
           state.job_status
@@ -2514,6 +2710,20 @@
           previousStatus === "ENTRENANDO" &&
           (state.ui_status === "ENTRENADO" ||
             state.ui_status === "FALLIDO");
+
+        if (
+          state.demo_fast_track_active === true &&
+          window.sessionStorage.getItem(demoReturnKey) &&
+          config.urls.models
+        ) {
+          window.sessionStorage.removeItem(demoReturnKey);
+          window.location.assign(config.urls.models);
+          return;
+        }
+
+        if (state.ui_status === "FALLIDO") {
+          window.sessionStorage.removeItem(demoReturnKey);
+        }
 
         if (finished) {
           const reloadKey =
@@ -2587,19 +2797,34 @@
   }
 
   const doStart = () =>
-    runAction(() =>
-      post(config.urls.start, { garment_model_id: config.modelId })
-    );
+    runAction(async () => {
+      const data = await post(
+        config.urls.start,
+        { garment_model_id: config.modelId }
+      );
+      window.sessionStorage.setItem(demoReturnKey, "1");
+      return data;
+    });
 
   const doRetrain = () =>
-    runAction(() =>
-      post(config.urls.retrain, { garment_model_id: config.modelId })
-    );
+    runAction(async () => {
+      const data = await post(
+        config.urls.retrain,
+        { garment_model_id: config.modelId }
+      );
+      window.sessionStorage.setItem(demoReturnKey, "1");
+      return data;
+    });
 
   const doCancel = () =>
-    runAction(() =>
-      post(config.urls.cancel, { job_id: state.job_id })
-    );
+    runAction(async () => {
+      const data = await post(
+        config.urls.cancel,
+        { job_id: state.job_id }
+      );
+      window.sessionStorage.removeItem(demoReturnKey);
+      return data;
+    });
 
   function openModal(options) {
     if (!modal) {
@@ -2733,4 +2958,5 @@
 })();
 </script>
 
+<script src="{{ url_for('static',filename='js/garment-reference-preview.js') }}"></script>
 {% endblock %}

@@ -1,0 +1,5 @@
+services:
+  app:
+    volumes:
+      - /opt/astrid-release-d733420/ui-history-model-fallback-20261027/app.py:/app/app.py:ro
+      - /opt/astrid-release-d733420/ui-history-model-fallback-20261027/records.html:/app/templates/records.html:ro

@@ -1,0 +1,29 @@
+--- a/app.py
++++ b/app.py
+@@ -9506,7 +9506,7 @@
+ 
+ @app.route("/lotes/<int:batch_id>/pausar", methods=["POST"])
+ @login_required
+-@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
++@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER, ROLE_MODEL_MANAGER)
+ def pause_batch(batch_id):
+     """Pausa la inspeccion sin borrar ni cerrar el lote."""
+     global AUTO_INSPECTION_ENABLED
+@@ -9550,7 +9550,7 @@
+ 
+ @app.route("/lotes/<int:batch_id>/reanudar", methods=["POST"])
+ @login_required
+-@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
++@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER, ROLE_MODEL_MANAGER)
+ def resume_batch(batch_id):
+     """Reanuda el mismo lote sin duplicar inspecciones."""
+     with AUTO_THREAD_LOCK:
+@@ -9953,7 +9953,7 @@
+     methods=["POST"],
+ )
+ @login_required
+-@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
++@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER, ROLE_MODEL_MANAGER)
+ def finish_batch_manual(batch_id):
+     global AUTO_INSPECTION_ENABLED
+ 

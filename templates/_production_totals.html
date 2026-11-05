@@ -1,0 +1,22 @@
+{% if production_totals is defined %}
+<section aria-label="Resumen de producción del día" style="margin:16px 0;padding:16px;background:#fff;border:1px solid #dce3ed;border-radius:14px">
+  <strong>Producción del día</strong>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:14px;margin-top:12px">
+    {% for key, label in [
+      ('target_garments', 'Objetivo diario · prendas'),
+      ('target_batches', 'Objetivo configurado · lotes'),
+      ('planned_garments', 'Prendas planificadas'),
+      ('planned_batches', 'Lotes planificados'),
+      ('inspected_today', 'Inspecciones realizadas hoy'),
+      ('remaining_to_goal', 'Prendas para alcanzar el objetivo'),
+      ('pending_inspection', 'Prendas planificadas sin inspeccionar'),
+      ('pending_batches', 'Lotes con inspección pendiente'),
+      ('pending_closure', 'Lotes pendientes de cierre / revisión'),
+      ('pending_alerts', 'Alertas de hoy pendientes de revisión')
+    ] %}
+    <div><strong data-production-total="{{ key }}" style="display:block;font-size:22px">{{ production_totals[key] }}</strong><span>{{ label }}</span></div>
+    {% endfor %}
+  </div>
+  <p style="margin-bottom:0;font-size:13px;color:#526077">Planificar no equivale a inspeccionar. Las inspecciones se cuentan por fecha de captura; los pendientes de los lotes, por su fecha de producción. Una alerta pendiente requiere revisión humana.</p>
+</section>
+{% endif %}

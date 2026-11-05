@@ -1,0 +1,188 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: textile_mysql
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      MYSQL_ROOT_PASSWORD: '${MYSQL_ROOT_PASSWORD}'
+      MYSQL_DATABASE: '${MYSQL_DATABASE}'
+      MYSQL_USER: '${MYSQL_USER}'
+      MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
+    ports:
+      - '127.0.0.1:3306:3306'
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d
+    # log_bin_trust_function_creators: permite crear los triggers de
+    # inmutabilidad de datasets (ai_dataset_images) con binary logging.
+    command: >-
+      --default-authentication-plugin=mysql_native_password
+      --log-bin-trust-function-creators=1
+    healthcheck:
+      test:
+        ['CMD-SHELL', 'mysqladmin ping -h localhost -uroot -p"$${MYSQL_ROOT_PASSWORD}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: astrid_quality_app
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - '127.0.0.1:5000:${APP_PORT:-5000}'
+    environment:
+      SECRET_KEY: '${SECRET_KEY}'
+      ADMIN_USERNAME: '${ADMIN_USERNAME:-admin}'
+      ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
+      FLASK_DEBUG: '${FLASK_DEBUG:-0}'
+      APP_PORT: '${APP_PORT:-5000}'
+
+      MYSQL_HOST: mysql
+      MYSQL_PORT: '3306'
+      MYSQL_USER: '${MYSQL_USER}'
+      MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
+      MYSQL_DATABASE: '${MYSQL_DATABASE}'
+
+      CAMERA_INDEX: '${CAMERA_INDEX}'
+      CAMERA_IP: '${CAMERA_IP}'
+      CAMERA_USER: '${CAMERA_USER}'
+      CAMERA_PASSWORD: '${CAMERA_PASSWORD}'
+      CAMERA_RTSP_PORT: '${CAMERA_RTSP_PORT}'
+      CAMERA_CHANNEL: '${CAMERA_CHANNEL}'
+      CAMERA_SUBTYPE: '${CAMERA_SUBTYPE}'
+      CAMERA_WIDTH: '${CAMERA_WIDTH}'
+      CAMERA_HEIGHT: '${CAMERA_HEIGHT}'
+      CAMERA_FPS: '${CAMERA_FPS}'
+      CAMERA_RETRY_SECONDS: '${CAMERA_RETRY_SECONDS:-3}'
+      CAMERA_FAILURE_LIMIT: '${CAMERA_FAILURE_LIMIT:-3}'
+      CAMERA_OPEN_TIMEOUT_MS: '${CAMERA_OPEN_TIMEOUT_MS:-4000}'
+      CAMERA_READ_TIMEOUT_MS: '${CAMERA_READ_TIMEOUT_MS:-4000}'
+      CAMERA_READ_FAIL_RELEASE_LIMIT: '${CAMERA_READ_FAIL_RELEASE_LIMIT:-3}'
+      CAMERA_LATENCY_LOG_INTERVAL_S: '${CAMERA_LATENCY_LOG_INTERVAL_S:-2.0}'
+      CAMERA_DISCOVERY_ENABLED: '${CAMERA_DISCOVERY_ENABLED:-1}'
+      CAMERA_DISCOVERY_CIDR: '${CAMERA_DISCOVERY_CIDR:-}'
+      CAMERA_DISCOVERY_TIMEOUT: '${CAMERA_DISCOVERY_TIMEOUT:-0.30}'
+      CAMERA_DISCOVERY_WORKERS: '${CAMERA_DISCOVERY_WORKERS:-40}'
+
+      AUTO_COOLDOWN_SECONDS: '${AUTO_COOLDOWN_SECONDS:-4}'
+      AUTO_MOTION_THRESHOLD: '${AUTO_MOTION_THRESHOLD:-18000}'
+      AUTO_STABILIZATION_SECONDS: '${AUTO_STABILIZATION_SECONDS:-0.6}'
+      AUTO_GARMENT_ENTER_COVERAGE: '${AUTO_GARMENT_ENTER_COVERAGE:-0.28}'
+      AUTO_GARMENT_CAPTURE_COVERAGE: '${AUTO_GARMENT_CAPTURE_COVERAGE:-0.33}'
+      AUTO_GARMENT_EXIT_COVERAGE: '${AUTO_GARMENT_EXIT_COVERAGE:-0.12}'
+      AUTO_GARMENT_CONFIRM_FRAMES: '${AUTO_GARMENT_CONFIRM_FRAMES:-3}'
+      AUTO_GARMENT_EXIT_FRAMES: '${AUTO_GARMENT_EXIT_FRAMES:-3}'
+      AUTO_GARMENT_MAX_TRACK_FRAMES: '${AUTO_GARMENT_MAX_TRACK_FRAMES:-16}'
+      FRAME_SELECTION_BENCHMARK: '${FRAME_SELECTION_BENCHMARK:-false}'
+
+      ROI_X1: '${ROI_X1}'
+      ROI_Y1: '${ROI_Y1}'
+      ROI_X2: '${ROI_X2}'
+      ROI_Y2: '${ROI_Y2}'
+      PATCHCORE_CKPT: '/app/patchcore_results/Patchcore/BLUSA_002_S_ROSA_FRONT_V21_BASELINE_384/v0/weights/lightning/model.ckpt'
+      PATCHCORE_IMAGE_SIZE: '${PATCHCORE_IMAGE_SIZE:-384}'
+      PATCHCORE_SCORE_THRESHOLD: '${PATCHCORE_SCORE_THRESHOLD:-55.20}'
+      PATCHCORE_PIXEL_THRESHOLD: '${PATCHCORE_PIXEL_THRESHOLD}'
+      PATCHCORE_MAX_BOX_RATIO: '${PATCHCORE_MAX_BOX_RATIO}'
+      YOLO_INFERENCE_CONF: '${YOLO_INFERENCE_CONF:-0.40}'
+      YOLO_DEFECT_THRESHOLD: '${YOLO_DEFECT_THRESHOLD:-0.70}'
+
+      AI_ARTIFACTS_ROOT: '${AI_ARTIFACTS_ROOT:-/app/ai_artifacts}'
+      AI_CAPTURE_MIN_COVERAGE: '${AI_CAPTURE_MIN_COVERAGE:-0.48}'
+      AI_CAPTURE_MIN_SHARPNESS: '${AI_CAPTURE_MIN_SHARPNESS:-40.0}'
+      AI_CAPTURE_TARGET_IMAGES: '${AI_CAPTURE_TARGET_IMAGES:-40}'
+      AI_CAPTURE_MIN_IMAGES: '${AI_CAPTURE_MIN_IMAGES:-20}'
+      AI_CAPTURE_DUPLICATE_THRESHOLD: '${AI_CAPTURE_DUPLICATE_THRESHOLD:-6}'
+      AI_CAPTURE_KEEP_REJECTED: '${AI_CAPTURE_KEEP_REJECTED:-false}'
+      AI_CAPTURE_JPEG_QUALITY: '${AI_CAPTURE_JPEG_QUALITY:-92}'
+
+      AI_GUIDED_PRESENT_COVERAGE: '${AI_GUIDED_PRESENT_COVERAGE:-0.28}'
+      AI_GUIDED_EXIT_COVERAGE: '${AI_GUIDED_EXIT_COVERAGE:-0.12}'
+      AI_GUIDED_MAX_COVERAGE: '${AI_GUIDED_MAX_COVERAGE:-0.98}'
+      AI_GUIDED_CENTER_TOL_X: '${AI_GUIDED_CENTER_TOL_X:-0.12}'
+      AI_GUIDED_CENTER_TOL_Y: '${AI_GUIDED_CENTER_TOL_Y:-0.14}'
+      AI_GUIDED_EDGE_MARGIN: '${AI_GUIDED_EDGE_MARGIN:-0.05}'
+      AI_GUIDED_STABILITY_FRAMES: '${AI_GUIDED_STABILITY_FRAMES:-4}'
+      AI_GUIDED_ENTER_FRAMES: '${AI_GUIDED_ENTER_FRAMES:-3}'
+      AI_GUIDED_EXIT_FRAMES: '${AI_GUIDED_EXIT_FRAMES:-3}'
+      AI_GUIDED_MANUAL_COOLDOWN_SECONDS: '${AI_GUIDED_MANUAL_COOLDOWN_SECONDS:-0.6}'
+
+    volumes:
+      - ./static/captures:/app/static/captures
+      - ./static/results:/app/static/results
+      - ./models:/app/models
+      - ./patchcore_results:/app/patchcore_results:ro
+      - ./ai_artifacts:/app/ai_artifacts
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # FASE 3A: worker asíncrono de entrenamiento PatchCore.
+  # Proceso separado de la app: nunca entrena dentro de una petición
+  # HTTP y jamás recibe PATCHCORE_CKPT (inferencia productiva intacta).
+  ai-worker:
+    build: .
+    container_name: astrid_ai_worker
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: python ai_worker.py
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: '3306'
+      MYSQL_USER: '${MYSQL_USER}'
+      MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
+      MYSQL_DATABASE: '${MYSQL_DATABASE}'
+
+      ROI_X1: '${ROI_X1}'
+      ROI_Y1: '${ROI_Y1}'
+      ROI_X2: '${ROI_X2}'
+      ROI_Y2: '${ROI_Y2}'
+
+      AI_ARTIFACTS_ROOT: '${AI_ARTIFACTS_ROOT:-/app/ai_artifacts}'
+      AI_WORKER_POLL_SECONDS: '${AI_WORKER_POLL_SECONDS:-3}'
+      AI_WORKER_ORPHAN_SECONDS: '${AI_WORKER_ORPHAN_SECONDS:-900}'
+      AI_WORKER_HEARTBEAT_SECONDS: '${AI_WORKER_HEARTBEAT_SECONDS:-15}'
+      AI_WORKER_ID: '${AI_WORKER_ID:-worker-1}'
+      AI_WORKER_LOG_LEVEL: '${AI_WORKER_LOG_LEVEL:-INFO}'
+      AI_WORKER_ONCE: '${AI_WORKER_ONCE:-0}'
+      AI_CAPTURE_MIN_IMAGES: '${AI_CAPTURE_MIN_IMAGES:-20}'
+
+      # Flujo corto temporal para demostración de tesis. En false se
+      # conserva íntegro el proceso normal de validación y congelamiento.
+      AI_DEMO_FAST_TRACK: '${AI_DEMO_FAST_TRACK:-false}'
+      AI_DEMO_FAST_TRACK_THRESHOLD: '${AI_DEMO_FAST_TRACK_THRESHOLD:-55.20}'
+
+      # Entrenamiento: input_size=256 = tamaño que la inferencia
+      # productiva aplica hoy (Resize 256). Cambiar solo con análisis.
+      PATCHCORE_INPUT_SIZE: '${PATCHCORE_INPUT_SIZE:-256}'
+      PATCHCORE_BACKBONE: '${PATCHCORE_BACKBONE:-wide_resnet50_2}'
+      PATCHCORE_CORESET_RATIO: '${PATCHCORE_CORESET_RATIO:-0.05}'
+      PATCHCORE_NUM_NEIGHBORS: '${PATCHCORE_NUM_NEIGHBORS:-9}'
+      PATCHCORE_SEED: '${PATCHCORE_SEED:-42}'
+      PATCHCORE_BATCH_SIZE: '${PATCHCORE_BATCH_SIZE:-4}'
+
+    volumes:
+      - ./ai_artifacts:/app/ai_artifacts
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  mysql_data:

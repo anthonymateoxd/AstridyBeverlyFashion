@@ -1,81 +1,78 @@
-﻿{% extends "base.html" %} {% block content %}
+{% extends "base.html" %} {% block content %}
 <header class="page-header">
   <div>
-    <h1>Inspección en vivo</h1>
+    <h1>Inspección en tiempo real</h1>
     <p>Captura, análisis y registro individual de prendas</p>
   </div>
-  <span class="live-badge">● Cámara activa</span>
+  <span id="inspection-camera-status" class="live-badge" role="status" aria-live="polite">● Comprobando cámara</span>
 </header>
-<section class="grid-2">
+<style>
+  /* Vista de monitoreo: solo muestra el video, sin controles ni resultados. */
+  .inspection-live-monitor {
+    width: 100%;
+    min-width: 0;
+  }
+  .inspection-live-monitor .live-camera {
+    width: 100%;
+    height: min(70vh, 740px);
+    min-height: 320px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 0;
+  }
+  .inspection-live-monitor .live-camera img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  @media (max-width: 700px) {
+    .inspection-live-monitor .live-camera {
+      height: 53vh;
+      min-height: 220px;
+    }
+  }
+</style>
+<section class="inspection-live-monitor">
   <article class="card">
-    <h2>Nueva inspección</h2>
-
+    <h2>C?mara en vivo</h2>
     <div class="live-camera">
-      <img
-        src="{{ url_for('video_feed') }}"
-        alt="Cámara en vivo"
-      />
-      <div class="camera-label">Cámara en vivo · Estación de inspección</div>
+      <img src="{{ url_for('video_feed') }}" alt="Vista en directo de las prendas en la estaci?n" />
+      <div class="camera-label">Monitor de estaci?n ? Solo visualizaci?n</div>
     </div>
-
-    <form
-      class="inspect-form"
-      method="post"
-      enctype="multipart/form-data"
-      data-single-submit="true"
-      onsubmit="
-        const button = this.querySelector('button[type=submit]');
-        if (button.disabled) {
-          return false;
-        }
-        button.disabled = true;
-        button.textContent = 'Procesando...';
-        return true;
-      "
-    >
-      <div class="auto-note">
-        El sistema capturará la imagen desde la cámara activa y generará
-        automáticamente el registro de inspección con fecha, resultado, defecto
-        detectado, confianza, zona e imagen procesada.
-      </div>
-
-      <button type="submit">Capturar e inspeccionar</button>
-    </form>
-  </article>
-  <article class="card">
-    <h2>Resultado</h2>
-    {% if result %}
-    <div class="result-box {{ result.status|lower }}">
-      <h3>{{ result.status }}</h3>
-      <p><strong>ID:</strong> {{ result.code }}</p>
-      <p><strong>Defecto:</strong> {{ result.defect_type }}</p>
-      <p><strong>Confianza:</strong> {{ result.confidence }}%</p>
-      <p><strong>Zona:</strong> {{ result.zone }}</p>
-    </div>
-    <div class="image-pair">
-      <div>
-        <p>Original</p>
-        <img
-          src="{{ url_for('static', filename=result.image_original) }}"
-          alt="Original"
-        />
-      </div>
-      {% if result.image_result %}
-      <div>
-        <p>Procesada</p>
-        <img
-          src="{{ url_for('static', filename=result.image_result) }}"
-          alt="Procesada"
-        />
-      </div>
-      {% endif %}
-    </div>
-    {% else %}
-    <div class="empty-state">
-      <p>Ejecute una inspección para ver el resultado.</p>
-    </div>
-    {% endif %}
   </article>
 </section>
+<script>
+  (() => {
+    const indicador = document.getElementById('inspection-camera-status');
+    if (!indicador) return;
+
+    const actualizar = (texto, color) => {
+      indicador.textContent = '● ' + texto;
+      indicador.style.color = color;
+    };
+
+    const consultar = async () => {
+      try {
+        const respuesta = await fetch("{{ url_for('camera_status_api') }}", {
+          cache: 'no-store', credentials: 'same-origin'
+        });
+        if (!respuesta.ok) throw new Error('Estado no disponible');
+        const estado = await respuesta.json();
+        if (estado.connected) {
+          actualizar('Cámara conectada', '#00d17b');
+        } else if (estado.reconnecting || estado.state === 'STALE') {
+          actualizar('Reconectando cámara', '#ffc36e');
+        } else {
+          actualizar('Cámara desconectada', '#ff8585');
+        }
+      } catch (_) {
+        actualizar('Estado no disponible', '#ff8585');
+      }
+    };
+    consultar();
+    setInterval(consultar, 4000);
+  })();
+</script>
 {% endblock %}
 

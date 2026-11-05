@@ -151,7 +151,18 @@ body.app-body{
 .dashboard-user-name{
   color:var(--dash-navy);
   font-size:14px;
+  line-height:1.35;
   font-weight:800;
+  max-width:210px;
+  overflow-wrap:anywhere;
+}
+.dashboard-user-role {
+  display:block;
+  margin-top:4px;
+  color:#73829a;
+  font-size:11px;
+  line-height:1.3;
+  font-weight:600;
 }
 
 .dashboard-kpis{
@@ -384,6 +395,35 @@ body.app-body{
 .info-row:last-child{border-bottom:0}
 .info-row strong{color:var(--dash-navy);font-size:14px}
 
+
+/* Resumen de producción: lectura inmediata en pantallas grandes y móviles. */
+.day-simple-summary{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
+.day-simple-eyebrow{display:block;color:#5c7090;font-size:12px;font-weight:800;letter-spacing:.03em;text-transform:uppercase}
+.day-simple-total{display:flex;align-items:baseline;gap:11px;flex-wrap:wrap;margin-top:7px;color:var(--dash-navy)}
+.day-simple-total strong{font-size:36px;font-weight:900;line-height:1.15;font-variant-numeric:tabular-nums}
+.day-simple-total span{font-size:16px;font-weight:650}
+.day-simple-remaining{margin:8px 0 0;color:#576c88;font-size:13px;line-height:1.55}
+.day-simple-remaining strong{color:var(--dash-navy)}
+.day-simple-percent{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.day-simple-percent strong{font-size:27px;font-weight:900;color:var(--dash-navy);font-variant-numeric:tabular-nums}
+.day-simple-percent span{font-size:12px;color:#667992}
+.day-simple-progress{height:13px;background:#edf1f6;overflow:hidden;border-radius:999px;margin:20px 0 18px}
+.day-simple-progress div{min-height:13px;border-radius:999px;background:#117a65}
+.day-simple-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.day-simple-metric{background:#f4f7fb;border:1px solid #e9eff7;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.day-simple-metric span{color:#5a6e89;font-size:12px;line-height:1.4}
+.day-simple-metric strong{color:var(--dash-navy);font-size:22px;line-height:1.25;font-weight:850;font-variant-numeric:tabular-nums}
+.day-simple-guidance{margin-top:16px;padding:15px 17px;background:#f7f9fc;border-left:3px solid #8aa5c1;border-radius:9px;color:#2a4465}
+.day-simple-guidance strong{font-size:14px;color:var(--dash-navy)}
+.day-simple-guidance p{margin:5px 0 8px;line-height:1.5;font-size:13px}
+.day-simple-guidance > span{color:#60738d;font-size:12px}
+@media(max-width:520px){
+ .day-simple-summary{align-items:flex-start}
+ .day-simple-total strong{font-size:32px}
+ .day-simple-percent strong{font-size:24px}
+ .day-simple-metrics{grid-template-columns:1fr}
+}
+
 .live-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
 .live-indicator{
   display:inline-flex;align-items:center;gap:7px;padding:7px 11px;border-radius:999px;
@@ -414,14 +454,88 @@ body.app-body{
 .quality-item strong{display:block;color:var(--dash-navy);font-size:25px}
 .quality-item span{display:block;margin-top:6px;color:#75839a;font-size:10px;text-transform:uppercase;font-weight:700;line-height:1.25}
 
-.live-model-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}
-.live-model-card{padding:15px;border:1px solid #e8edf3;border-radius:9px;background:#fbfcfd}
-.live-model-name{color:var(--dash-navy);font-size:14px;font-weight:800}
-.live-model-size{margin-top:4px;color:#8290a4;font-size:11px}
-.live-model-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:12px}
-.live-model-stat{padding:8px;border-radius:7px;background:#fff;border:1px solid #edf0f4}
-.live-model-stat strong{display:block;color:var(--dash-navy);font-size:17px}
-.live-model-stat span{display:block;margin-top:4px;color:#7e8a9d;font-size:8px;line-height:1.15;text-transform:uppercase}
+/* Tarjetas por modelo: medidas constantes y estadisticas alineadas. */
+.live-model-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  align-items:stretch;
+  gap:14px;
+  margin-top:16px;
+}
+.live-model-card{
+  min-width:0;
+  min-height:216px;
+  display:flex;
+  flex-direction:column;
+  padding:16px;
+  border:1px solid #e5ebf3;
+  border-radius:12px;
+  background:#fafbfd;
+  container-type:inline-size;
+}
+.live-model-heading{
+  min-height:73px;
+  display:flex;
+  flex-direction:column;
+  justify-content:flex-start;
+  min-width:0;
+}
+.live-model-name{
+  color:var(--dash-navy);
+  font-size:13px;
+  font-weight:800;
+  line-height:1.4;
+  overflow-wrap:anywhere;
+}
+.live-model-size{
+  margin-top:6px;
+  color:#7889a4;
+  font-size:11px;
+  line-height:1.35;
+}
+.live-model-stats{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  grid-auto-rows:minmax(72px,auto);
+  gap:8px;
+  margin-top:auto;
+}
+.live-model-stat{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  min-width:0;
+  min-height:72px;
+  padding:9px 5px;
+  border:1px solid #e5ebf3;
+  border-radius:9px;
+  background:#fff;
+  text-align:center;
+}
+.live-model-stat strong{
+  display:block;
+  color:var(--dash-navy);
+  font-size:19px;
+  line-height:1.1;
+  font-weight:800;
+  font-variant-numeric:tabular-nums;
+}
+.live-model-stat span{
+  display:block;
+  margin-top:7px;
+  color:#6f8099;
+  font-size:9px;
+  line-height:1.3;
+  font-weight:700;
+  text-transform:uppercase;
+  overflow-wrap:anywhere;
+}
+/* En tarjetas angostas, dos columnas evitan textos amontonados. */
+@container (max-width:320px){
+  .live-model-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
 .live-empty{padding:22px;border:1px dashed #dbe2ea;border-radius:9px;color:#8290a4;text-align:center;background:#fbfcfd}
 
 .dashboard-footer{
@@ -475,7 +589,7 @@ body.app-body{
 
   <header class="dashboard-topbar">
     <div class="dashboard-greeting">
-      <h1>¡Hola, {{ session.get('username', 'Administrador') }}!</h1>
+      <h1>¡Hola, {{ session.get('display_name') or session.get('username', 'Usuario') }}!</h1>
       <p>Bienvenido al sistema de control de calidad</p>
     </div>
 
@@ -484,13 +598,16 @@ body.app-body{
         <strong>{{ now_gt.strftime('%d/%m/%Y') }}</strong>
         {{ now_gt.strftime('%I:%M:%S %p') }}
       </div>
-      <div class="dashboard-avatar">{{ session.get('username', 'A')[:1]|upper }}</div>
+      <div class="dashboard-avatar">{{ (session.get('display_name') or session.get('username') or 'U')[:1]|upper }}</div>
       <div class="dashboard-user-name">
-        {% if role == 'ADMIN' %}Administrador{% elif role == 'MODEL_MANAGER' %}Encargado de modelos{% else %}Gestor de calidad{% endif %}
+        {{ session.get('display_name') or session.get('username', 'Usuario') }}
+        <span class="dashboard-user-role">{% if role == 'ADMIN' %}Administrador{% elif role == 'MODEL_MANAGER' %}Encargado de modelos{% else %}Gestor de calidad{% endif %}</span>
       </div>
     </div>
   </header>
 
+  {# CAPÍTULO V — Indicadores del panel principal.
+     Presenta el resumen operativo de producción e inspecciones. #}
   <section class="dashboard-kpis" aria-label="Resumen operativo">
     <article class="dashboard-kpi">
       <div class="kpi-icon kpi-pink">
@@ -507,8 +624,8 @@ body.app-body{
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 7 4-7 4-7-4 7-4Z"/><path d="m5 7 7 4 7-4v8l-7 4-7-4V7Z"/></svg>
       </div>
       <div>
-        <strong id="dashReviewLots">0</strong>
-        <span>Lotes pendientes de revisión</span>
+        <strong id="dashGoalBatches">{% if goal %}{{ operational.remaining_batches }}{% else %}&mdash;{% endif %}</strong>
+        <span id="dashGoalBatchesLabel">{% if goal %}Lotes pendientes de inspección{% else %}Sin meta para hoy{% endif %}</span>
       </div>
     </article>
 
@@ -654,17 +771,55 @@ body.app-body{
       </div>
 
       {% if goal %}
-      <div class="day-progress-layout">
-        <div class="day-progress-circle" style="--progress:{{ operational.progress }}">
-          <div><strong>{{ operational.progress }}%</strong><span>Avance del objetivo</span></div>
-        </div>
+      <div class="day-simple-summary">
         <div>
-          <div class="info-row"><span>Tiempo restante</span><strong>{{ operational.remaining_minutes // 60 }} h {{ operational.remaining_minutes % 60 }} min</strong></div>
-          <div class="info-row"><span>Ritmo actual</span><strong>{{ operational.current_rate }} prendas/h</strong></div>
-          <div class="info-row"><span>Ritmo necesario</span><strong>{{ operational.required_rate }} prendas/h</strong></div>
-          <div class="info-row"><span>Lotes pendientes</span><strong>{{ operational.remaining_batches }}</strong></div>
-          {% if operational.estimated_finish %}<div class="info-row"><span>Finalización estimada</span><strong>{{ operational.estimated_finish.strftime('%H:%M') }}</strong></div>{% endif %}
+          <span class="day-simple-eyebrow">Prendas inspeccionadas hoy</span>
+          <div class="day-simple-total"><strong>{{ stats.inspected }}</strong><span>de {{ goal.target_garments }} prendas</span></div>
+          <p class="day-simple-remaining">
+            {% if operational.remaining_garments == 0 %}
+              Objetivo de prendas alcanzado. Puedes seguir inspeccionando.
+            {% else %}
+              Faltan <strong>{{ operational.remaining_garments }}</strong> prendas para alcanzar la meta.
+            {% endif %}
+          </p>
         </div>
+        <div class="day-simple-percent" aria-label="{{ operational.progress }} por ciento de la meta">
+          <strong>{{ operational.progress }}%</strong>
+          <span>de la meta</span>
+        </div>
+      </div>
+      <div class="day-simple-progress" role="progressbar" aria-label="Avance del objetivo diario"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ operational.progress }}">
+        <div style="width:{{ operational.progress }}%"></div>
+      </div>
+
+      <div class="day-simple-metrics">
+        <div class="day-simple-metric">
+          <span>Lotes pendientes de inspección</span>
+          <strong id="dashGoalBatchesDetail">{{ operational.remaining_batches }}</strong>
+        </div>
+        <div class="day-simple-metric">
+          <span>Ritmo promedio del turno</span>
+          <strong>{{ operational.current_rate }} prendas/h</strong>
+        </div>
+      </div>
+
+      <div class="day-simple-guidance" role="note">
+        <strong>Seguimiento de producción</strong>
+        <p>
+          {% if operational.status == 'META_CUMPLIDA' %}
+            Ya se alcanzó el objetivo de prendas. Puedes continuar inspeccionando.
+          {% elif operational.status == 'PENDIENTE' %}
+            El turno aún no ha comenzado. El seguimiento se calculará con las prendas que se inspeccionen.
+          {% elif operational.status == 'ATRASADO' %}
+            La jornada terminó sin alcanzar la meta de prendas.
+          {% elif operational.status == 'EN_TIEMPO' %}
+            El ritmo promedio es suficiente para alcanzar la meta antes del cierre del turno.
+          {% else %}
+            Al ritmo promedio actual, es posible que no alcances la meta antes del cierre del turno.
+          {% endif %}
+        </p>
+        <span>Turno programado: {{ operational.shift_start.strftime('%H:%M') }} a {{ operational.shift_end.strftime('%H:%M') }}.</span>
       </div>
       {% else %}
       <div class="day-state-empty">
@@ -1103,6 +1258,7 @@ document.addEventListener(
       return (
        '<div class="live-model-card">'
 
+       + '<div class="live-model-heading">'
        + '<div class="live-model-name">'
        + esc(m.model_code)
        + ' \u2014 '
@@ -1114,6 +1270,7 @@ document.addEventListener(
        + esc(m.size)
        + '</div>'
 
+       + '</div>'
        + '<div class="live-model-stats">'
 
        + '<div class="live-model-stat">'
@@ -1188,10 +1345,25 @@ document.addEventListener(
    }
 
 
-   if (get("dashReviewLots")) {
+   if (get("dashGoalBatches")) {
 
-    get("dashReviewLots").textContent =
-     data.batch_states.review_pending;
+    get("dashGoalBatches").textContent =
+     data.target_batches ? data.remaining_batches : "\u2014";
+   }
+
+   if (get("dashGoalBatchesLabel")) {
+    get("dashGoalBatchesLabel").textContent =
+     data.target_batches ? "Lotes pendientes de inspección" : "Sin meta para hoy";
+   }
+
+   if (get("dashGoalBatchesDetail")) {
+    get("dashGoalBatchesDetail").textContent = data.remaining_batches;
+    if (data.production_totals) {
+      Object.entries(data.production_totals).forEach(([key, value]) => {
+        const el = document.querySelector('[data-production-total="' + key + '"]');
+        if (el) el.textContent = value;
+      });
+    }
    }
 
 

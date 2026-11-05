@@ -1,0 +1,12 @@
+[Unit]
+Description=ASTRID hourly verified local inspection photo cleanup
+
+[Timer]
+OnCalendar=*-*-* *:30:00 UTC
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=astrid-photo-local-prune.service
+
+[Install]
+WantedBy=timers.target

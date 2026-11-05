@@ -1,0 +1,4 @@
+services:
+  app:
+    volumes:
+      - /opt/astrid-release-d733420/ui-monitor-20261027/inspection.html:/app/templates/inspection.html:ro

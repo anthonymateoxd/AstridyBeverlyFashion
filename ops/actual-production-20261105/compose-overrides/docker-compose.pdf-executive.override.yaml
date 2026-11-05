@@ -1,0 +1,4 @@
+services:
+  app:
+    volumes:
+      - /opt/astrid-release-d733420/pdf-executive-20261027/app.py:/app/app.py:ro

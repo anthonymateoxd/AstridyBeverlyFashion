@@ -1,0 +1,4 @@
+services:
+  app:
+    volumes:
+      - /opt/astrid-release-d733420/ui-informes-simple-20261027/informes.html:/app/templates/informes.html:ro
