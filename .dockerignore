@@ -9,6 +9,7 @@ __pycache__/
 instance/
 static/captures/
 static/results/
+static/garment_models/
 results/
 diagnostics/
 runs/

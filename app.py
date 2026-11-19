@@ -1,3 +1,9 @@
+from inspection_request_guard import ManualInspectionGate, InspectionBusy
+from production_totals import daily_production_totals
+MANUAL_REQUEST_GATE = ManualInspectionGate()
+# CAPÍTULO V — Backend de la aplicación web.
+# Flask recibe las solicitudes del navegador y conecta las pantallas
+# con los módulos de inspección, inteligencia artificial y persistencia.
 from flask import (
     Flask,
     render_template,
@@ -11,6 +17,7 @@ from flask import (
     send_file,
 )
 from werkzeug.security import generate_password_hash, check_password_hash
+from history_evidence import checkpoint_is_available, inspection_evidence_path
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -60,6 +67,8 @@ from ai_domain import (
     sha256_bytes,
     start_ai_capture_session,
     stop_ai_capture_session,
+    transition_capture_session_status,
+    transition_ai_model_status,
     resolve_validation_category,
     VALIDATION_CATEGORIES,
     VALIDATION_DEFECT_TYPES,
@@ -96,16 +105,24 @@ from ai_training import (
     training_status_payload,
 )
 
+# ============================================================
+# CONFIGURACIÓN DE CÁMARA E INTELIGENCIA ARTIFICIAL
+# ============================================================
 
+# Carga las variables de configuración desde el archivo .env.
 load_dotenv()
-# RTSP mediante TCP: más estable que UDP para OpenCV
+
+# Configura RTSP mediante TCP para recibir video de la cámara.
+# TCP permite una transmisión más estable ante pérdidas de red.
 os.environ.setdefault(
     "OPENCV_FFMPEG_CAPTURE_OPTIONS",
     "rtsp_transport;tcp"
 )
 
+# Obtiene la ruta global de referencia del modelo PatchCore.
 PATCHCORE_CKPT = os.getenv("PATCHCORE_CKPT", "").strip()
 
+# Establece el tamaño de imagen configurado, con valor inicial 384.
 PATCHCORE_IMAGE_SIZE = int(
     os.getenv("PATCHCORE_IMAGE_SIZE", "384")
 )
@@ -132,8 +149,7 @@ PATCHCORE_MAX_BOX_RATIO = float(
     os.getenv("PATCHCORE_MAX_BOX_RATIO", "0.15")
 )
 
-# Compatibilidad histórica: se conservan las variables globales para
-# utilidades y pruebas antiguas, pero la estación productiva ya NO carga
+# Compatibilidad histórica: se conservan las variables globales para utilidades y pruebas antiguas, pero la estación productiva ya NO carga
 # este checkpoint al iniciar. Cada lote resuelve su versión ACTIVA desde
 # garment_ai_models mediante resolve_active_production_ai_runtime().
 patchcore_inspector = None
@@ -175,11 +191,30 @@ FRAME_SELECTION_BENCHMARK = str(
 BENCHMARK_FRAMES_DIR = ROOT / "benchmark_frames"
 BENCHMARK_COVERAGE_LEVELS = (0.40, 0.45, 0.50)
 
+
+
+
+# ============================================================
+# CONFIGURACIÓN DE LA BASE DE DATOS MYSQL
+# ============================================================
+
+# Obtiene el nombre de la base de datos desde el entorno.
 DB_NAME = os.environ.get("MYSQL_DATABASE", "textile_quality_db")
+# Define la dirección del servidor donde se encuentra MySQL.
 DB_HOST = os.environ.get("MYSQL_HOST", "127.0.0.1")
+# Establece el puerto utilizado para conectarse a MySQL.
 DB_PORT = int(os.environ.get("MYSQL_PORT", "3306"))
+# Obtiene el usuario utilizado para establecer la conexión.
 DB_USER = os.environ.get("MYSQL_USER", "root")
+# Obtiene la contraseña de conexión desde las variables de entorno.
 DB_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
+
+
+
+
+
+
+
 
 DEFECT_TYPES = [
     "Mancha",
@@ -207,12 +242,31 @@ CAMERA_CAPTURE_WORKER_STARTED = False
 CAMERA_FORCE_REOPEN = False
 yolo_model = None
 
+# CAPÍTULO V — Configuración del servidor web.
+# Se crea la aplicación Flask y se preparan las opciones de seguridad
+# de las sesiones utilizadas por los usuarios del sistema.
 app = Flask(__name__)
 _secret_key = os.environ.get("SECRET_KEY")
 if not _secret_key:
     raise RuntimeError("SECRET_KEY environment variable is required")
 app.secret_key = _secret_key
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = (
+    os.getenv("SESSION_COOKIE_SECURE", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+DB_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+UTC_ZONE = ZoneInfo("UTC")
+
+
+def utc_now_db():
+    """Fecha UTC ingenua para columnas DATETIME de MySQL."""
+    return datetime.now(UTC_ZONE).replace(tzinfo=None).strftime(
+        DB_DATETIME_FORMAT
+    )
 
 
 # ============================================================
@@ -233,6 +287,8 @@ def db_config(include_database=True):
     return config
 
 
+# CAPÍTULO V — Comunicación con la base de datos MySQL.
+# Esta función abre la conexión utilizando la configuración centralizada.
 def db(include_database=True):
     return mysql.connector.connect(**db_config(include_database=include_database))
 
@@ -590,6 +646,54 @@ def init_db():
         "created_by INT NULL AFTER notes",
     )
 
+    # BATCH_LOGICAL_DELETION_V1
+    # Baja logica reversible: el lote jamas se borra de la base. Su evidencia
+    # (fotografias, decisiones e inspecciones) permanece intacta y solo sale
+    # de los indicadores operativos mientras active = 0.
+    ensure_column(
+        "batches",
+        "active",
+        "active TINYINT(1) NOT NULL DEFAULT 1 AFTER status",
+    )
+    ensure_column(
+        "batches",
+        "deleted_at",
+        "deleted_at DATETIME NULL AFTER created_by",
+    )
+    ensure_column(
+        "batches",
+        "deleted_by",
+        "deleted_by INT NULL AFTER deleted_at",
+    )
+    ensure_column(
+        "batches",
+        "deletion_reason",
+        "deletion_reason VARCHAR(500) NULL AFTER deleted_by",
+    )
+
+    # Auditoria inmutable de eliminaciones y restauraciones de lotes.
+    # Se conserva aun cuando el lote vuelva a estar activo.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS batch_deletion_audit (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            batch_id INT NOT NULL,
+            batch_code VARCHAR(80) NOT NULL,
+            action VARCHAR(20) NOT NULL,
+            batch_status VARCHAR(40) NULL,
+            planned_quantity INT NOT NULL DEFAULT 0,
+            processed_quantity INT NOT NULL DEFAULT 0,
+            reason VARCHAR(500) NOT NULL,
+            admin_id INT NOT NULL,
+            admin_username VARCHAR(80) NULL,
+            active_after TINYINT(1) NOT NULL DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_batch_deletion_audit_batch (batch_id),
+            INDEX idx_batch_deletion_audit_created (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+
     cur.execute(
         """
         SELECT COUNT(*)
@@ -742,6 +846,23 @@ def init_db():
         ("L\u00ednea 2",),
     )
 
+    # Normaliza nombres de líneas creados por versiones antiguas con
+    # problemas de codificación. Al actualizar el catálogo, también se
+    # corrige su visualización en lotes históricos porque estos lo consultan
+    # por relación.
+    cur.execute(
+        """
+        UPDATE inspection_lines
+        SET name = CASE code
+            WHEN 'LINEA-1' THEN %s
+            WHEN 'LINEA-2' THEN %s
+            ELSE name
+        END
+        WHERE code IN ('LINEA-1', 'LINEA-2')
+        """,
+        ("L\u00ednea 1", "L\u00ednea 2"),
+    )
+
     admin_username = os.getenv("ADMIN_USERNAME", "admin").strip() or "admin"
 
     cur.execute("SELECT id FROM users WHERE username = %s", (admin_username,))
@@ -777,33 +898,49 @@ def init_db():
 
 def fetch_one(sql, params=None):
     conn = db()
-    cur = conn.cursor(dictionary=True)
-    cur.execute(sql, params or ())
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row
+    cur = None
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, params or ())
+        return cur.fetchone()
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
 
 
 def fetch_all(sql, params=None):
     conn = db()
-    cur = conn.cursor(dictionary=True)
-    cur.execute(sql, params or ())
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    cur = None
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, params or ())
+        return cur.fetchall()
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
 
 
 def execute(sql, params=None):
     conn = db()
-    cur = conn.cursor()
-    cur.execute(sql, params or ())
-    conn.commit()
-    last_id = cur.lastrowid
-    cur.close()
-    conn.close()
-    return last_id
+    cur = None
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, params or ())
+        conn.commit()
+
+        return cur.lastrowid
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
 
 
 def get_inspection_lines(
@@ -847,6 +984,7 @@ def get_inspection_lines(
                 FROM batches b
                 WHERE b.inspection_line_id = l.id
                   AND b.status = 'EN_INSPECCION'
+                  AND b.active = 1
                 ORDER BY b.id DESC
                 LIMIT 1
             ) AS active_batch_code
@@ -861,7 +999,9 @@ def get_inspection_lines(
 
 def get_active_batch(line_id=None):
     conditions = [
-        "b.status = 'EN_INSPECCION'"
+        "b.status = 'EN_INSPECCION'",
+        # BATCH_LOGICAL_DELETION_V1: un lote eliminado nunca es activo.
+        "b.active = 1",
     ]
     params = []
 
@@ -1028,9 +1168,39 @@ def get_batch(batch_id):
     )
 
 
-def get_batches():
+# BATCH_LOGICAL_DELETION_V1
+# Expresiones SQL compartidas para excluir de los indicadores operativos los
+# lotes con eliminacion logica (active = 0). Nunca borran evidencia: las
+# inspecciones de esos lotes siguen en la base y se consultan desde la
+# pantalla de auditoria de administrador.
+BATCH_ACTIVE_SQL = "b.active = 1"
+# Para consultas con LEFT JOIN a batches desde inspections (lote opcional).
+INSPECTION_FROM_ACTIVE_BATCH_SQL = "COALESCE(b.active, 1) = 1"
+# Estados que impiden eliminar un lote: inspeccion activa o pausada.
+BATCH_DELETION_BLOCKED_STATUSES = ("EN_INSPECCION", "PAUSADO")
+# Lock global que serializa la eliminacion y la restauracion de lotes.
+BATCH_DELETION_LOCK = "astrid_batch_logical_deletion"
+BATCH_DELETION_MIN_REASON = 5
+BATCH_DELETION_MAX_REASON = 500
+
+
+def batch_deletion_wants_json():
+    """Detecta si el cliente prefiere JSON (AJAX) en vez de redirect."""
+    if request.is_json:
+        return True
+
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return True
+
+    accept = request.headers.get("Accept", "")
+
+    return "application/json" in accept
+
+
+def get_batches(include_deleted=False):
+    """Lista de lotes operativos; los eliminados solo si se piden."""
     return fetch_all(
-        """
+        f"""
         SELECT
             b.*,
 
@@ -1144,10 +1314,109 @@ def get_batches():
         LEFT JOIN inspections i
           ON i.batch_id = b.id
 
+        {"" if include_deleted else "WHERE b.active = 1"}
+
         GROUP BY b.id
         ORDER BY b.id DESC
         """
     )
+
+
+def get_deleted_batches():
+    """Lotes con eliminacion logica, con su ultima entrada de auditoria.
+
+    Solo lo consume la vista de administrador: ningun indicador operativo
+    recorre esta lista.
+    """
+    return fetch_all(
+        f"""
+        SELECT
+            b.id,
+            b.code,
+            b.status,
+            b.planned_quantity,
+            b.production_date,
+            b.deleted_at,
+            b.deleted_by,
+            b.deletion_reason,
+            b.created_at,
+
+            (
+                SELECT COUNT(*)
+                FROM inspections i
+                WHERE i.batch_id = b.id
+            ) AS processed_quantity,
+
+            (
+                SELECT COALESCE(
+                    NULLIF(u.full_name, ''),
+                    u.username
+                )
+                FROM users u
+                WHERE u.id = b.deleted_by
+                LIMIT 1
+            ) AS deleted_by_name,
+
+            (
+                SELECT a.reason
+                FROM batch_deletion_audit a
+                WHERE a.batch_id = b.id
+                  AND a.action = 'ELIMINACION'
+                ORDER BY a.id DESC
+                LIMIT 1
+            ) AS last_audit_reason,
+
+            (
+                SELECT a.created_at
+                FROM batch_deletion_audit a
+                WHERE a.batch_id = b.id
+                  AND a.action = 'ELIMINACION'
+                ORDER BY a.id DESC
+                LIMIT 1
+            ) AS last_audit_at
+
+        FROM batches b
+
+        WHERE b.active = 0
+
+        ORDER BY b.deleted_at DESC, b.id DESC
+        """
+    )
+
+
+def get_batch_deletion_audit(batch_id=None):
+    """Historial de auditoria de eliminaciones/restauraciones de lotes."""
+    sql = """
+        SELECT
+            a.id,
+            a.batch_id,
+            a.batch_code,
+            a.action,
+            a.batch_status,
+            a.planned_quantity,
+            a.processed_quantity,
+            a.reason,
+            a.admin_id,
+            a.admin_username,
+            a.active_after,
+            a.created_at,
+
+            b.active AS batch_active
+
+        FROM batch_deletion_audit a
+
+        LEFT JOIN batches b
+          ON b.id = a.batch_id
+    """
+    params = ()
+
+    if batch_id is not None:
+        sql += " WHERE a.batch_id = %s"
+        params = (batch_id,)
+
+    sql += " ORDER BY a.id DESC"
+
+    return fetch_all(sql, params)
 
 
 ROLE_ADMIN = "ADMIN"
@@ -1192,13 +1461,16 @@ def has_role(*roles):
     allowed = {normalize_role(role) for role in roles}
     return current_role in allowed
 
-
+# Protege las funciones que requieren una sesión activa.
 def login_required(fn):
+    # Conserva la información original de la función protegida.
     @wraps(fn)
     def wrapper(*args, **kwargs):
+        # Obtiene el identificador del usuario desde la sesión.
         user_id = session.get("user_id")
-
+        # Comprueba si el usuario ha iniciado sesión.
         if not user_id:
+            # Devuelve un error JSON si la solicitud pertenece a la API.
             if request.path.startswith("/api/"):
                 return jsonify({
                     "ok": False,
@@ -1209,31 +1481,38 @@ def login_required(fn):
 
         user = fetch_one(
             """
-            SELECT id, username, role, active
+            SELECT id, username, full_name, role, active
             FROM users
             WHERE id = %s
             """,
             (user_id,),
         )
-
+        # Verifica que la cuenta exista y se encuentre activa.
         if not user or int(user.get("active") or 0) != 1:
-            session.clear()
 
+            # Elimina los datos de la sesión no autorizada.
+            session.clear()
+            # Informa a la API que el acceso ya no está autorizado.
             if request.path.startswith("/api/"):
                 return jsonify({
                     "ok": False,
                     "error": "La sesion ya no esta autorizada."
                 }), 401
-
+            # Muestra un mensaje explicando el problema de acceso.
             flash(
                 "La cuenta esta desactivada o ya no se encuentra disponible.",
                 "error",
             )
+            # Envía nuevamente al usuario al inicio de sesión.
             return redirect(url_for("login"))
 
         role = normalize_role(user.get("role"))
 
         session["username"] = user["username"]
+        session["display_name"] = (
+            str(user.get("full_name") or "").strip()
+            or user["username"]
+        )
         session["role"] = role
 
         return fn(*args, **kwargs)
@@ -1312,9 +1591,12 @@ print(
 
 AUTO_INSPECTION_ENABLED = False
 AUTO_THREAD = None
+AUTO_THREAD_LOCK = threading.Lock()
+MANUAL_INSPECTION_IN_PROGRESS = False
 AUTO_LAST_RESULT = None
 AUTO_LAST_ERROR = None
 AUTO_LAST_CAPTURE_TIME = 0
+AUTO_SESSION = {"identity": None, "waiting_for_exit": False}
 
 # ------------------------------------------------------------
 # FASE 2A — modo preparación IA (mutex con producción)
@@ -1357,13 +1639,27 @@ AI_GUIDED_RUNTIME = {
 
 set_production_probe(lambda: bool(AUTO_INSPECTION_ENABLED))
 
+
+
+
+# Define una espera de 4 segundos entre capturas automáticas.
 AUTO_COOLDOWN_SECONDS = float(os.getenv("AUTO_COOLDOWN_SECONDS", "4"))
+
+# Establece el valor de referencia para detectar movimiento.
 AUTO_MOTION_THRESHOLD = int(os.getenv("AUTO_MOTION_THRESHOLD", "18000"))
+
+# Define una espera de 0.6 segundos para estabilizar la prenda.
 AUTO_STABILIZATION_SECONDS = float(os.getenv("AUTO_STABILIZATION_SECONDS", "0.6"))
 
 # ------------------------------------------------------------
 # Detección automática de presencia de la blusa.
-#
+# ------------------------------------------------------------
+
+
+
+
+
+
 # En la instalación de producción la blusa completa ocupa aproximadamente
 # 34-38 % del ROI. El automático espera que entre suficientemente antes
 # de capturar, dejando margen para variaciones de talla y posición.
@@ -1697,6 +1993,28 @@ def current_quality_alert_seq():
         return QUALITY_ALERT_SEQ
 
 
+def purge_quality_alerts_for_batch(batch_id):
+    """Descarta de la memoria de alarmas los eventos de un lote eliminado.
+
+    El buffer es volatile y no se persiste, pero una alerta de un lote ya
+    eliminado no debe seguir sonando en la estacion ni presentarse como
+    alerta vigente. La evidencia de esa inspeccion sigue en la base y en la
+    pantalla de auditoria del administrador.
+    """
+    if batch_id is None:
+        return 0
+
+    with QUALITY_ALERT_LOCK:
+        wanted = (batch_id, str(batch_id))
+        before = len(QUALITY_ALERT_EVENTS)
+        QUALITY_ALERT_EVENTS[:] = [
+            event
+            for event in QUALITY_ALERT_EVENTS
+            if event.get("batch_id") not in wanted
+        ]
+        return before - len(QUALITY_ALERT_EVENTS)
+
+
 def trigger_quality_alert(
     garment_token,
     confidence=None,
@@ -1982,6 +2300,8 @@ def validate_camera_ip(ip_address):
     cap = None
 
     try:
+# Abre la fuente de video utilizando OpenCV y FFmpeg.
+# Si existen parámetros adicionales, los aplica a la captura.
         if capture_params:
             cap = cv2.VideoCapture(
                 source,
@@ -1989,11 +2309,14 @@ def validate_camera_ip(ip_address):
                 capture_params,
             )
         else:
+
+# Abre la fuente con la configuración predeterminada.
             cap = cv2.VideoCapture(
                 source,
                 cv2.CAP_FFMPEG,
             )
 
+# Verifica que la fuente de video se haya abierto.
         if not cap.isOpened():
             return False
 
@@ -2466,6 +2789,9 @@ def _try_discover_camera_after_failures(direct_failures):
     return False
 
 
+# CAPÍTULO V — Captura continua de imágenes de la cámara.
+# Un solo trabajador obtiene fotogramas del flujo RTSP y mantiene
+# disponible la imagen más reciente para las operaciones del sistema.
 def camera_capture_worker():
     """
     ÚNICO lector continuo de RTSP.
@@ -2484,6 +2810,8 @@ def camera_capture_worker():
     global CAMERA_FAILURE_COUNT
     global CAMERA_RECONNECTING
     global CAMERA_FORCE_REOPEN
+    global camera_capture
+    global CAMERA_LAST_CONNECT_ATTEMPT
 
     with CAMERA_RECONNECT_LOCK:
         CAMERA_RECONNECTING = True
@@ -2663,15 +2991,27 @@ def ensure_camera_reconnect_worker():
 
     return ensure_camera_capture_worker()
 
-
+# Verifica el estado operativo de la cámara de inspección.
 def get_camera_status():
     """
     Estado operativo. Si no hay señal, asegura el capture worker
     (que también reconecta). No abre RTSP por su cuenta.
     """
+# Asegura que el proceso encargado de capturar imágenes esté activo.
     ensure_camera_capture_worker()
 
-    if CAMERA_CONNECTED:
+# Consulta de forma segura el momento de la última imagen recibida.
+    with latest_frame_lock:
+        last_frame_at = latest_frame_timestamp_monotonic
+
+# Comprueba que la última imagen tenga como máximo 5 segundos.
+    frame_fresh = (
+        last_frame_at is not None
+        and (time.perf_counter() - last_frame_at) <= 5.0
+    )
+
+# Confirma que la cámara está conectada y transmitiendo.
+    if CAMERA_CONNECTED and frame_fresh:
         return {
             "connected": True,
             "reconnecting": False,
@@ -2684,6 +3024,15 @@ def get_camera_status():
 
     with CAMERA_RECONNECT_LOCK:
         reconnecting = CAMERA_RECONNECTING
+
+    if CAMERA_CONNECTED and not frame_fresh:
+        return {
+            "connected": False,
+            "reconnecting": True,
+            "state": "STALE",
+            "message": "No se reciben imágenes recientes de la cámara.",
+            "last_ok_at": CAMERA_LAST_OK_AT,
+        }
 
     if reconnecting:
         return {
@@ -2931,13 +3280,16 @@ def save_image(file_storage=None):
     return save_frame_to_static(frame)
 
 
+# CAPÍTULO V — Registro automático de inspecciones.
+# A partir de un fotograma, ejecuta el análisis y registra el resultado
+# junto con su evidencia y el lote de producción correspondiente.
 def register_inspection_from_frame(
-    frame,
+    frame, # Imagen capturada por la cámara.
     notes="Registro generado por estación de inspección.",
-    garment_token=None,
-    decision_start=None,
-    frame_selection_ms=None,
-    source="auto",
+    garment_token=None, # Identificador de seguimiento de la prenda.
+    decision_start=None, # Inicio del proceso de decisión.
+    frame_selection_ms=None, # Tiempo de selección del fotograma.
+    source="auto", # Indica el origen de la captura.
 ):
     """
     Ejecuta la detección, guarda la evidencia y registra la blusa
@@ -3012,7 +3364,7 @@ def register_inspection_from_frame(
             time.perf_counter() - total_start
         ) * 1000.0
 
-    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    created_at = utc_now_db()
     code = (
         f"INS-{datetime.now().strftime('%H%M%S')}-"
         f"{uuid.uuid4().hex[:4].upper()}"
@@ -3107,8 +3459,10 @@ def register_inspection_from_frame(
                 "El lote ya alcanz? la cantidad planificada."
             )
 
+# Calcula la posición de la prenda dentro del lote.
         batch_position = processed_before + 1
 
+# Guarda los datos y resultados de la inspección en MySQL.
         cur.execute(
             """
             INSERT INTO inspections (
@@ -3234,12 +3588,18 @@ def register_inspection_from_frame(
         ) * 1000.0
 
     except Exception:
+        # Comprueba si existe una transacción pendiente
         if conn.in_transaction:
+
+            # Deshace los cambios si ocurre un error.
             conn.rollback()
+        # Propaga el error para que pueda ser gestionado.
         raise
 
     finally:
+        # Cierra el cursor de la base de datos.
         cur.close()
+        # Cierra la conexión con MySQL.
         conn.close()
 
     metrics["total_complete_ms"] = (
@@ -3293,6 +3653,54 @@ def register_inspection_from_frame(
 
 
 
+def compute_station_presence_coverage(frame):
+    """Station presence only; never changes the mask passed to PatchCore."""
+    if frame is None or frame.size == 0:
+        raise ValueError("No se recibió un fotograma válido de la cámara.")
+    try:
+        coverage = compute_roi_coverage(frame)
+    except RuntimeError as error:
+        if str(error) not in (
+            "La silueta detectada es demasiado pequeña.",
+            "La silueta detectada es demasiado grande.",
+        ):
+            raise
+        coverage = 0.0
+    if coverage >= AUTO_GARMENT_ENTER_COVERAGE:
+        return coverage
+    x1, y1, x2, y2 = get_roi_bounds(frame)
+    # Close the silhouette before applying the vertical inspection crop.
+    # A sleeve just beyond ROI_Y2 must not merge with the cropped panel edge.
+    # Lateral ROI borders and full-frame top/bottom still reject cut silhouettes.
+    roi = frame[:, x1:x2]
+    width = min(640, roi.shape[1])
+    height = max(1, round(roi.shape[0] * width / roi.shape[1]))
+    small = cv2.resize(roi, (width, height), interpolation=cv2.INTER_AREA)
+    gray = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+    edges = cv2.Canny(gray, 20, 60)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    scale_y = height / float(frame.shape[0])
+    roi_top = int(round(y1 * scale_y))
+    roi_bottom = int(round(y2 * scale_y))
+    roi_area = float(width * (roi_bottom - roi_top))
+    candidates = []
+    for contour in contours:
+        contour_mask = np.zeros(gray.shape, np.uint8)
+        cv2.drawContours(contour_mask, [contour], -1, 255, cv2.FILLED)
+        fraction = cv2.countNonZero(contour_mask[roi_top:roi_bottom]) / roi_area
+        x, y, w, h = cv2.boundingRect(contour)
+        # Exclude panel edges and silhouettes cut by the context boundaries.
+        if (0.20 <= fraction <= 0.75 and x > 2 and y > 2
+                and x + w < width - 2 and y + h < height - 2):
+            candidates.append((fraction, contour))
+    if not candidates:
+        return coverage
+    mask = np.zeros(gray.shape, np.uint8)
+    cv2.drawContours(mask, [max(candidates, key=lambda item: item[0])[1]], -1, 255, cv2.FILLED)
+    return max(coverage, float(cv2.countNonZero(mask[roi_top:roi_bottom])) / roi_area)
+
+
 def auto_inspection_worker():
     """
     Inspección automática orientada a cinta transportadora.
@@ -3306,13 +3714,15 @@ def auto_inspection_worker():
     6. No vuelve a registrar hasta que esa blusa haya salido.
     """
     global AUTO_INSPECTION_ENABLED
+    global AUTO_THREAD
     global AUTO_LAST_RESULT
     global AUTO_LAST_ERROR
     global AUTO_LAST_CAPTURE_TIME
 
     # Estado de la prenda que actualmente atraviesa la estación.
     tracking = False
-    waiting_for_exit = False
+    expected_identity = AUTO_SESSION["identity"]
+    waiting_for_exit = AUTO_SESSION["waiting_for_exit"]
 
     present_frames = 0
     exit_frames = 0
@@ -3355,11 +3765,24 @@ def auto_inspection_worker():
             )
 
             if frame is None:
+                # A gap invalidates partially tracked frames, never evidence.
+                tracking = False
+                present_frames = tracked_frames = exit_frames = 0
+                best_frame = None
+                best_coverage = 0.0
                 AUTO_LAST_ERROR = (
                     "Cámara no disponible."
                 )
-                time.sleep(0.5)
-                continue
+                AUTO_INSPECTION_ENABLED = False
+                break
+
+            if (
+                frame_timestamp is None
+                or time.perf_counter() - frame_timestamp > 5.0
+            ):
+                AUTO_LAST_ERROR = "Inspeccion automatica detenida: no se reciben imagenes recientes de la camara."
+                AUTO_INSPECTION_ENABLED = False
+                break
 
             if sequence == last_camera_sequence:
                 # Misma secuencia: no reintentar el mismo frame.
@@ -3379,14 +3802,7 @@ def auto_inspection_worker():
             # Se reutiliza EXACTAMENTE la segmentación de la
             # blusa que usa PatchCore (compute_roi_coverage).
             # -------------------------------------------------
-            try:
-                coverage = compute_roi_coverage(frame)
-
-            except Exception:
-                # Una silueta demasiado pequeña normalmente
-                # significa que la prenda apenas está entrando,
-                # saliendo, o que el área está vacía.
-                coverage = 0.0
+            coverage = compute_station_presence_coverage(frame)
 
             # -------------------------------------------------
             # ESTADO 1: ya inspeccionamos esta blusa.
@@ -3407,6 +3823,7 @@ def auto_inspection_worker():
                     >= AUTO_GARMENT_EXIT_FRAMES
                 ):
                     waiting_for_exit = False
+                    AUTO_SESSION["waiting_for_exit"] = False
                     tracking = False
 
                     present_frames = 0
@@ -3589,6 +4006,17 @@ def auto_inspection_worker():
                     # disponible a partir de este instante.
                     decision_start = time.perf_counter()
 
+                    if expected_identity is not None:
+                        current_batch = get_active_batch()
+                        current_identity = (
+                            tuple(current_batch.get(key) for key in ("id", "garment_model_id", "ai_model_id"))
+                            if current_batch else None
+                        )
+                        if current_identity != expected_identity:
+                            AUTO_LAST_ERROR = "Inspeccion automatica detenida: cambio el lote, el modelo o la version de IA."
+                            AUTO_INSPECTION_ENABLED = False
+                            break
+
                     result = (
                         register_inspection_from_frame(
                             best_frame,
@@ -3639,6 +4067,7 @@ def auto_inspection_worker():
                     # Esta misma blusa no puede generar otro
                     # registro hasta abandonar completamente ROI.
                     waiting_for_exit = True
+                    AUTO_SESSION["waiting_for_exit"] = True
                     tracking = False
 
                     present_frames = 0
@@ -3655,15 +4084,20 @@ def auto_inspection_worker():
                     continue
 
         except Exception as error:
-            AUTO_LAST_ERROR = str(error)
+            AUTO_LAST_ERROR = "Inspección automática detenida: " + str(error)
+            AUTO_INSPECTION_ENABLED = False
 
             print(
                 "[AUTO] Error controlado: "
                 f"{error}"
             )
+            break
 
         time.sleep(0.20)
 
+    with AUTO_THREAD_LOCK:
+        if AUTO_THREAD is threading.current_thread():
+            AUTO_THREAD = None
 
 
 def normalize_for_json(value):
@@ -4011,7 +4445,9 @@ def create_guided_garment_mask(image, diagnostics=None):
     else:
         diagnostics["seed"] = dict(seed_diagnostics)
 
+# Define el factor de escala para procesar la imagen.
     scale = float(GUIDED_SEGMENTATION_SCALE)
+# Redimensiona la región de interés para su análisis.
     working = cv2.resize(
         roi,
         None,
@@ -4019,9 +4455,15 @@ def create_guided_garment_mask(image, diagnostics=None):
         fy=scale,
         interpolation=cv2.INTER_AREA,
     )
+
+# Calcula el área total de la imagen redimensionada.
     working_area = float(working.shape[0] * working.shape[1])
+# Prepara el registro de información del proceso.
     adaptive_diagnostics = diagnostics.setdefault("adaptive", {})
 
+
+# Convierte la imagen a escala de grises y busca
+# los límites de la región que contiene la prenda.
     panel = _guided_panel_bounds(
         cv2.cvtColor(working, cv2.COLOR_BGR2GRAY),
         adaptive_diagnostics,
@@ -5132,6 +5574,8 @@ def resolve_active_production_ai_runtime():
         }
 
         inspector = ai_validation.get_model_inspector(bundle)
+        if inspector is None:
+            raise RuntimeError("La versión de IA activa no pudo cargar su motor de inferencia PatchCore.")
 
         return {
             "batch_id": int(row["batch_id"]),
@@ -5727,6 +6171,7 @@ def get_batch_review_summary(batch_id):
           ON i.batch_id = b.id
 
         WHERE b.id = %s
+          AND b.active = 1
 
         GROUP BY b.id
         """,
@@ -5809,17 +6254,39 @@ def get_batch_garments(batch_id, page=1, per_page=50):
 # ============================================================
 # RUTAS
 # ============================================================
+# Define la ruta que consulta el estado actual de la cámara.
+@app.route("/api/camera/status")
+# Comprueba que el usuario haya iniciado sesión.
+@login_required
+# Permite el acceso al administrador y al gestor de calidad.
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def camera_status_api():
+    # Obtiene el estado de la cámara y lo devuelve en formato JSON.
+    response = jsonify(get_camera_status())
+    # Evita almacenar en caché información que puede cambiar.
+    response.headers["Cache-Control"] = "no-store"
+    # Envía la respuesta HTTP al navegador.
+    return response
+# Define la ruta utilizada para transmitir video al navegador.
+
 
 @app.route("/video_feed")
+# Verifica que exista una sesión autenticada.
 @login_required
+# Restringe el acceso a los roles autorizados.
 @role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
 def video_feed():
+    # Genera una respuesta HTTP con imágenes sucesivas de la cámara.
     return Response(
         generate_video_feed(),
+        # Especifica el formato de transmisión de imágenes.
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
 
+# CAPÍTULO V — Autenticación de usuarios.
+# La ruta recibe el formulario de acceso y comprueba las credenciales
+# antes de permitir el ingreso al panel del sistema.
 @app.route("/", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -5849,6 +6316,10 @@ def login():
             session.clear()
             session["user_id"] = user["id"]
             session["username"] = user["username"]
+            session["display_name"] = (
+                str(user.get("full_name") or "").strip()
+                or user["username"]
+            )
             session["role"] = role
 
             return redirect(url_for("dashboard"))
@@ -5858,7 +6329,12 @@ def login():
     return render_template("login.html")
 
 
+# CAPÍTULO V — Panel principal de control.
+# Consulta los datos de producción y prepara los indicadores del día
+# respetando la zona horaria utilizada por la empresa.
+# Panel principal: consulta de producción e indicadores del día.
 @app.route("/dashboard")
+# Permite acceder únicamente a usuarios autenticados.
 @login_required
 def dashboard():
     from datetime import date, time, timedelta
@@ -5945,9 +6421,18 @@ def dashboard():
                 ),
                 0
             ) AS pending_alerts
-        FROM inspections
-        WHERE created_at >= %s
-          AND created_at < %s
+
+        -- BATCH_LOGICAL_DELETION_V1: las alertas y los contadores del panel
+        -- principal ignoran los lotes eliminados (su evidencia sigue en la
+        -- pantalla de auditoria del administrador).
+        FROM inspections i
+
+        LEFT JOIN batches b
+          ON b.id = i.batch_id
+
+        WHERE i.created_at >= %s
+          AND i.created_at < %s
+          AND COALESCE(b.active, 1) = 1
         """,
         (day_start, day_end),
     )
@@ -5958,6 +6443,7 @@ def dashboard():
         FROM batches b
         WHERE b.inspection_completed_at >= %s
           AND b.inspection_completed_at < %s
+          AND b.active = 1
           AND EXISTS (
               SELECT 1
               FROM inspections i
@@ -5988,6 +6474,7 @@ def dashboard():
           ON gm.id = b.garment_model_id
         LEFT JOIN inspections i
           ON i.batch_id = b.id
+        WHERE b.active = 1
         GROUP BY b.id
         ORDER BY b.id DESC
         LIMIT 5
@@ -6016,11 +6503,8 @@ def dashboard():
             target_garments - inspected,
             0,
         )
-        remaining_batches = (
-            (remaining_garments + 99) // 100
-            if remaining_garments > 0
-            else 0
-        )
+        # Los lotes faltantes dependen de la meta, no de las prendas restantes.
+        remaining_batches = daily_production_totals(fetch_one)["pending_batches"]
 
         progress = (
             min(inspected / target_garments * 100, 100)
@@ -6211,6 +6695,7 @@ def dashboard():
         WHERE
             i.created_at >= %s
             AND i.created_at < %s
+            AND COALESCE(b.active, 1) = 1
 
         GROUP BY
             gm.id,
@@ -6318,6 +6803,7 @@ def dashboard():
         WHERE
             i.created_at >= %s
             AND i.created_at < %s
+            AND COALESCE(b.active, 1) = 1
 
         ORDER BY
             i.created_at DESC,
@@ -6440,6 +6926,7 @@ def dashboard():
 
     return render_template(
         "dashboard.html",
+        production_totals=daily_production_totals(fetch_one),
         today=today,
         now_gt=now_gt,
         goal=goal,
@@ -6516,7 +7003,8 @@ def dashboard_live_api():
     goal = fetch_one(
         """
         SELECT
-            target_garments
+            target_garments,
+            target_batches
         FROM daily_production_goals
         WHERE goal_date = %s
         LIMIT 1
@@ -6545,9 +7033,16 @@ def dashboard_live_api():
                 0
             ) AS pending_alerts
 
-        FROM inspections
-        WHERE created_at >= %s
-          AND created_at < %s
+        -- BATCH_LOGICAL_DELETION_V1: el panel en vivo tampoco cuenta las
+        -- alertas pendientes de lotes eliminados.
+        FROM inspections i
+
+        LEFT JOIN batches b
+          ON b.id = i.batch_id
+
+        WHERE i.created_at >= %s
+          AND i.created_at < %s
+          AND COALESCE(b.active, 1) = 1
         """,
         (
             day_start,
@@ -6555,6 +7050,26 @@ def dashboard_live_api():
         ),
     )
 
+
+    # Mantiene la misma definicion de lote completado que el panel principal.
+    completed_batches = 0
+    if goal:
+        completed_batches = int(fetch_one(
+            """
+            SELECT COUNT(*) AS c
+            FROM batches b
+            WHERE b.inspection_completed_at >= %s
+              AND b.inspection_completed_at < %s
+              AND b.active = 1
+              AND EXISTS (
+                  SELECT 1 FROM inspections i
+                  WHERE i.batch_id = b.id
+                    AND i.created_at >= %s
+                    AND i.created_at < %s
+              )
+            """,
+            (day_start, day_end, day_start, day_end),
+        )["c"] or 0)
 
     batch_states = fetch_one(
         """
@@ -6591,6 +7106,7 @@ def dashboard_live_api():
 
         FROM batches
         WHERE production_date = %s
+          AND active = 1
         """,
         (today,),
     )
@@ -6632,6 +7148,7 @@ def dashboard_live_api():
 
             WHERE b.production_date = %s
               AND b.status = %s
+              AND b.active = 1
 
             ORDER BY b.id {order_direction}
             LIMIT 1
@@ -6715,6 +7232,7 @@ def dashboard_live_api():
 
         WHERE i.created_at >= %s
           AND i.created_at < %s
+          AND COALESCE(b.active, 1) = 1
 
         GROUP BY
             gm.id,
@@ -6739,6 +7257,9 @@ def dashboard_live_api():
         goal["target_garments"]
         or 0
     ) if goal else 0
+    target_batches = int(goal["target_batches"] or 0) if goal else 0
+    totals = daily_production_totals(fetch_one)
+    remaining_batches = totals["pending_batches"]
 
     remaining = max(
         target - inspected,
@@ -6864,11 +7385,18 @@ def dashboard_live_api():
 
 
     return jsonify({
+        "production_totals": totals,
         "ok":
             True,
 
         "target_garments":
             target,
+
+        "target_batches":
+            target_batches,
+
+        "remaining_batches":
+            remaining_batches,
 
         "inspected":
             inspected,
@@ -7093,10 +7621,15 @@ def dashboard_daily_goal():
 
     actual = fetch_one(
         """
+        -- BATCH_LOGICAL_DELETION_V1: la meta diaria se valida contra las
+        -- prendas de lotes vivos; las de un lote eliminado no bloquean el ajuste.
         SELECT COUNT(*) AS inspected
-        FROM inspections
-        WHERE created_at >= %s
-          AND created_at < %s
+        FROM inspections i
+        LEFT JOIN batches b
+          ON b.id = i.batch_id
+        WHERE i.created_at >= %s
+          AND i.created_at < %s
+          AND COALESCE(b.active, 1) = 1
         """,
         (
             day_start,
@@ -7118,6 +7651,7 @@ def dashboard_daily_goal():
             WHERE
                 b.inspection_completed_at >= %s
                 AND b.inspection_completed_at < %s
+                AND b.active = 1
                 AND EXISTS (
                     SELECT 1
                     FROM inspections i
@@ -7395,6 +7929,7 @@ def get_today_production_plan():
             ) AS planned_garments
         FROM batches
         WHERE production_date = %s
+          AND active = 1
         """,
         (today,),
     )
@@ -7520,7 +8055,7 @@ def get_today_production_plan():
             True,
 
         "target_batches":
-            estimated_target_batches,
+            int(goal["target_batches"] or 0),
 
         "configured_target_batches":
             int(
@@ -7552,7 +8087,7 @@ def get_today_production_plan():
         "batches_excess":
             max(
                 planned_batches
-                - estimated_target_batches,
+                - int(goal["target_batches"] or 0),
                 0,
             ),
 
@@ -7564,6 +8099,9 @@ def get_today_production_plan():
     }
 
 
+# CAPÍTULO V — Gestión de lotes de inspección.
+# Presenta y administra los lotes vinculados con los modelos
+# de prendas y las versiones de inteligencia artificial disponibles.
 @app.route("/lotes", methods=["GET", "POST"])
 @login_required
 def batches():
@@ -7599,6 +8137,9 @@ def batches():
           AND gm.active = 1
           AND ai.status = 'ACTIVO'
           AND ai.active = 1
+          AND NULLIF(TRIM(ai.checkpoint_path), '') IS NOT NULL
+          AND ai.threshold_final IS NOT NULL
+          AND ai.threshold_frozen_at IS NOT NULL
 
           AND ai.id = (
               SELECT ai2.id
@@ -7666,6 +8207,46 @@ def batches():
             )
         except (TypeError, ValueError):
             planned_quantity = 0
+
+        quantity_override = (
+            request.form.get(
+                "quantity_override",
+                "0",
+            )
+            == "1"
+        )
+
+        if production_plan["has_goal"]:
+            remaining = int(
+                production_plan[
+                    "remaining_garments"
+                ]
+                or 0
+            )
+
+            suggested = int(
+                production_plan[
+                    "suggested_quantity"
+                ]
+                or 0
+            )
+
+            if (
+                remaining > 0
+                and not quantity_override
+                and planned_quantity != suggested
+            ):
+                flash(
+                    "La planificaci\u00f3n cambi\u00f3. "
+                    f"El sistema recomienda "
+                    f"{suggested} prendas para el "
+                    "siguiente lote.",
+                    "error",
+                )
+
+                return redirect(
+                    url_for("batches")
+                )
 
         if (
             planned_quantity < 1
@@ -7736,6 +8317,9 @@ def batches():
               AND gm.active = 1
               AND ai.status = 'ACTIVO'
               AND ai.active = 1
+              AND NULLIF(TRIM(ai.checkpoint_path), '') IS NOT NULL
+              AND ai.threshold_final IS NOT NULL
+              AND ai.threshold_frozen_at IS NOT NULL
 
             ORDER BY ai.id DESC
             LIMIT 1
@@ -7746,7 +8330,7 @@ def batches():
         if selected_model is None:
             flash(
                 "Seleccione un modelo aprobado "
-                "que tenga una IA activa.",
+                "que tenga una IA activa y lista para producci\u00f3n.",
                 "error",
             )
 
@@ -7764,13 +8348,16 @@ def batches():
         )
 
         try:
+# Inicia una transacción para registrar el lote de forma segura.
             conn.start_transaction()
 
+# Genera un código temporal mientras se crea el lote.
             temporary_code = (
                 "PENDING-"
                 + uuid.uuid4().hex.upper()
             )
 
+# Inserta el nuevo lote en la base de datos.
             cur.execute(
                 """
                 INSERT INTO batches (
@@ -7795,6 +8382,7 @@ def batches():
                 )
                 """,
                 (
+# Código temporal del lote.
                     temporary_code,
                     selected_model["id"],
                     selected_model[
@@ -7866,66 +8454,6 @@ def batches():
                 created=batch_id,
             )
         )
-    # SMART_BATCH_QUANTITY_GUARD_V1
-    smart_plan = get_today_production_plan()
-
-    quantity_override = (
-        request.form.get(
-            "quantity_override",
-            "0",
-        )
-        == "1"
-    )
-
-    if request.method == "POST" and smart_plan["has_goal"]:
-
-        remaining = int(
-            smart_plan[
-                "remaining_garments"
-            ]
-            or 0
-        )
-
-        suggested = int(
-            smart_plan[
-                "suggested_quantity"
-            ]
-            or 0
-        )
-
-        if (
-            remaining <= 0
-            and not quantity_override
-        ):
-            flash(
-                "El objetivo de producci\u00f3n ya est\u00e1 "
-                "completamente planificado. "
-                "No es necesario crear otro lote.",
-                "error",
-            )
-
-            return redirect(
-                url_for("batches")
-            )
-
-        if (
-            remaining > 0
-            and not quantity_override
-            and planned_quantity != suggested
-        ):
-            flash(
-                "La planificaci\u00f3n cambi\u00f3. "
-                f"El sistema recomienda "
-                f"{suggested} prendas para el "
-                "siguiente lote.",
-                "error",
-            )
-
-            return redirect(
-                url_for("batches")
-            )
-
-
     all_batches = get_batches()
 
     today_key = (
@@ -7945,100 +8473,314 @@ def batches():
         today_batches
     )
 
-    visible_batches = (
-        today_batches[:8]
-    )
+    paused_batches = [
+        b for b in all_batches
+        if b.get("status") == "PAUSADO" and b not in today_batches
+    ]
+    visible_batches = (paused_batches + today_batches)[:16]
+
+    # BATCH_LOGICAL_DELETION_V1: los lotes eliminados solo se consultan en
+    # la vista de auditoria del administrador; jamas suman en los indicadores.
+    deleted_lots = []
+    deletion_audit = []
+    if has_role(ROLE_ADMIN):
+        deleted_lots = get_deleted_batches()
+        deletion_audit = get_batch_deletion_audit()
+
+    # La captura de entrenamiento puede reservar la misma camara incluso
+    # cuando todos los lotes de produccion estan pausados.
+    occupied_capture = None
+    if can_create:
+        occupied_capture = fetch_one(
+            """SELECT s.id, s.garment_model_id,
+                      COALESCE(gm.code, 'Sin codigo') AS model_code,
+                      COALESCE(gm.name, 'Modelo sin nombre') AS model_name,
+                      COALESCE(gm.active,0) AS model_active
+               FROM ai_capture_sessions s
+               LEFT JOIN garment_models gm ON gm.id=s.garment_model_id
+               WHERE s.status='ABIERTA'
+               ORDER BY s.id DESC LIMIT 1"""
+        )
 
     return render_template(
         "batches.html",
+        production_totals=daily_production_totals(fetch_one),
         batches=visible_batches,
         today_batches_total=today_batches_total,
         active_batch=get_active_batch(),
+        occupied_capture=occupied_capture,
         available_models=available_models,
         available_lines=available_lines,
         production_plan=production_plan,
         can_create=can_create,
+        deleted_lots=deleted_lots,
+        deletion_audit=deletion_audit,
     )
 
 
 
-# DELETE_ACCIDENTAL_BATCH_V2
+# BATCH_LOGICAL_DELETION_V1
+# Eliminacion logica reversible de lotes: jamas se borra una fila. El lote
+# queda con active = 0, se excluye de los indicadores operativos y su
+# evidencia (fotografias, decisiones e inspecciones) permanece intacta,
+# visible para el administrador en la pantalla de auditoria.
+# Sustituye al borrado fisico anterior del lote, que destruia la trazabilidad.
+
+
+def _batch_deletion_reply(status_code, payload, message=None, category="error"):
+    """Responde en JSON a peticiones AJAX o redirige con flash a los formularios."""
+    wants_json = batch_deletion_wants_json()
+
+    if wants_json:
+        body = dict(payload)
+        if message:
+            body.setdefault("message", message)
+        return jsonify(body), status_code
+
+    if message:
+        flash(message, category)
+
+    return redirect(url_for("batches"))
+
+
+def _first_value(row):
+    """Primer valor de una fila devuelta con cursor en modo diccionario."""
+    if not row:
+        return None
+
+    if isinstance(row, dict):
+        return next(iter(row.values()))
+
+    return row[0]
+
+
 @app.route(
     "/lotes/<int:batch_id>/eliminar",
     methods=["POST"],
 )
 @login_required
 @role_required(ROLE_ADMIN)
-def delete_accidental_batch(batch_id):
-    conn = db()
-    cur = conn.cursor(
-        dictionary=True
+def delete_batch(batch_id):
+    """Eliminacion logica reversible, exclusiva de administradores.
+
+    Protecciones: motivo obligatorio, bloqueo de lotes en inspeccion activa,
+    lock global + transaccion con FOR UPDATE + actualizacion condicionada a
+    active = 1 (anti duplicados y condiciones de carrera) y registro de
+    auditoria con administrador, fecha, motivo y cantidades.
+    """
+    reason = " ".join(
+        str(
+            request.form.get("reason")
+            or request.form.get("motivo")
+            or ""
+        ).split()
     )
 
+    if len(reason) < BATCH_DELETION_MIN_REASON:
+        return _batch_deletion_reply(
+            400,
+            {
+                "ok": False,
+                "error": "El motivo de la eliminacion es obligatorio.",
+            },
+            "Debe indicar el motivo de la eliminacion "
+            f"(minimo {BATCH_DELETION_MIN_REASON} caracteres).",
+        )
+
+    reason = reason[:BATCH_DELETION_MAX_REASON]
+    admin_id = session.get("user_id")
+    admin_username = (
+        str(session.get("username") or "").strip() or None
+    )
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    locked = False
+
     try:
+        # Serializa eliminaciones y restauraciones entre hilos y procesos.
+        cur.execute(
+            "SELECT GET_LOCK(%s, 10) AS acquired",
+            (BATCH_DELETION_LOCK,),
+        )
+        locked = int(_first_value(cur.fetchone()) or 0) == 1
+
+        if not locked:
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "Ya hay una operacion sobre lotes en curso.",
+                },
+                "Ya hay una operacion sobre lotes en curso. "
+                "Intente de nuevo en unos segundos.",
+            )
+
         conn.start_transaction()
 
         cur.execute(
             """
             SELECT
                 b.id,
+                b.code,
                 b.status,
-                b.started_at,
-
+                b.active,
+                b.planned_quantity,
+                b.production_date,
                 (
                     SELECT COUNT(*)
                     FROM inspections i
                     WHERE i.batch_id = b.id
                 ) AS inspection_count
-
             FROM batches b
             WHERE b.id = %s
             FOR UPDATE
             """,
             (batch_id,),
         )
-
         batch = cur.fetchone()
 
         if batch is None:
             conn.rollback()
-            return redirect(
-                url_for("batches")
+            return _batch_deletion_reply(
+                404,
+                {"ok": False, "error": "El lote no existe."},
+                "El lote solicitado no existe.",
             )
 
-        if (
-            batch["status"] != "PREPARACION"
-            or batch["started_at"] is not None
-            or int(
-                batch["inspection_count"]
-                or 0
-            ) != 0
-        ):
+        # `active` llega como 0 cuando el lote ya fue eliminado: nunca se
+        # usa `or 1`, porque 0 es falsy y ocultaria la baja logica.
+        active_flag = batch.get("active")
+        already_deleted = active_flag is not None and int(active_flag) != 1
+
+        if already_deleted:
+            # Solicitud duplicada: el lote ya estaba eliminado.
             conn.rollback()
-            return redirect(
-                url_for("batches")
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "El lote ya estaba eliminado.",
+                    "batch_id": batch_id,
+                    "already_deleted": True,
+                },
+                "Este lote ya estaba eliminado; "
+                "la operacion no se repitio.",
             )
 
+        if str(batch.get("status") or "") in BATCH_DELETION_BLOCKED_STATUSES:
+            conn.rollback()
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "El lote esta en inspeccion activa.",
+                    "batch_id": batch_id,
+                    "status": batch.get("status"),
+                },
+                "No se puede eliminar un lote con inspeccion activa. "
+                "Finalice o revise la inspeccion antes de eliminarlo.",
+            )
+
+        planned_quantity = int(batch.get("planned_quantity") or 0)
+        processed_quantity = int(batch.get("inspection_count") or 0)
+
+        # La condicion active = 1 cierra la carrera entre peticiones
+        # simultaneas: solo una consigue marcar el lote como eliminado.
         cur.execute(
             """
-            DELETE FROM batches
+            UPDATE batches
+            SET active = 0,
+                deleted_at = UTC_TIMESTAMP(),
+                deleted_by = %s,
+                deletion_reason = %s
             WHERE id = %s
-              AND status = 'PREPARACION'
-              AND started_at IS NULL
+              AND active = 1
             """,
-            (batch_id,),
+            (admin_id, reason, batch_id),
         )
 
         if cur.rowcount != 1:
             conn.rollback()
-            return redirect(
-                url_for("batches")
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "El lote ya estaba eliminado.",
+                    "batch_id": batch_id,
+                    "already_deleted": True,
+                },
+                "Este lote ya estaba eliminado; "
+                "la operacion no se repitio.",
+            )
+
+        cur.execute(
+            """
+            INSERT INTO batch_deletion_audit (
+                batch_id,
+                batch_code,
+                action,
+                batch_status,
+                planned_quantity,
+                processed_quantity,
+                reason,
+                admin_id,
+                admin_username,
+                active_after
+            )
+            VALUES (%s, %s, 'ELIMINACION', %s, %s, %s, %s, %s, %s, 0)
+            """,
+            (
+                batch_id,
+                batch["code"],
+                batch["status"],
+                planned_quantity,
+                processed_quantity,
+                reason,
+                admin_id,
+                admin_username,
+            ),
+        )
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            return _batch_deletion_reply(
+                500,
+                {
+                    "ok": False,
+                    "error": "No se pudo registrar la auditoria.",
+                },
+                "No se pudo registrar la auditoria de la eliminacion.",
             )
 
         conn.commit()
 
-        return redirect(
-            url_for("batches")
+        # Las alertas en memoria del lote eliminado dejan de estar vigentes.
+        purged_alerts = purge_quality_alerts_for_batch(batch_id)
+
+        app.logger.info(
+            "Lote %s eliminado logicamente por %s. motivo=%s "
+            "planificadas=%s inspeccionadas=%s alertas_retiradas=%s",
+            batch["code"],
+            admin_username,
+            reason,
+            planned_quantity,
+            processed_quantity,
+            purged_alerts,
+        )
+
+        return _batch_deletion_reply(
+            200,
+            {
+                "ok": True,
+                "batch_id": batch_id,
+                "batch_code": batch["code"],
+                "planned_quantity": planned_quantity,
+                "processed_quantity": processed_quantity,
+            },
+            f"Lote {batch['code']} eliminado. La evidencia se conserva "
+            "y puede restaurarse desde la auditoria de lotes.",
+            "success",
         )
 
     except Exception:
@@ -8046,18 +8788,424 @@ def delete_accidental_batch(batch_id):
             conn.rollback()
 
         app.logger.exception(
-            "No fue posible eliminar "
-            "el lote accidental %s.",
+            "No fue posible eliminar logicamente el lote %s.",
             batch_id,
         )
 
-        return redirect(
-            url_for("batches")
+        return _batch_deletion_reply(
+            500,
+            {"ok": False, "error": "No fue posible eliminar el lote."},
+            "No fue posible eliminar el lote.",
         )
 
     finally:
-        cur.close()
-        conn.close()
+        try:
+            if locked:
+                cur.execute(
+                    "SELECT RELEASE_LOCK(%s)",
+                    (BATCH_DELETION_LOCK,),
+                )
+                cur.fetchone()
+        except Exception:
+            app.logger.exception(
+                "No fue posible liberar el bloqueo de lotes."
+            )
+        finally:
+            cur.close()
+            conn.close()
+
+
+@app.route("/lotes/<int:batch_id>/restaurar", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def restore_batch(batch_id):
+    """Restaura administrativamente un lote eliminado (accion reversible)."""
+    reason = " ".join(
+        str(
+            request.form.get("reason")
+            or request.form.get("motivo")
+            or ""
+        ).split()
+    ) or "Restauracion administrativa"
+
+    reason = reason[:BATCH_DELETION_MAX_REASON]
+    admin_id = session.get("user_id")
+    admin_username = (
+        str(session.get("username") or "").strip() or None
+    )
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    locked = False
+
+    try:
+        cur.execute(
+            "SELECT GET_LOCK(%s, 10) AS acquired",
+            (BATCH_DELETION_LOCK,),
+        )
+        locked = int(_first_value(cur.fetchone()) or 0) == 1
+
+        if not locked:
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "Ya hay una operacion sobre lotes en curso.",
+                },
+                "Ya hay una operacion sobre lotes en curso. "
+                "Intente de nuevo en unos segundos.",
+            )
+
+        conn.start_transaction()
+
+        cur.execute(
+            """
+            SELECT
+                b.id,
+                b.code,
+                b.status,
+                b.active,
+                b.planned_quantity,
+                (
+                    SELECT COUNT(*)
+                    FROM inspections i
+                    WHERE i.batch_id = b.id
+                ) AS inspection_count
+            FROM batches b
+            WHERE b.id = %s
+            FOR UPDATE
+            """,
+            (batch_id,),
+        )
+        batch = cur.fetchone()
+
+        if batch is None:
+            conn.rollback()
+            return _batch_deletion_reply(
+                404,
+                {"ok": False, "error": "El lote no existe."},
+                "El lote solicitado no existe.",
+            )
+
+        active_flag = batch.get("active")
+        if active_flag is None or int(active_flag) == 1:
+            conn.rollback()
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "El lote no esta eliminado.",
+                    "batch_id": batch_id,
+                },
+                "Este lote ya estaba activo; no hay nada que restaurar.",
+            )
+
+        planned_quantity = int(batch.get("planned_quantity") or 0)
+        processed_quantity = int(batch.get("inspection_count") or 0)
+
+        cur.execute(
+            """
+            UPDATE batches
+            SET active = 1,
+                deleted_at = NULL,
+                deleted_by = NULL,
+                deletion_reason = NULL
+            WHERE id = %s
+              AND active = 0
+            """,
+            (batch_id,),
+        )
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            return _batch_deletion_reply(
+                409,
+                {
+                    "ok": False,
+                    "error": "El estado del lote cambio.",
+                    "batch_id": batch_id,
+                },
+                "El lote cambio de estado. Refresque la pantalla.",
+            )
+
+        cur.execute(
+            """
+            INSERT INTO batch_deletion_audit (
+                batch_id,
+                batch_code,
+                action,
+                batch_status,
+                planned_quantity,
+                processed_quantity,
+                reason,
+                admin_id,
+                admin_username,
+                active_after
+            )
+            VALUES (%s, %s, 'RESTAURACION', %s, %s, %s, %s, %s, %s, 1)
+            """,
+            (
+                batch_id,
+                batch["code"],
+                batch["status"],
+                planned_quantity,
+                processed_quantity,
+                reason,
+                admin_id,
+                admin_username,
+            ),
+        )
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            return _batch_deletion_reply(
+                500,
+                {
+                    "ok": False,
+                    "error": "No se pudo registrar la auditoria.",
+                },
+                "No se pudo registrar la auditoria de la restauracion.",
+            )
+
+        conn.commit()
+
+        app.logger.info(
+            "Lote %s restaurado por %s. motivo=%s",
+            batch["code"],
+            admin_username,
+            reason,
+        )
+
+        return _batch_deletion_reply(
+            200,
+            {
+                "ok": True,
+                "batch_id": batch_id,
+                "batch_code": batch["code"],
+                "planned_quantity": planned_quantity,
+                "processed_quantity": processed_quantity,
+            },
+            f"Lote {batch['code']} restaurado y nuevamente activo.",
+            "success",
+        )
+
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+
+        app.logger.exception(
+            "No fue posible restaurar el lote %s.",
+            batch_id,
+        )
+
+        return _batch_deletion_reply(
+            500,
+            {"ok": False, "error": "No fue posible restaurar el lote."},
+            "No fue posible restaurar el lote.",
+        )
+
+    finally:
+        try:
+            if locked:
+                cur.execute(
+                    "SELECT RELEASE_LOCK(%s)",
+                    (BATCH_DELETION_LOCK,),
+                )
+                cur.fetchone()
+        except Exception:
+            app.logger.exception(
+                "No fue posible liberar el bloqueo de lotes."
+            )
+        finally:
+            cur.close()
+            conn.close()
+
+
+@app.route("/lotes/eliminados", methods=["GET"])
+@login_required
+@role_required(ROLE_ADMIN)
+def deleted_batches():
+    """Auditoria de lotes eliminados: lista, motivos y restauracion."""
+    return render_template(
+        "deleted_batches.html",
+        deleted_batches=get_deleted_batches(),
+        audit_entries=get_batch_deletion_audit(),
+    )
+
+
+@app.route(
+    "/lotes/eliminados/<int:batch_id>/auditoria",
+    methods=["GET"],
+)
+@login_required
+@role_required(ROLE_ADMIN)
+def batch_deletion_audit_detail(batch_id):
+    """Evidencia completa de un lote eliminado, legible pero inmutable."""
+    batch = fetch_one(
+        """
+        SELECT
+            b.*,
+            (
+                SELECT COUNT(*)
+                FROM inspections i
+                WHERE i.batch_id = b.id
+            ) AS processed_quantity
+        FROM batches b
+        WHERE b.id = %s
+        """,
+        (batch_id,),
+    )
+
+    if batch is None:
+        flash("El lote solicitado no existe.", "error")
+        return redirect(url_for("deleted_batches"))
+
+    inspections = fetch_all(
+        """
+        SELECT
+            i.id,
+            i.code,
+            i.batch_position,
+            i.created_at,
+            i.status,
+            i.ai_decision,
+            i.review_status,
+            i.human_validation,
+            i.reviewed_by,
+            i.reviewed_at,
+            i.review_notes,
+            i.defect_type,
+            i.zone,
+            i.confidence,
+            i.image_original,
+            i.image_result
+        FROM inspections i
+        WHERE i.batch_id = %s
+        ORDER BY i.batch_position, i.id
+        """,
+        (batch_id,),
+    )
+
+    return render_template(
+        "batch_audit_detail.html",
+        batch=batch,
+        inspections=inspections,
+        audit_entries=get_batch_deletion_audit(batch_id),
+    )
+
+
+
+@app.route("/lotes/<int:batch_id>/pausar", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def pause_batch(batch_id):
+    """Pausa la inspeccion sin borrar ni cerrar el lote."""
+    global AUTO_INSPECTION_ENABLED
+    with AUTO_THREAD_LOCK:
+        AUTO_INSPECTION_ENABLED = False
+        worker = AUTO_THREAD
+    if worker and worker.is_alive():
+        worker.join(timeout=8)
+        if worker.is_alive():
+            flash("La estacion sigue deteniendose. Intente de nuevo.", "error")
+            return redirect(url_for("batches"))
+    if MANUAL_INSPECTION_IN_PROGRESS:
+        flash("Espere a que termine la captura manual.", "error")
+        return redirect(url_for("batches"))
+    conn=db()
+    cur=conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute("SELECT id,code,status FROM batches WHERE id=%s AND active=1 FOR UPDATE",(batch_id,))
+        batch=cur.fetchone()
+        if not batch or batch["status"]!="EN_INSPECCION":
+            conn.rollback()
+            flash("El lote no esta en inspeccion.", "error")
+            return redirect(url_for("batches"))
+        cur.execute("UPDATE batches SET status='PAUSADO' WHERE id=%s AND status='EN_INSPECCION'",(batch_id,))
+        if cur.rowcount!=1:
+            conn.rollback()
+            flash("El lote ha cambiado de estado.", "error")
+            return redirect(url_for("batches"))
+        conn.commit()
+        flash(f"Lote {batch['code']} pausado. Se conservaron las inspecciones.", "success")
+        return redirect(url_for("batches"))
+    except Exception:
+        if conn.in_transaction: conn.rollback()
+        app.logger.exception("Error al pausar lote %s",batch_id)
+        flash("No se pudo pausar el lote.","error")
+        return redirect(url_for("batches"))
+    finally:
+        cur.close();conn.close()
+
+
+@app.route("/lotes/<int:batch_id>/reanudar", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
+def resume_batch(batch_id):
+    """Reanuda el mismo lote sin duplicar inspecciones."""
+    with AUTO_THREAD_LOCK:
+        busy=(AUTO_INSPECTION_ENABLED or
+              (AUTO_THREAD is not None and AUTO_THREAD.is_alive()) or
+              MANUAL_INSPECTION_IN_PROGRESS)
+    if busy:
+        flash("La estacion esta ocupada. Intente mas tarde.","error")
+        return redirect(url_for("batches"))
+    conn=db();cur=conn.cursor(dictionary=True);locked=False
+    try:
+        cur.execute("SELECT GET_LOCK(%s, 10) AS acquired",("astrid_quality_start_batch",))
+        locked=int((cur.fetchone() or {}).get("acquired") or 0)==1
+        if not locked:
+            flash("La estacion esta ocupada.","error")
+            return redirect(url_for("batches"))
+        conn.start_transaction()
+        cur.execute("""
+            SELECT b.id,b.code,b.status,gm.active AS model_active,
+                   ai.active AS ai_active,ai.status AS ai_status
+            FROM batches b
+            LEFT JOIN garment_models gm ON gm.id=b.garment_model_id
+            LEFT JOIN garment_ai_models ai ON ai.id=b.ai_model_id
+            WHERE b.id=%s AND b.active=1 FOR UPDATE""",(batch_id,))
+        batch=cur.fetchone()
+        if not batch or batch["status"]!="PAUSADO":
+            conn.rollback()
+            flash("Este lote no esta pausado.","error")
+            return redirect(url_for("batches"))
+        if (int(batch.get("model_active") or 0)!=1 or
+            int(batch.get("ai_active") or 0)!=1 or
+            batch.get("ai_status")!="ACTIVO"):
+            conn.rollback()
+            flash("El modelo está inactivo o su IA no está activa. Se conserva el lote; revise su disponibilidad antes de reanudar.","error")
+            return redirect(url_for("batches"))
+        cur.execute("SELECT id FROM batches WHERE status='EN_INSPECCION' AND active=1 AND id<>%s LIMIT 1 FOR UPDATE",(batch_id,))
+        if cur.fetchone():
+            conn.rollback()
+            flash("Existe otro lote en inspeccion. Pauselo antes.","error")
+            return redirect(url_for("batches"))
+        cur.execute("SELECT id FROM ai_capture_sessions WHERE status='ABIERTA' LIMIT 1")
+        if cur.fetchone():
+            conn.rollback()
+            flash("Hay una captura de IA activa. Pausela antes.","error")
+            return redirect(url_for("batches"))
+        cur.execute("UPDATE batches SET status='EN_INSPECCION' WHERE id=%s AND status='PAUSADO'",(batch_id,))
+        if cur.rowcount!=1:
+            conn.rollback();flash("El lote cambio de estado.","error")
+            return redirect(url_for("batches"))
+        conn.commit()
+        flash(f"Lote {batch['code']} reanudado con su progreso anterior.","success")
+        return redirect(url_for("station"))
+    except Exception:
+        if conn.in_transaction:conn.rollback()
+        app.logger.exception("Error al reanudar lote %s",batch_id)
+        flash("No se pudo reanudar el lote.","error")
+        return redirect(url_for("batches"))
+    finally:
+        if locked:
+            try:
+                cur.execute("SELECT RELEASE_LOCK(%s)",("astrid_quality_start_batch",))
+                cur.fetchone()
+            except Exception:pass
+        cur.close();conn.close()
 
 
 @app.route("/lotes/<int:batch_id>/iniciar", methods=["POST"])
@@ -8114,7 +9262,12 @@ def start_batch(batch_id):
                 ai.id AS linked_ai_id,
                 ai.garment_model_id AS ai_garment_model_id,
                 ai.version AS ai_version,
-                ai.model_type AS ai_model_type
+                ai.model_type AS ai_model_type,
+                ai.status AS ai_status,
+                ai.active AS ai_active,
+                ai.checkpoint_path AS ai_checkpoint_path,
+                ai.threshold_final AS ai_threshold_final,
+                ai.threshold_frozen_at AS ai_threshold_frozen_at
 
             FROM batches b
 
@@ -8125,6 +9278,7 @@ def start_batch(batch_id):
               ON ai.id = b.ai_model_id
 
             WHERE b.id = %s
+              AND b.active = 1
 
             FOR UPDATE
             """,
@@ -8217,6 +9371,64 @@ def start_batch(batch_id):
                 url_for("batches")
             )
 
+        checkpoint_relative = str(
+            batch.get("ai_checkpoint_path")
+            or ""
+        ).strip()
+
+        if (
+            str(batch.get("ai_status") or "").upper()
+            != "ACTIVO"
+            or int(batch.get("ai_active") or 0) != 1
+            or not checkpoint_relative
+            or batch.get("ai_threshold_final") is None
+            or batch.get("ai_threshold_frozen_at") is None
+        ):
+            conn.rollback()
+
+            flash(
+                "La versi\u00f3n de IA asociada al lote "
+                "no est\u00e1 lista para producci\u00f3n. "
+                "Debe tener checkpoint y threshold "
+                "definitivo congelado.",
+                "error",
+            )
+
+            return redirect(
+                url_for("batches")
+            )
+
+        try:
+            checkpoint_abs = resolve_under_root(
+                get_ai_artifacts_root(),
+                checkpoint_relative,
+            )
+        except (AIDomainError, ValueError, OSError):
+            conn.rollback()
+
+            flash(
+                "El checkpoint de la versi\u00f3n de IA "
+                "no tiene una ruta de producci\u00f3n v\u00e1lida.",
+                "error",
+            )
+
+            return redirect(
+                url_for("batches")
+            )
+
+        if not checkpoint_abs.is_file():
+            conn.rollback()
+
+            flash(
+                "No se encontr\u00f3 el checkpoint de la "
+                "versi\u00f3n de IA asociada al lote.",
+                "error",
+            )
+
+            return redirect(
+                url_for("batches")
+            )
+
         cur.execute(
             """
             SELECT
@@ -8224,6 +9436,7 @@ def start_batch(batch_id):
                 code
             FROM batches
             WHERE status = 'EN_INSPECCION'
+              AND active = 1
               AND id <> %s
             ORDER BY id DESC
             LIMIT 1
@@ -8247,6 +9460,15 @@ def start_batch(batch_id):
                 url_for("batches")
             )
 
+        # Una sola camara en la tesis: no iniciar lote si hay captura IA.
+        cur.execute(
+            "SELECT id FROM ai_capture_sessions WHERE status = 'ABIERTA' LIMIT 1"
+        )
+        if cur.fetchone() is not None:
+            conn.rollback()
+            flash("Hay una captura de IA activa. Pausela antes de iniciar el lote.", "error")
+            return redirect(url_for("batches"))
+
         AUTO_INSPECTION_ENABLED = False
 
         cur.execute(
@@ -8258,9 +9480,7 @@ def start_batch(batch_id):
               AND status = 'PREPARACION'
             """,
             (
-                datetime.now().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
+                utc_now_db(),
                 batch_id,
             ),
         )
@@ -8350,6 +9570,7 @@ def finish_batch_manual(batch_id):
                 inspection_line_id
             FROM batches
             WHERE id = %s
+              AND active = 1
             FOR UPDATE
             """,
             (batch_id,),
@@ -8395,9 +9616,7 @@ def finish_batch_manual(batch_id):
             cur.fetchone()["total"] or 0
         )
 
-        finished_at = datetime.now().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        finished_at = utc_now_db()
 
         cur.execute(
             """
@@ -8537,6 +9756,7 @@ def complete_batch_review(batch_id):
                 status
             FROM batches
             WHERE id = %s
+              AND active = 1
             FOR UPDATE
             """,
             (batch_id,),
@@ -8672,9 +9892,7 @@ def complete_batch_review(batch_id):
             )
 
         closed_at = (
-            datetime.utcnow().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
+            utc_now_db()
         )
 
         cur.execute(
@@ -8749,6 +9967,13 @@ def review_batch_alert(
     inspection_id,
     decision,
 ):
+    asynchronous = request.headers.get("X-Requested-With") == "XMLHttpRequest" and request.accept_mimetypes.best == "application/json"
+
+    def review_response(traditional, message, status):
+        if asynchronous:
+            return jsonify(ok=False, message=message), status
+        return traditional
+
     batch = get_batch_review_summary(
         batch_id
     )
@@ -8758,12 +9983,12 @@ def review_batch_alert(
         or batch["status"]
         != "REVISION_PENDIENTE"
     ):
-        return redirect(
+        return review_response(redirect(
             url_for(
                 "batch_review",
                 batch_id=batch_id,
             )
-        )
+        ), 'El lote ya no admite revisiones.', 409)
 
     inspection = fetch_one(
         """
@@ -8784,12 +10009,12 @@ def review_batch_alert(
     )
 
     if inspection is None:
-        return redirect(
+        return review_response(redirect(
             url_for(
                 "batch_review",
                 batch_id=batch_id,
             )
-        )
+        ), 'La inspección no pertenece a este lote.', 404)
 
     current_status = (
         inspection["review_status"]
@@ -8802,12 +10027,12 @@ def review_batch_alert(
         or current_status
         != "PENDIENTE"
     ):
-        return redirect(
+        return review_response(redirect(
             url_for(
                 "batch_review",
                 batch_id=batch_id,
             )
-        )
+        ), 'La alerta ya fue revisada o no requiere revisión.', 409)
 
     if decision == "confirmar":
         review_status = (
@@ -8822,12 +10047,12 @@ def review_batch_alert(
         human_validation = "Incorrecto"
 
     else:
-        return redirect(
+        return review_response(redirect(
             url_for(
                 "batch_review",
                 batch_id=batch_id,
             )
-        )
+        ), 'Decisión no válida.', 400)
 
     review_notes = (
         request.form.get(
@@ -8838,13 +10063,13 @@ def review_batch_alert(
     )
 
     if len(review_notes) < 5:
-        return redirect(
+        return review_response(redirect(
             url_for(
                 "batch_review",
                 batch_id=batch_id,
             )
             + f"#alert-{inspection_id}"
-        )
+        ), 'Escriba un motivo de al menos cinco caracteres.', 400)
 
     if len(review_notes) > 500:
         review_notes = (
@@ -8855,11 +10080,7 @@ def review_batch_alert(
         "user_id"
     )
 
-    reviewed_at = (
-        datetime.utcnow().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-    )
+    reviewed_at = utc_now_db()
 
     execute(
         """
@@ -8888,6 +10109,15 @@ def review_batch_alert(
         ),
     )
 
+    if asynchronous:
+        saved = fetch_one(
+            "SELECT review_status, review_notes, reviewed_by FROM inspections WHERE id=%s AND batch_id=%s",
+            (inspection_id, batch_id),
+        )
+        if not saved or saved["review_status"] != review_status or saved["review_notes"] != review_notes or saved["reviewed_by"] != reviewed_by:
+            return jsonify(ok=False, message="La decisión no pudo confirmarse; la alerta pudo ser revisada por otro usuario."), 409
+        return jsonify(ok=True, inspection_id=inspection_id)
+
     return redirect(
         url_for(
             "batch_review",
@@ -8912,91 +10142,112 @@ def station():
 @login_required
 @role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
 def station_manual_inspect():
-    global AUTO_LAST_RESULT
-    global AUTO_LAST_ERROR
+    global MANUAL_INSPECTION_IN_PROGRESS
+    def execute():
+        global AUTO_LAST_RESULT
+        global AUTO_LAST_ERROR
 
-    try:
-        if get_active_batch() is None:
-            return jsonify({
-                "ok": False,
-                "message": (
-                    "No hay un lote activo. "
-                    "Inicia un lote antes de inspeccionar."
-                ),
-            }), 409
-
-        # latest_frame: NO cap.read(); no abre otra sesión RTSP.
-        ok, frame = read_camera_frame(source="manual")
-
-        if not ok:
-            return jsonify({
-                "ok": False,
-                "message": (
-                    "No se pudo leer la cámara. "
-                    "No se guardó ningún registro."
-                ),
-            }), 503
-
-        frame_available = time.perf_counter()
         try:
-            result = register_inspection_from_frame(
-                frame,
-                notes=(
-                    "Registro manual generado desde "
-                    "estación de inspección."
-                ),
-                decision_start=frame_available,
-                source="manual",
-            )
-        except AIDomainError as domain_error:
-            return jsonify({
-                "ok": False,
-                "message": str(domain_error),
-            }), 409
-        except RuntimeError as runtime_error:
-            if not is_garment_not_detected_error(runtime_error):
-                app.logger.exception(
-                    "Error inesperado en la inspección manual."
-                )
+            if get_active_batch() is None:
                 return jsonify({
                     "ok": False,
                     "message": (
-                        "No se pudo completar la inspección. "
-                        "Intente de nuevo."
+                        "No hay un lote activo. "
+                        "Inicia un lote antes de inspeccionar."
                     ),
-                }), 500
+                }), 409
+
+            # latest_frame: NO cap.read(); no abre otra sesión RTSP.
+            frame, timestamp, sequence = get_latest_camera_frame()
+            MANUAL_REQUEST_GATE.validate_frame(frame, timestamp, sequence)
+            ok = frame is not None
+
+            if not ok:
+                return jsonify({
+                    "ok": False,
+                    "message": (
+                        "No se pudo leer la cámara. "
+                        "No se guardó ningún registro."
+                    ),
+                }), 503
+
+            frame_available = time.perf_counter()
+            try:
+                result = register_inspection_from_frame(
+                    frame,
+                    notes=(
+                        "Registro manual generado desde "
+                        "estación de inspección."
+                    ),
+                    decision_start=frame_available,
+                    source="manual",
+                )
+            except AIDomainError as domain_error:
+                return jsonify({
+                    "ok": False,
+                    "message": str(domain_error),
+                }), 409
+            except RuntimeError as runtime_error:
+                if not is_garment_not_detected_error(runtime_error):
+                    app.logger.exception(
+                        "Error inesperado en la inspección manual."
+                    )
+                    return jsonify({
+                        "ok": False,
+                        "message": (
+                            "No se pudo completar la inspección. "
+                            "Intente de nuevo."
+                        ),
+                    }), 500
+
+                return jsonify({
+                    "ok": False,
+                    "message": (
+                        "No se detectó una prenda completa en el área de "
+                        "inspección. Colóquela correctamente e intente de nuevo."
+                    ),
+                }), 409
+
+            MANUAL_REQUEST_GATE.completed(sequence)
+            AUTO_LAST_RESULT = result
+            AUTO_LAST_ERROR = None
+
+            return jsonify({
+                "ok": True,
+                "message": (
+                    "Inspección manual registrada correctamente."
+                ),
+                "result": result,
+            })
+
+        except InspectionBusy:
+            raise
+
+        except Exception:
+            app.logger.exception("Error al ejecutar la inspección manual.")
+            AUTO_LAST_ERROR = "Error al ejecutar la inspección manual."
 
             return jsonify({
                 "ok": False,
                 "message": (
-                    "No se detectó una prenda completa en el área de "
-                    "inspección. Colóquela correctamente e intente de nuevo."
+                    "Error al ejecutar la inspección manual."
                 ),
-            }), 409
+            }), 500
 
-        AUTO_LAST_RESULT = result
-        AUTO_LAST_ERROR = None
-
-        return jsonify({
-            "ok": True,
-            "message": (
-                "Inspección manual registrada correctamente."
-            ),
-            "result": result,
-        })
-
-    except Exception:
-        app.logger.exception("Error al ejecutar la inspección manual.")
-        AUTO_LAST_ERROR = "Error al ejecutar la inspección manual."
-
-        return jsonify({
-            "ok": False,
-            "message": (
-                "Error al ejecutar la inspección manual."
-            ),
-        }), 500
-
-
+    with AUTO_THREAD_LOCK:
+        if AUTO_INSPECTION_ENABLED or (AUTO_THREAD is not None and AUTO_THREAD.is_alive()):
+            return jsonify(ok=False, message="Detenga el modo automático antes de inspeccionar manualmente."), 409
+        if MANUAL_INSPECTION_IN_PROGRESS:
+            return jsonify(ok=False, message="Ya hay una inspección manual en curso. Espere a que finalice."), 409
+        MANUAL_INSPECTION_IN_PROGRESS = True
+    try:
+        with MANUAL_REQUEST_GATE.acquire(db):
+            return execute()
+    except InspectionBusy as exc:
+        return jsonify(ok=False, message=str(exc)), 429
+    finally:
+        with AUTO_THREAD_LOCK:
+            MANUAL_INSPECTION_IN_PROGRESS = False
 
 
 @app.route("/api/station/camera/reconnect", methods=["POST"])
@@ -9029,6 +10280,7 @@ def station_camera_reconnect():
 def station_auto_start():
     global AUTO_INSPECTION_ENABLED
     global AUTO_THREAD
+    global AUTO_LAST_ERROR
 
     if is_ai_capture_mode_active():
         return jsonify({
@@ -9067,15 +10319,44 @@ def station_auto_start():
             "message": "El lote ya completó todas sus prendas.",
         }), 409
 
-    if AUTO_INSPECTION_ENABLED:
-        return jsonify({
-            "ok": True,
-            "message": "El modo automático ya está activo.",
-        })
+    with AUTO_THREAD_LOCK:
+        if MANUAL_INSPECTION_IN_PROGRESS:
+            return jsonify({
+                "ok": False,
+                "message": (
+                    "Hay una inspección manual en curso. "
+                    "Espere a que finalice antes de iniciar "
+                    "el modo automático."
+                ),
+            }), 409
 
-    AUTO_INSPECTION_ENABLED = True
-    AUTO_THREAD = threading.Thread(target=auto_inspection_worker, daemon=True)
-    AUTO_THREAD.start()
+        if AUTO_INSPECTION_ENABLED:
+            return jsonify({
+                "ok": True,
+                "message": "El modo automático ya está activo.",
+            })
+
+        if AUTO_THREAD is not None and AUTO_THREAD.is_alive():
+            return jsonify({
+                "ok": False,
+                "message": (
+                    "El modo automático anterior todavía se está "
+                    "deteniendo. Intente de nuevo en unos segundos."
+                ),
+            }), 409
+
+        identity = tuple(active_batch.get(key) for key in ("id", "garment_model_id", "ai_model_id"))
+        if AUTO_SESSION["identity"] != identity:
+            AUTO_SESSION["waiting_for_exit"] = False
+        AUTO_SESSION["identity"] = identity
+        AUTO_LAST_ERROR = None
+        AUTO_INSPECTION_ENABLED = True
+        AUTO_THREAD = threading.Thread(
+            target=auto_inspection_worker,
+            daemon=True,
+            name="astrid-auto-inspection",
+        )
+        AUTO_THREAD.start()
 
     return jsonify({
         "ok": True,
@@ -9089,7 +10370,8 @@ def station_auto_start():
 def station_auto_stop():
     global AUTO_INSPECTION_ENABLED
 
-    AUTO_INSPECTION_ENABLED = False
+    with AUTO_THREAD_LOCK:
+        AUTO_INSPECTION_ENABLED = False
 
     return jsonify({
         "ok": True,
@@ -9131,9 +10413,14 @@ def station_auto_status():
         else:
             row = fetch_one(
                 """
-                SELECT *
-                FROM inspections
-                ORDER BY id DESC
+                -- BATCH_LOGICAL_DELETION_V1: sin lote activo no se muestra
+                -- el resultado de un lote eliminado como alerta vigente.
+                SELECT i.*
+                FROM inspections i
+                LEFT JOIN batches b
+                  ON b.id = i.batch_id
+                WHERE COALESCE(b.active, 1) = 1
+                ORDER BY i.id DESC
                 LIMIT 1
                 """
             )
@@ -9142,7 +10429,8 @@ def station_auto_status():
 
     return jsonify({
         "ok": True,
-        "automatic": AUTO_INSPECTION_ENABLED,
+        "automatic": bool(AUTO_INSPECTION_ENABLED and AUTO_THREAD is not None and AUTO_THREAD.is_alive()),
+        "worker_running": bool(AUTO_THREAD is not None and AUTO_THREAD.is_alive()),
         "last_result": last_result,
         "last_error": AUTO_LAST_ERROR,
         "active_batch": row_to_json(active_batch),
@@ -9306,9 +10594,14 @@ def station_alerts_ack():
 def station_latest():
     row = fetch_one(
         """
-        SELECT *
-        FROM inspections
-        ORDER BY id DESC
+        -- BATCH_LOGICAL_DELETION_V1: la ultima inspeccion consultada nunca
+        -- pertenece a un lote eliminado.
+        SELECT i.*
+        FROM inspections i
+        LEFT JOIN batches b
+          ON b.id = i.batch_id
+        WHERE COALESCE(b.active, 1) = 1
+        ORDER BY i.id DESC
         LIMIT 1
         """
     )
@@ -9397,7 +10690,7 @@ def inspection():
             """,
             (
                 code,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                utc_now_db(),
                 garment,
                 size,
                 status,
@@ -9423,17 +10716,107 @@ def inspection():
     return render_template("inspection.html", result=result)
 
 
+# CAPÍTULO V — Historial de inspecciones.
+# Permite consultar registros y filtrar las inspecciones por fechas,
+# lote, modelo de prenda, responsable y resultado.
+# Permite consultar el historial de inspecciones.
+
+
+def available_history_models():
+    """Catalog members whose active AI version is actually usable for production."""
+    rows = fetch_all(f"""
+        SELECT gm.id, gm.code, gm.name, ai.id AS ai_id,
+               ai.status AS ai_status, ai.active AS ai_active,
+               ai.checkpoint_path, ai.checkpoint_hash,
+               ai.threshold_final, ai.threshold_frozen_at, ai.notes
+        FROM garment_models gm
+        JOIN garment_ai_models ai ON ai.garment_model_id = gm.id
+        {garment_catalog_where(approved_only=True)}
+          AND ai.active = 1 AND ai.status = 'ACTIVO'
+          AND ai.model_type = 'PatchCore'
+        ORDER BY gm.code, ai.id DESC
+    """)
+    available = {}
+    for row in rows:
+        if (str(row['ai_status'] or '').upper() == 'ACTIVO'
+                and int(row['ai_active'] or 0) == 1
+                and row['threshold_final'] is not None
+                and row['threshold_frozen_at'] is not None
+                and bool(str(row['checkpoint_path'] or '').strip())
+                and not ai_validation.is_technically_invalidated(row.get('notes'))
+                and checkpoint_is_available(get_ai_artifacts_root(), row['checkpoint_path'], row['checkpoint_hash'])):
+            available.setdefault(row['id'], dict(id=row['id'], code=row['code'], name=row['name']))
+    return list(available.values())
+
+
+def inspection_evidence_url(original=None, result=None):
+    """Original capture only. Result evidence must be requested separately."""
+    relative = inspection_evidence_path(app.static_folder, original)
+    return url_for('static', filename=relative) if relative else None
+
+
+app.jinja_env.globals['inspection_evidence_url'] = inspection_evidence_url
+
+
+def inspection_capture_url(relative):
+    """Resolve an inspection's own file without substituting catalog imagery."""
+    root = Path(app.static_folder).resolve()
+    value = str(relative or '').replace(chr(92), '/')
+    if not value:
+        return None
+    try:
+        source = (root / value).resolve()
+        if not source.is_relative_to(root) or not source.is_file():
+            return None
+        resolved = source.relative_to(root).as_posix()
+        if (source.suffix.lower() in {'.jpg', '.jpeg', '.png', '.webp'}
+                and source.relative_to(root).parts[0] in {'captures', 'results'}
+                and not resolved.startswith(('results/model_', 'garment_models/'))):
+            return url_for('static', filename=resolved)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+app.jinja_env.globals['inspection_capture_url'] = inspection_capture_url
+
+
+def get_garment_presentation_urls(model_ids):
+    """Read catalog derivatives for listings; never substitute an unsafe original."""
+    ids = sorted({int(value) for value in model_ids if str(value or "").isdigit() and int(value) > 0})
+    if not ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(ids))
+    references = fetch_all(
+        f"""SELECT gm.id,
+            (SELECT image_path FROM garment_model_images image
+             WHERE image.garment_model_id=gm.id AND image.image_type='REFERENCIA'
+             ORDER BY image.sort_order,image.id LIMIT 1) AS reference_image_path
+            FROM garment_models gm WHERE gm.id IN ({placeholders})""",
+        tuple(ids),
+    )
+    result = {}
+    for item in references:
+        url, has_cutout = garment_cover_display_status(item["id"], item.get("reference_image_path"))
+        if url and has_cutout:
+            result[int(item["id"])] = url
+    return result
+
+
 @app.route("/registros")
 @login_required
 def records():
+# Importa las herramientas para trabajar con fechas.
     from datetime import datetime as dt_datetime
     from datetime import time as dt_time
     from datetime import timedelta as dt_timedelta
     from zoneinfo import ZoneInfo
 
+# Define las zonas horarias de Guatemala y UTC.
     timezone_gt = ZoneInfo("America/Guatemala")
     timezone_utc = ZoneInfo("UTC")
 
+# Obtiene la fecha actual de Guatemala.
     today_gt = dt_datetime.now(timezone_gt).date()
     today_text = today_gt.strftime("%Y-%m-%d")
 
@@ -9534,7 +10917,15 @@ def records():
         )
     """
 
-    conditions = []
+    conditions = [
+        # BATCH_LOGICAL_DELETION_V1: el historial operativo deja fuera las
+        # inspecciones de lotes eliminados; siguen en la auditoria.
+        # La condicion se escribe aqui en linea (y no se toma del modulo) porque
+        # esta vista se ejecuta tambien en el banco de pruebas aislado, que
+        # compila unicamente esta funcion sin el resto de app.py. Debe mantenerse
+        # identica a INSPECTION_FROM_ACTIVE_BATCH_SQL.
+        "COALESCE(b.active, 1) = 1",
+    ]
     params = []
 
     if q:
@@ -9764,6 +11155,7 @@ def records():
                     'Sin lote'
                 ) AS batch_code,
 
+                gm.id AS garment_model_id,
                 gm.code AS garment_model_code,
                 gm.name AS garment_model_name,
 
@@ -9818,23 +11210,26 @@ def records():
                     ),
                     0
                 ) AS pending
-
+-- Aplica las tablas y los filtros de la consulta.
             {from_sql}
             {where_sql}
 
+-- Agrupa los resultados por lote y modelo de prenda.
             GROUP BY
                 b.id,
                 b.code,
+                gm.id,
                 gm.code,
                 gm.name
 
+-- Ordena los lotes y muestra primero los más recientes.
             ORDER BY
                 CASE
                     WHEN b.id IS NULL THEN 1
                     ELSE 0
                 END,
                 b.id DESC
-
+-- Limita la consulta a un máximo de 30 resultados.
             LIMIT 30
             """,
             tuple(params),
@@ -9982,6 +11377,7 @@ def records():
                 b.id AS batch_id,
                 b.code AS batch_code,
 
+                gm.id AS garment_model_id,
                 gm.code AS garment_model_code,
                 gm.name AS garment_model_name,
 
@@ -10011,7 +11407,13 @@ def records():
             timezone_gt
         )
 
+    model_presentations = get_garment_presentation_urls(
+        item.get("garment_model_id") for item in [*lot_summary, *rows]
+    )
+    for lot in lot_summary:
+        lot["model_presentation_url"] = model_presentations.get(lot.get("garment_model_id"))
     for row in rows:
+        row["model_presentation_url"] = model_presentations.get(row.get("garment_model_id"))
         row["created_at_gt"] = convert_utc_to_gt(
             row.get("created_at")
         )
@@ -10053,7 +11455,7 @@ def records():
             )
         ):
             row["decision_label"] = (
-                "Apta - alerta descartada"
+                "Apta - falsa alerta"
             )
             row["decision_class"] = "passed"
 
@@ -10067,16 +11469,18 @@ def records():
         """
         SELECT id, code
         FROM batches
+        WHERE active = 1
         ORDER BY id DESC
         LIMIT 200
         """
     )
 
     models_options = fetch_all(
-        """
-        SELECT id, code, name
-        FROM garment_models
-        ORDER BY code
+        f"""
+        SELECT gm.id, gm.code, gm.name
+        FROM garment_models gm
+        {garment_catalog_where(normalize_role(session.get("role")) == ROLE_QUALITY_MANAGER)}
+        ORDER BY gm.code
         """
     )
 
@@ -10288,6 +11692,8 @@ def get_informe_data():
         "i.batch_id IS NOT NULL",
         "i.created_at >= %s",
         "i.created_at < %s",
+        # BATCH_LOGICAL_DELETION_V1: los informes excluyen lotes eliminados.
+        INSPECTION_FROM_ACTIVE_BATCH_SQL,
     ]
 
     params = [
@@ -11475,10 +12881,13 @@ def get_goal_history_data(start_date, end_date):
             calendar_sql + """
             SELECT c.day, COUNT(*) AS inspected
             FROM inspections i
+            LEFT JOIN batches b
+              ON b.id = i.batch_id
             JOIN calendar c
               ON i.created_at >= c.start_utc
              AND i.created_at < c.end_utc
             WHERE i.created_at >= %s AND i.created_at < %s
+              AND COALESCE(b.active, 1) = 1
             GROUP BY c.day
             """,
             params,
@@ -11493,6 +12902,7 @@ def get_goal_history_data(start_date, end_date):
              AND b.inspection_completed_at < c.end_utc
             WHERE b.inspection_completed_at >= %s
               AND b.inspection_completed_at < %s
+              AND b.active = 1
               AND EXISTS (
                   SELECT 1 FROM inspections i WHERE i.batch_id = b.id
               )
@@ -11539,6 +12949,9 @@ def get_goal_history_data(start_date, end_date):
     return {"rows": rows, "summary": summarize_goal_history(rows)}
 
 
+# CAPÍTULO V — Informes de control de calidad.
+# Reúne los datos de inspección y el historial de metas de producción
+# para presentar la información consolidada en la interfaz de informes.
 @app.route("/informes")
 @login_required
 def informes():
@@ -11571,6 +12984,7 @@ def informes():
             id,
             code
         FROM batches
+        WHERE active = 1
         ORDER BY id DESC
         LIMIT 200
         """
@@ -14228,16 +15642,14 @@ def informe_pdf():
         TA_CENTER,
         TA_LEFT,
     )
-    from reportlab.lib.pagesizes import (
-        letter,
-        landscape,
-    )
+    from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import (
         ParagraphStyle,
         getSampleStyleSheet,
     )
     from reportlab.lib.units import mm
     from reportlab.platypus import (
+        KeepTogether,
         LongTable,
         PageBreak,
         Paragraph,
@@ -14301,9 +15713,9 @@ def informe_pdf():
 
     buffer = io.BytesIO()
 
-    page_size = landscape(letter)
+    page_size = letter
 
-    margin_x = 22 * mm
+    margin_x = 16 * mm
 
     content_width = (
         page_size[0]
@@ -14323,8 +15735,8 @@ def informe_pdf():
         pagesize=page_size,
         rightMargin=margin_x,
         leftMargin=margin_x,
-        topMargin=25 * mm,
-        bottomMargin=16 * mm,
+        topMargin=31 * mm,
+        bottomMargin=17 * mm,
         title=(
             "Informe de producci\u00f3n y calidad"
         ),
@@ -14340,7 +15752,7 @@ def informe_pdf():
         parent=styles["Title"],
         alignment=TA_CENTER,
         fontName="Helvetica-Bold",
-        fontSize=19,
+        fontSize=18,
         leading=23,
         spaceAfter=4,
     )
@@ -14352,7 +15764,7 @@ def informe_pdf():
         fontSize=10,
         leading=13,
         textColor=colors.HexColor(
-            "#5F574F"
+            "#526783"
         ),
         spaceAfter=3,
     )
@@ -14364,7 +15776,7 @@ def informe_pdf():
         fontSize=7.5,
         leading=10,
         textColor=colors.HexColor(
-            "#82776D"
+            "#73829A"
         ),
         spaceAfter=10,
     )
@@ -14416,7 +15828,7 @@ def informe_pdf():
         fontSize=7.5,
         leading=9,
         textColor=colors.HexColor(
-            "#6B625A"
+            "#647691"
         ),
     )
 
@@ -14428,7 +15840,7 @@ def informe_pdf():
         fontSize=9,
         leading=12,
         textColor=colors.HexColor(
-            "#6B625A"
+            "#647691"
         ),
     )
 
@@ -14438,7 +15850,7 @@ def informe_pdf():
         fontSize=7.5,
         leading=10,
         textColor=colors.HexColor(
-            "#5F574F"
+            "#526783"
         ),
     )
 
@@ -14489,7 +15901,7 @@ def informe_pdf():
                     (0, 0),
                     (-1, -1),
                     colors.HexColor(
-                        "#F2EEE8"
+                        "#EEF4FC"
                     ),
                 ),
                 (
@@ -14498,7 +15910,7 @@ def informe_pdf():
                     (-1, -1),
                     0.4,
                     colors.HexColor(
-                        "#D8D0C6"
+                        "#D5E0EF"
                     ),
                 ),
                 (
@@ -14561,7 +15973,7 @@ def informe_pdf():
                     (0, 0),
                     (-1, -1),
                     colors.HexColor(
-                        "#FAF8F5"
+                        "#F8FAFE"
                     ),
                 ),
                 (
@@ -14570,7 +15982,7 @@ def informe_pdf():
                     (-1, -1),
                     0.4,
                     colors.HexColor(
-                        "#DDD5CB"
+                        "#E2E9F3"
                     ),
                 ),
                 (
@@ -14622,7 +16034,7 @@ def informe_pdf():
             (0, 0),
             (-1, 0),
             colors.HexColor(
-                "#111111"
+                "#10224A"
             ),
         ),
         (
@@ -14637,7 +16049,7 @@ def informe_pdf():
             (-1, -1),
             0.35,
             colors.HexColor(
-                "#DDD5CB"
+                "#E2E9F3"
             ),
         ),
         (
@@ -14647,7 +16059,7 @@ def informe_pdf():
             [
                 colors.white,
                 colors.HexColor(
-                    "#FAF8F5"
+                    "#F8FAFE"
                 ),
             ],
         ),
@@ -14865,7 +16277,7 @@ def informe_pdf():
                 (-1, -1),
                 0.5,
                 colors.HexColor(
-                    "#D8D0C6"
+                    "#D5E0EF"
                 ),
             ),
             (
@@ -15016,81 +16428,50 @@ def informe_pdf():
         Spacer(1, 5)
     )
 
+    # Tarjetas uniformes evitan tablas de ocho columnas ilegibles en vertical.
     if insights["models"]:
-        rows = [[
-            header("Modelo"),
-            header("Nombre"),
-            header("Inspeccionadas"),
-            header("Aptas"),
-            header("Rechazadas"),
-            header("Pendientes"),
-            header("Estado"),
-            header("Lectura r\u00e1pida"),
-        ]]
-
-        for model in insights[
-            "models"
-        ][:10]:
-            rows.append([
-                paragraph(
-                    model["code"]
-                ),
-                paragraph(
-                    model["name"]
-                ),
-                centered(
-                    model["inspected"]
-                ),
-                centered(
-                    model["passed"]
-                ),
-                centered(
-                    model["rejected"]
-                ),
-                centered(
-                    model["pending"]
-                ),
-                paragraph(
-                    model["state"]
-                ),
-                paragraph(
-                    model["reading"]
-                ),
-            ])
-
-        table = LongTable(
-            rows,
-            repeatRows=1,
-            colWidths=[
-                27 * mm,
-                42 * mm,
-                26 * mm,
-                18 * mm,
-                23 * mm,
-                22 * mm,
-                38 * mm,
-                73 * mm,
-            ],
-        )
-
-        table.setStyle(
-            data_table_style
-        )
-
-        elements.append(
-            table
-        )
-
-    else:
-        elements.append(
-            Paragraph(
-                (
-                    "No existen modelos con "
-                    "actividad en el per\u00edodo."
-                ),
-                note_style,
+        for model in insights["models"][:10]:
+            label = str(model["code"]) + " - " + str(model["name"])
+            model_table = Table(
+                [
+                    [paragraph(label, section_style), "", "", ""],
+                    [
+                        paragraph(model["inspected"], metric_value_style),
+                        paragraph(model["passed"], metric_value_style),
+                        paragraph(model["rejected"], metric_value_style),
+                        paragraph(model["pending"], metric_value_style),
+                    ],
+                    [
+                        paragraph("Inspeccionadas", metric_label_style),
+                        paragraph("Aptas", metric_label_style),
+                        paragraph("Rechazadas", metric_label_style),
+                        paragraph("Pendientes", metric_label_style),
+                    ],
+                    [paragraph("Estado: " + str(model["state"]), note_style), "", "", ""],
+                    [paragraph("Lectura: " + str(model["reading"]), note_style), "", "", ""],
+                ],
+                colWidths=[content_width / 4] * 4,
+                hAlign="CENTER",
             )
-        )
+            model_table.setStyle(TableStyle([
+                ("SPAN", (0, 0), (-1, 0)),
+                ("SPAN", (0, 3), (-1, 3)),
+                ("SPAN", (0, 4), (-1, 4)),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEF4FC")),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.white),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#D5E0EF")),
+                ("LINEBELOW", (0, 2), (-1, 2), 0.4, colors.HexColor("#E2E9F3")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]))
+            elements.append(KeepTogether([model_table, Spacer(1, 11)]))
+    else:
+        elements.append(paragraph(
+            "No existen modelos con actividad en el período.", note_style
+        ))
 
     elements.append(
         Spacer(1, 8)
@@ -15164,95 +16545,53 @@ def informe_pdf():
     )
 
     if data["lot_summary"]:
-        rows = [[
-            header("Lote"),
-            header("Modelo"),
-            header("Avance"),
-            header("Inspeccionadas"),
-            header("Aptas"),
-            header("Rechazadas"),
-            header("% rechazo"),
-            header("Pendientes"),
-        ]]
-
-        for row in data[
-            "lot_summary"
-        ][:20]:
-            model_label = (
-                (
-                    str(
-                        row[
-                            "garment_model_code"
-                        ]
-                    )
-                    + " - "
-                    + str(
-                        row[
-                            "garment_model_name"
-                        ]
-                    )
-                )
-                if row[
-                    "garment_model_code"
-                ]
-                else "Sin modelo"
+        for row in data["lot_summary"][:20]:
+            model_name = (
+                str(row["garment_model_code"]) + " - "
+                + str(row["garment_model_name"])
+                if row["garment_model_code"] else "Sin modelo"
             )
-
-            rows.append([
-                paragraph(
-                    row["code"]
-                ),
-                paragraph(
-                    model_label
-                ),
-                centered(
-                    (
-                        f"{row['total_processed']}/"
-                        f"{row['planned_quantity']} "
-                        f"({float(row['progress_rate'] or 0):.1f}%)"
-                    )
-                ),
-                centered(
-                    row["inspected"]
-                ),
-                centered(
-                    row["passed"]
-                ),
-                centered(
-                    row["rejected"]
-                ),
-                centered(
-                    (
-                        f"{float(row['rejection_rate'] or 0):.1f}%"
-                    )
-                ),
-                centered(
-                    row["pending"]
-                ),
-            ])
-
-        table = LongTable(
-            rows,
-            repeatRows=1,
-            colWidths=[
-                38 * mm,
-                58 * mm,
-                40 * mm,
-                31 * mm,
-                24 * mm,
-                28 * mm,
-                27 * mm,
-                23 * mm,
-            ],
-        )
-
-        table.setStyle(
-            data_table_style
-        )
-
-        elements.append(
-            table
-        )
+            lot_header = str(row["code"]) + " | " + model_name
+            progress = (
+                f"{row['total_processed']}/{row['planned_quantity']}"
+                f" ({float(row['progress_rate'] or 0):.1f}%)"
+            )
+            rejection = f"{float(row['rejection_rate'] or 0):.1f}%"
+            lot_table = Table(
+                [
+                    [paragraph(lot_header, section_style), "", "", ""],
+                    [
+                        paragraph(row["inspected"], metric_value_style),
+                        paragraph(row["passed"], metric_value_style),
+                        paragraph(row["rejected"], metric_value_style),
+                        paragraph(row["pending"], metric_value_style),
+                    ],
+                    [
+                        paragraph("Inspeccionadas", metric_label_style),
+                        paragraph("Aptas", metric_label_style),
+                        paragraph("Rechazadas", metric_label_style),
+                        paragraph("Pendientes", metric_label_style),
+                    ],
+                    [paragraph("Avance: " + progress
+                               + " | Rechazo confirmado: " + rejection,
+                               note_style), "", "", ""],
+                ],
+                colWidths=[content_width / 4] * 4,
+                hAlign="CENTER",
+            )
+            lot_table.setStyle(TableStyle([
+                ("SPAN", (0, 0), (-1, 0)),
+                ("SPAN", (0, 3), (-1, 3)),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEF4FC")),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#D5E0EF")),
+                ("LINEBELOW", (0, 2), (-1, 2), 0.4, colors.HexColor("#E2E9F3")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]))
+            elements.append(KeepTogether([lot_table, Spacer(1, 11)]))
 
     if data["rejection_reasons"]:
         elements.append(
@@ -15380,7 +16719,7 @@ def informe_pdf():
 
         canvas.setStrokeColor(
             colors.HexColor(
-                "#D8D0C6"
+                "#D5E0EF"
             )
         )
 
@@ -15399,7 +16738,7 @@ def informe_pdf():
 
         canvas.setFillColor(
             colors.HexColor(
-                "#6B625A"
+                "#647691"
             )
         )
 
@@ -15438,14 +16777,14 @@ def informe_pdf():
                 str(logo_path),
                 margin_x,
                 page_size[1] - (22 * mm),
-                width=24 * mm,
-                height=18 * mm,
+                width=23 * mm,
+                height=17 * mm,
                 preserveAspectRatio=True,
                 mask="auto",
             )
 
         canvas.setFillColor(
-            colors.HexColor("#111111")
+            colors.HexColor("#10224A")
         )
 
         canvas.setFont(
@@ -15454,7 +16793,7 @@ def informe_pdf():
         )
 
         canvas.drawString(
-            margin_x + (29 * mm),
+            margin_x + (28 * mm),
             page_size[1] - (10 * mm),
             "Astrid y Beverly Fashion",
         )
@@ -15465,17 +16804,17 @@ def informe_pdf():
         )
 
         canvas.setFillColor(
-            colors.HexColor("#6B625A")
+            colors.HexColor("#647691")
         )
 
         canvas.drawString(
-            margin_x + (29 * mm),
+            margin_x + (28 * mm),
             page_size[1] - (15 * mm),
             "Informe de producci\u00f3n y control de calidad",
         )
 
         canvas.setStrokeColor(
-            colors.HexColor("#D8D0C6")
+            colors.HexColor("#D5E0EF")
         )
 
         canvas.line(
@@ -15490,7 +16829,7 @@ def informe_pdf():
     document.build(
         elements,
         onFirstPage=add_first_page,
-        onLaterPages=add_page_footer,
+        onLaterPages=add_first_page,
     )
 
     buffer.seek(0)
@@ -15692,6 +17031,448 @@ def can_manage_garment_model(model):
     )
 
 
+
+from garment_background_preview import garment_visual_preview
+
+
+def garment_reference_preview_path(relative):
+    """Derive a visual PNG path; the original DB image path never changes."""
+    relative = str(relative or "").replace(chr(92), "/")
+    parts = Path(relative).parts
+    if (len(parts) == 3 and parts[:2] == ("results", "model_covers")
+            and Path(parts[2]).stem.isdigit() and Path(parts[2]).suffix == ".jpg"):
+        return (Path(app.static_folder) / "results" / "model_cover_previews"
+                / (Path(parts[2]).stem + ".png"))
+    if (
+        len(parts) != 4
+        or parts[:2] != ("results", "model_references")
+        or not parts[2].isdigit()
+        or Path(parts[3]).name != parts[3]
+    ):
+        return None
+    return (
+        Path(app.static_folder) / "results" / "model_previews"
+        / parts[2] / (Path(parts[3]).stem + ".png")
+    )
+
+
+def _safe_reference_original_url(relative):
+    """Resolve only a static reference path; reject traversal and other assets."""
+    relative = str(relative or "").replace(chr(92), "/")
+    parts = Path(relative).parts
+    valid_reference = (len(parts) == 4 and parts[:2] in (("results", "model_references"), ("results", "model_cover_originals")) and parts[2].isdigit() and Path(parts[3]).name == parts[3])
+    valid_legacy = (len(parts) == 3 and parts[0] == "garment_models" and parts[1].isdigit() and Path(parts[2]).name == parts[2])
+    if not (valid_reference or valid_legacy):
+        return None
+    source = Path(app.static_folder).joinpath(*parts)
+    try:
+        source.resolve().relative_to(Path(app.static_folder).resolve())
+    except (OSError, ValueError):
+        return None
+    if not source.is_file():
+        return None
+    return url_for("static", filename="/".join(parts), v=source.stat().st_mtime_ns)
+
+
+def garment_reference_visual_url(relative):
+    preview = garment_reference_preview_path(relative)
+    if preview is not None and preview.is_file():
+        static_path = preview.relative_to(Path(app.static_folder)).as_posix()
+        return url_for("static", filename=static_path, v=preview.stat().st_mtime_ns)
+    return _safe_reference_original_url(relative)
+
+
+def garment_reference_preview_exists(relative):
+    """Whether the derived cutout passed segmentation and was persisted."""
+    preview = garment_reference_preview_path(relative)
+    return preview is not None and preview.is_file()
+
+
+def garment_reference_preview_status(relative):
+    """Return preview success and a safe display URL, falling back to source."""
+    preview = garment_reference_preview_path(relative)
+    if preview is not None and preview.is_file():
+        static_path = preview.relative_to(Path(app.static_folder)).as_posix()
+        return True, url_for(
+            "static", filename=static_path, v=preview.stat().st_mtime_ns
+        )
+    return False, _safe_reference_original_url(relative)
+
+
+def garment_reference_display_url(relative):
+    """Use a derived cutout only when present; otherwise show the source photo."""
+    return garment_reference_preview_status(relative)[1]
+
+
+def garment_cover_url(model_id, reference_image_path=None):
+    """Foto principal en catalogo, ficha y editor.
+
+    El modelo tiene dos formas historicas de subir una foto: referencia y
+    portada. La mas reciente que exista en disco es la fuente visual comun.
+    Asi una sola carga se refleja en todas las pantallas automaticamente.
+    """
+    model_id = int(model_id)
+    if reference_image_path is None:
+        row = fetch_one(
+            """SELECT image_path FROM garment_model_images
+               WHERE garment_model_id = %s AND image_type='REFERENCIA'
+               ORDER BY sort_order ASC, id ASC LIMIT 1""",
+            (model_id,),
+        )
+        reference_image_path = (row or {}).get("image_path") or ""
+
+    candidates = [f"results/model_covers/{model_id}.jpg"]
+    reference_image_path = str(reference_image_path or "").replace(chr(92), "/")
+    allowed_prefixes = (
+        f"results/model_references/{model_id}/",
+        f"garment_models/{model_id}/",
+        f"results/model_covers/{model_id}.jpg",
+    )
+    if reference_image_path and any(
+        reference_image_path.startswith(prefix) for prefix in allowed_prefixes
+    ):
+        candidates.append(reference_image_path)
+
+    static_root = Path(app.static_folder).resolve()
+    existing = []
+    for relative in set(candidates):
+        candidate = (static_root / relative).resolve()
+        if not candidate.is_relative_to(static_root) or not candidate.is_file():
+            continue
+        existing.append((candidate.stat().st_mtime_ns, relative))
+    if not existing:
+        return None
+    # Prefer a successfully generated preview for the newest reference before
+    # falling back to its unchanged source. Legacy standalone cover uploads
+    # remain eligible as source images.
+    # When both types exist, the most recently uploaded photo wins.
+    modified_ns, relative = max(existing)
+    preview = garment_reference_preview_path(relative)
+    if preview is not None and preview.is_file():
+        static_path = preview.relative_to(static_root).as_posix()
+        return url_for(
+            "static", filename=static_path, v=preview.stat().st_mtime_ns
+        )
+    # If a cover is just an uploaded reference without a stored derivative,
+    # return its original URL; the UI can accurately label it as original.
+    if relative.startswith("results/model_covers/"):
+        cover = static_root / relative
+        if cover.is_file():
+            return url_for("static", filename=relative,
+                           v=cover.stat().st_mtime_ns)
+    return _safe_reference_original_url(relative)
+
+
+def garment_cover_has_cutout(model_id, reference_image_path=None):
+    return garment_cover_display_status(model_id, reference_image_path)[1]
+
+
+def garment_cover_display_status(model_id, reference_image_path=None):
+    """Choose catalog cover and its truthful cutout/original label together."""
+    model_id = int(model_id)
+    if reference_image_path is None:
+        row = fetch_one(
+            """SELECT image_path FROM garment_model_images
+               WHERE garment_model_id = %s AND image_type='REFERENCIA'
+               ORDER BY sort_order, id LIMIT 1""",
+            (model_id,),
+        )
+        reference_image_path = (row or {}).get("image_path") or ""
+    static_root = Path(app.static_folder).resolve()
+    candidates = [f"results/model_covers/{model_id}.jpg"]
+    rel = str(reference_image_path or "").replace(chr(92), "/")
+    if rel.startswith((f"results/model_references/{model_id}/", f"garment_models/{model_id}/")):
+        candidates.append(rel)
+    existing = []
+    for relative in candidates:
+        source = (static_root / relative).resolve()
+        if source.is_relative_to(static_root) and source.is_file():
+            existing.append((source.stat().st_mtime_ns, relative, source))
+    if not existing:
+        return None, False
+    _, relative, source = max(existing)
+    preview = garment_reference_preview_path(relative)
+    if preview is not None and preview.is_file():
+        visual = preview.relative_to(static_root).as_posix()
+        return url_for("static", filename=visual, v=preview.stat().st_mtime_ns), True
+    if relative.startswith(("results/model_references/", "garment_models/")):
+        return _safe_reference_original_url(relative), False
+    return url_for("static", filename=relative, v=source.stat().st_mtime_ns), False
+
+
+def garment_cover_original_url(model_id, reference_image_path=None):
+    """Link the selected presentation to its exact, append-only source file."""
+    model_id = int(model_id)
+    if reference_image_path is None:
+        row = fetch_one(
+            """SELECT image_path FROM garment_model_images
+               WHERE garment_model_id = %s AND image_type='REFERENCIA'
+               ORDER BY sort_order, id LIMIT 1""", (model_id,),
+        )
+        reference_image_path = (row or {}).get("image_path") or ""
+    root = Path(app.static_folder)
+    cover = root / "results" / "model_covers" / f"{model_id}.jpg"
+    reference = root / str(reference_image_path or "")
+    if cover.is_file() and (not reference.is_file()
+                           or cover.stat().st_mtime_ns > reference.stat().st_mtime_ns):
+        metadata = cover.with_suffix(".original.json")
+        if metadata.is_file():
+            try:
+                stored = json.loads(metadata.read_text(encoding="utf-8"))
+                relative = stored.get("original_path", "")
+                if relative.startswith(f"results/model_cover_originals/{model_id}/"):
+                    return _safe_reference_original_url(relative)
+            except (OSError, ValueError, TypeError):
+                pass
+        return url_for("static", filename=f"results/model_covers/{model_id}.jpg")
+    return _safe_reference_original_url(reference_image_path)
+
+
+def prepare_garment_cover_photo(upload):
+    """Valida y convierte una foto a JPEG sin conservar bytes originales."""
+    if upload is None or not upload.filename:
+        return None
+    if Path(upload.filename).suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise ValueError("Seleccione una fotografia JPG, PNG o WEBP.")
+    data = upload.stream.read(5 * 1024 * 1024 + 1)
+    if not data or len(data) > 5 * 1024 * 1024:
+        raise ValueError("La fotografia debe ocupar como maximo 5 MB.")
+    image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError("El archivo no es una imagen valida.")
+    height, width = image.shape[:2]
+    if width < 100 or height < 100 or width * height > 16000000:
+        raise ValueError("La imagen debe tener al menos 100 pixeles por lado y un maximo de 16 megapixeles.")
+    scale = min(1.0, 1600 / max(width, height))
+    if scale < 1:
+        image = cv2.resize(image, (round(width*scale), round(height*scale)), interpolation=cv2.INTER_AREA)
+    valid, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    if not valid:
+        raise ValueError("No fue posible procesar la fotografia.")
+    return encoded.tobytes()
+
+
+# Catálogo único para crear y editar modelos; no altera datos anteriores.
+GARMENT_COLORS = (
+    "Blanco", "Negro", "Gris", "Azul", "Celeste", "Rojo",
+    "Rosado", "Verde", "Amarillo", "Naranja", "Morado",
+    "Beige", "Café", "Multicolor",
+)
+GARMENT_COLOR_ALIASES = {
+    "blanca": "Blanco",
+    "rosa": "Rosado",
+    "rosada": "Rosado",
+    "cafe": "Café",
+}
+GARMENT_COLOR_OTHER = "__otro__"
+GARMENT_MODEL_NAME_MAX = 150
+
+
+def normalize_garment_color(raw):
+    """Uniforma las variantes conocidas sin alterar los modelos guardados."""
+    import unicodedata
+
+    candidate = " ".join(str(raw or "").split())
+    lookup = "".join(
+        letter for letter in
+        unicodedata.normalize("NFD", candidate.casefold())
+        if unicodedata.category(letter) != "Mn"
+    )
+    for standard in GARMENT_COLORS:
+        key = "".join(
+            ch for ch in unicodedata.normalize("NFD", standard.casefold())
+            if unicodedata.category(ch) != "Mn"
+        )
+        if key == lookup:
+            return standard
+    return GARMENT_COLOR_ALIASES.get(lookup, candidate)
+
+
+def garment_model_name_from_form(form):
+    """Valida en servidor el nombre comercial del modelo de blusa.
+
+    Devuelve (nombre, error). El nombre es solo la etiqueta comercial: no
+    interviene en el código BLUSA-XXXX, en los identificadores internos ni
+    en las versiones de IA.
+    """
+    raw = " ".join((form.get("name") or "").split())
+    if not raw:
+        return "", "Ingrese el nombre del modelo de blusa."
+    if len(raw) > GARMENT_MODEL_NAME_MAX:
+        return "", (
+            "El nombre del modelo no puede superar "
+            f"{GARMENT_MODEL_NAME_MAX} caracteres."
+        )
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        return "", "El nombre contiene caracteres no permitidos."
+    return raw, None
+
+
+def garment_color_from_form(form):
+    """Valida en servidor las opciones, incluso con JavaScript desactivado."""
+    selected = " ".join((form.get("color") or "").split())
+    if selected == GARMENT_COLOR_OTHER:
+        raw = " ".join((form.get("custom_color") or "").split())
+        if not 2 <= len(raw) <= 80:
+            raise ValueError("Ingrese otro color válido (de 2 a 80 caracteres).")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+            raise ValueError("El color contiene caracteres no permitidos.")
+        if not all(word.replace("-", "").isalpha() for word in raw.split()):
+            raise ValueError("Escriba el nombre del color con letras.")
+        normalized = normalize_garment_color(raw)
+        if normalized not in GARMENT_COLORS:
+            normalized = normalized[:1].upper() + normalized[1:].lower()
+        return normalized
+    normalized = normalize_garment_color(selected)
+    if normalized not in GARMENT_COLORS:
+        raise ValueError("Seleccione un color de la lista o use «Otro color».")
+    return normalized
+
+
+def garment_color_selection(saved):
+    """Al editar un borrador, muestra la opción de un color histórico."""
+    saved = " ".join(str(saved or "").split())
+    standard = normalize_garment_color(saved)
+    if not saved:
+        return "", ""
+    if standard in GARMENT_COLORS:
+        return standard, ""
+    return GARMENT_COLOR_OTHER, saved
+
+
+@app.route("/modelos-prenda/<int:model_id>/editar", methods=["GET", "POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_model_edit(model_id):
+    model = get_garment_model(model_id)
+    if not model or int(model.get("active") or 0) != 1:
+        flash("El modelo solicitado no esta disponible.", "error")
+        return redirect(url_for("garment_models_page"))
+    if not can_manage_garment_model(model):
+        return "No tiene permiso para editar este modelo.", 403
+
+    editable_details = model.get("status") in ("BORRADOR", "RECHAZADO")
+    if request.method == "POST":
+        photo = request.files.get("cover_photo")
+        original_bytes = None
+        visual = None
+        try:
+            if photo and photo.filename:
+                original_bytes = photo.stream.read(5 * 1024 * 1024 + 1)
+                photo.stream.seek(0)
+            image_bytes = prepare_garment_cover_photo(photo)
+            if image_bytes is not None:
+                visual = garment_reference_presentation(original_bytes)
+        except ValueError as error:
+            flash(str(error), "error")
+            return redirect(url_for("garment_model_edit", model_id=model_id))
+
+        if editable_details:
+            name = request.form.get("name", "").strip()
+            try:
+                color = garment_color_from_form(request.form)
+            except ValueError as error:
+                flash(str(error), "error")
+                return redirect(url_for("garment_model_edit", model_id=model_id))
+            description = request.form.get("description", "").strip()
+            if not name or len(name) > 150 or not color or len(color) > 80 or len(description) > 2000:
+                flash("Revise el nombre, el color y la descripcion del modelo.", "error")
+                return redirect(url_for("garment_model_edit", model_id=model_id))
+        elif image_bytes is None:
+            flash("Seleccione una fotografia para actualizar la portada.", "error")
+            return redirect(url_for("garment_model_edit", model_id=model_id))
+
+        path = Path(app.static_folder) / "results" / "model_covers" / f"{model_id}.jpg"
+        temporary = None
+        try:
+            if image_bytes is not None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = path.with_name(f".{model_id}.{uuid.uuid4().hex}.tmp")
+                temporary.write_bytes(image_bytes)
+                archive = (Path(app.static_folder) / "results" / "model_cover_originals"
+                           / str(model_id))
+                archive.mkdir(parents=True, exist_ok=True)
+                if path.is_file():
+                    (archive / (uuid.uuid4().hex + ".jpg")).write_bytes(path.read_bytes())
+                original = archive / (uuid.uuid4().hex + Path(photo.filename).suffix.lower())
+                original.write_bytes(original_bytes)
+                presentation = garment_reference_preview_path(f"results/model_covers/{model_id}.jpg")
+                presentation.parent.mkdir(parents=True, exist_ok=True)
+                visual_temporary = presentation.with_name("." + uuid.uuid4().hex + ".tmp")
+                if visual is not None:
+                    visual_temporary.write_bytes(visual)
+                metadata = {"original_path": original.relative_to(Path(app.static_folder)).as_posix(),
+                            "sha256": sha256_bytes(original_bytes)}
+            if editable_details:
+                execute(
+                    """UPDATE garment_models
+                       SET name = %s, color = %s, description = %s
+                       WHERE id = %s AND active = 1
+                         AND status IN ('BORRADOR','RECHAZADO')""",
+                    (name, color, description or None, model_id),
+                )
+            if temporary is not None:
+                if visual is not None:
+                    os.replace(visual_temporary, presentation)
+                elif presentation.is_file():
+                    os.replace(presentation, archive / (uuid.uuid4().hex + ".png"))
+                os.replace(temporary, path)
+                path.with_suffix(".original.json").write_text(
+                    json.dumps(metadata), encoding="utf-8",
+                )
+        except Exception:
+            app.logger.exception("No se pudo actualizar el modelo o su fotografia.")
+            flash("No se pudo guardar el modelo. Intente nuevamente.", "error")
+            return redirect(url_for("garment_model_edit", model_id=model_id))
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            if "visual_temporary" in locals():
+                visual_temporary.unlink(missing_ok=True)
+
+        flash("Modelo actualizado correctamente.", "success")
+        return redirect(url_for("garment_models_page"))
+
+    selected_color, other_color = garment_color_selection(model.get("color"))
+    return render_template(
+        "garment_model_edit.html", model=model,
+        editable_details=editable_details,
+        cover_url=garment_cover_url(model_id),
+        cover_has_cutout=garment_cover_has_cutout(model_id),
+        garment_colors=GARMENT_COLORS,
+        selected_color=selected_color,
+        other_color=other_color,
+    )
+
+
+def garment_reference_presentation(data):
+    """Apply an explicit catalog outline to these exact original bytes only."""
+    from flask import has_request_context
+    from garment_background_preview import garment_manual_preview
+    options = None
+    if has_request_context():
+        raw = request.form.get("reference_presentation", "")
+        if raw:
+            if len(raw) > 65536:
+                raise ValueError("El ajuste de presentacion supera el limite.")
+            try:
+                values = json.loads(raw)
+                if not isinstance(values, dict) or len(values) > 8:
+                    raise ValueError()
+                options = values.get(sha256_bytes(data))
+            except (TypeError, ValueError):
+                raise ValueError("Ajuste de presentacion no valido.") from None
+    if options is not None:
+        if not isinstance(options, dict):
+            raise ValueError("Ajuste de presentacion no valido.")
+        return garment_manual_preview(data, options.get("points"), options.get("turns", 0))
+    try:
+        return garment_visual_preview(data)
+    except Exception:
+        app.logger.exception("Reference presentation failed; original is preserved.")
+        return None
+
+
 def prepare_garment_reference_images(files):
     prepared = []
     allowed = {".jpg", ".jpeg", ".png", ".webp"}
@@ -15721,45 +17502,97 @@ def prepare_garment_reference_images(files):
     return prepared
 
 
-def save_garment_reference_images(model_id, images):
+def save_garment_reference_images(model_id, images, *, cur):
+    """Guarda archivos y filas usando la transacción del modelo."""
     from uuid import uuid4
 
     directory = (
-        Path(app.root_path)
-        / "static"
-        / "garment_models"
-        / str(model_id)
+        Path(app.static_folder) / "results" / "model_references" / str(model_id)
     )
-
     directory.mkdir(parents=True, exist_ok=True)
 
-    for position, (suffix, data) in enumerate(images, start=1):
-        filename = f"{uuid4().hex}{suffix}"
-        full_path = directory / filename
-        full_path.write_bytes(data)
+    saved_paths = []
 
-        relative_path = (
-            f"garment_models/{model_id}/{filename}"
-        )
+    try:
+        for position, (suffix, data) in enumerate(
+            images,
+            start=1,
+        ):
+            filename = f"{uuid4().hex}{suffix}"
+            full_path = directory / filename
+            full_path.write_bytes(data)
+            saved_paths.append(full_path)
+            # Non-destructive derivative for display only.
+            try:
+                # Preview processing is isolated from the immutable source
+                # bytes that are uploaded, stored and used for training.
+                visual = garment_reference_presentation(data)
+                if visual:
+                    visual_path = (
+                        Path(app.static_folder) / "results" / "model_previews"
+                        / str(model_id) / (Path(filename).stem + ".png")
+                    )
+                    visual_path.parent.mkdir(parents=True, exist_ok=True)
+                    visual_path.write_bytes(visual)
+                    saved_paths.append(visual_path)
+                else:
+                    app.logger.info(
+                        "Vista de catálogo omitida: segmentación de referencia "
+                        "no confiable para modelo %s (%s)", model_id, filename,
+                    )
+            except Exception:
+                app.logger.exception(
+                    "No se pudo generar la vista de catálogo; "
+                    "se conserva la referencia original."
+                )
 
-        execute(
-            """
-            INSERT INTO garment_model_images (
-                garment_model_id,
-                image_path,
-                image_type,
-                sort_order,
-                created_by
+            relative_path = (
+                f"results/model_references/{model_id}/{filename}"
             )
-            VALUES (%s, %s, 'REFERENCIA', %s, %s)
-            """,
-            (
-                model_id,
-                relative_path,
-                position,
-                session.get("user_id"),
-            ),
-        )
+
+            cur.execute(
+                """
+                INSERT INTO garment_model_images (
+                    garment_model_id,
+                    image_path,
+                    image_type,
+                    sort_order,
+                    created_by
+                )
+                VALUES (%s, %s, 'REFERENCIA', %s, %s)
+                """,
+                (
+                    model_id,
+                    relative_path,
+                    position,
+                    session.get("user_id"),
+                ),
+            )
+
+        return saved_paths
+
+    except Exception:
+        for path in reversed(saved_paths):
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+        raise
+
+
+# CAPÍTULO V — Administración de modelos de prenda.
+# Consulta los modelos registrados y determina cuáles puede visualizar
+# cada usuario según su rol y el estado de aprobación.
+def garment_catalog_where(approved_only=False):
+    """Shared catalog membership; soft deletion is represented by active=0."""
+    where = "WHERE gm.active = 1"
+    if approved_only:
+        where += " AND gm.status = 'APROBADO'"
+    return where
 
 
 @app.route("/modelos-prenda")
@@ -15767,19 +17600,21 @@ def save_garment_reference_images(model_id, images):
 def garment_models_page():
     role = normalize_role(session.get("role"))
 
-    where = ""
+    where = garment_catalog_where(role == ROLE_QUALITY_MANAGER)
     params = ()
-
-    if role == ROLE_QUALITY_MANAGER:
-        where = """
-            WHERE gm.status = 'APROBADO'
-              AND gm.active = 1
-        """
 
     models = fetch_all(
         f"""
         SELECT
             gm.*,
+            COALESCE(
+                (SELECT ref.image_path
+                 FROM garment_model_images ref
+                 WHERE ref.garment_model_id=gm.id
+                   AND ref.image_type='REFERENCIA'
+                 ORDER BY ref.sort_order ASC,ref.id ASC LIMIT 1),
+                ''
+            ) AS primary_reference_image,
             COALESCE(
                 u.full_name,
                 u.username,
@@ -15792,6 +17627,15 @@ def garment_models_page():
                   AND ai.active = 1
                   AND ai.status = 'ACTIVO'
             ) AS ai_ready,
+            EXISTS(
+                SELECT 1
+                FROM garment_ai_models ai
+                WHERE ai.garment_model_id = gm.id
+                  AND (
+                      ai.status = 'ACTIVO'
+                      OR ai.active = 1
+                  )
+            ) AS has_active_ai,
             (
                 SELECT ai.version
                 FROM garment_ai_models ai
@@ -15800,7 +17644,18 @@ def garment_models_page():
                   AND ai.status = 'ACTIVO'
                 ORDER BY ai.id DESC
                 LIMIT 1
-            ) AS ai_version
+            ) AS ai_version,
+            EXISTS(
+                SELECT 1
+                FROM batches b
+                WHERE b.garment_model_id = gm.id
+            ) AS has_batches,
+            EXISTS(
+                SELECT 1
+                FROM garment_ai_models ai
+                WHERE ai.garment_model_id = gm.id
+                  AND ai.status = 'ENTRENANDO'
+            ) AS ai_training_now
         FROM garment_models gm
         LEFT JOIN users u
           ON u.id = gm.created_by
@@ -15818,6 +17673,18 @@ def garment_models_page():
         params,
     )
 
+    for model in models:
+        model["cover_url"] = garment_cover_url(
+            model["id"], model["primary_reference_image"]
+        )
+        model["cover_url"], model["cover_has_cutout"] = garment_cover_display_status(
+            model["id"], model["primary_reference_image"]
+        )
+        model["cover_display_label"] = (
+            "Vista de catálogo" if model["cover_has_cutout"]
+            else "Fotografía original"
+        )
+
     return render_template(
         "garment_models.html",
         models=models,
@@ -15825,49 +17692,391 @@ def garment_models_page():
     )
 
 
-def generate_garment_model_code():
-    """
-    Código de modelo nuevo, generado siempre en backend.
-
-    La usuaria nunca lo escribe: la unicidad no depende del frontend.
-    """
+@app.route("/modelos-prenda/<int:model_id>/eliminar", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def garment_model_archive(model_id):
+    """Retira del catalogo un modelo sin borrar inspecciones ni versiones de IA."""
+    confirmation = (request.form.get("confirm_code") or "").strip()
     conn = db()
     cur = conn.cursor(dictionary=True)
     try:
-        code = next_garment_model_code(cur)
+        conn.start_transaction()
+        cur.execute(
+            """
+            SELECT
+                gm.id, gm.code, gm.active,
+                EXISTS (
+                    SELECT 1 FROM batches b
+                    WHERE b.garment_model_id = gm.id
+                      AND b.status = 'EN_INSPECCION'
+                ) AS has_inspecting_batch,
+                EXISTS (
+                    SELECT 1 FROM garment_ai_models ai
+                    WHERE ai.garment_model_id = gm.id
+                      AND ai.status = 'ENTRENANDO'
+                ) AS ai_training_now
+            FROM garment_models gm
+            WHERE gm.id = %s
+            FOR UPDATE
+            """,
+            (model_id,),
+        )
+        model = cur.fetchone()
+        if not model or int(model.get("active") or 0) != 1:
+            conn.rollback()
+            flash("El modelo ya no esta disponible.", "error")
+            return redirect(url_for("garment_models_page"))
+        if confirmation != str(model["code"]):
+            conn.rollback()
+            flash("Para retirar el modelo debe confirmar su codigo exacto.", "error")
+            return redirect(url_for("garment_models_page"))
+        if int(model.get("has_inspecting_batch") or 0):
+            conn.rollback()
+            flash(
+                "Este modelo tiene un lote en inspeccion. Finalice o cancele "
+                "la inspeccion activa antes de retirarlo del catalogo. "
+                "Los lotes en preparacion o pendientes de revision no impiden retirarlo.",
+                "error",
+            )
+            return redirect(url_for("garment_models_page"))
+        if int(model.get("ai_training_now") or 0):
+            conn.rollback()
+            flash(
+                "Este modelo tiene un entrenamiento de IA en curso. "
+                "Espere a que termine antes de retirarlo.",
+                "error",
+            )
+            return redirect(url_for("garment_models_page"))
+        cur.execute(
+            "UPDATE garment_models SET active = 0 WHERE id = %s AND active = 1",
+            (model_id,),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            flash("No se pudo retirar el modelo.", "error")
+            return redirect(url_for("garment_models_page"))
         conn.commit()
-        return code
+        app.logger.info(
+            "Modelo retirado del catalogo: id=%s code=%s by_user_id=%s",
+            model_id, model["code"], session.get("user_id"),
+        )
+        flash(
+            "Modelo retirado del catalogo. Sus inspecciones y modelos de IA se conservaron.",
+            "success",
+        )
+        return redirect(url_for("garment_models_page"))
     except Exception:
         if conn.in_transaction:
             conn.rollback()
-        raise
+        app.logger.exception("Fallo al retirar el modelo %s del catalogo.", model_id)
+        flash("No se pudo retirar el modelo. Intente de nuevo.", "error")
+        return redirect(url_for("garment_models_page"))
     finally:
         cur.close()
         conn.close()
 
 
 @app.route(
+    "/modelos-prenda/<int:model_id>/eliminar-incompleto",
+    methods=["POST"],
+)
+@login_required
+@role_required(ROLE_ADMIN)
+def garment_model_delete_incomplete(model_id):
+    """
+    Retira del catálogo un modelo incompleto que nunca llegó a producción.
+
+    Se usa borrado lógico (active=0) para conservar trazabilidad técnica y
+    permitir recuperación manual si fuera necesario.
+    """
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+
+        cur.execute(
+            """
+            SELECT
+                gm.id,
+                gm.code,
+                gm.name,
+                gm.active,
+                EXISTS(
+                    SELECT 1
+                    FROM batches b
+                    WHERE b.garment_model_id = gm.id
+                ) AS has_batches,
+                EXISTS(
+                    SELECT 1
+                    FROM garment_ai_models ai
+                    WHERE ai.garment_model_id = gm.id
+                      AND (
+                          ai.status = 'ACTIVO'
+                          OR ai.active = 1
+                      )
+                ) AS has_active_ai,
+                EXISTS(
+                    SELECT 1
+                    FROM garment_ai_models ai
+                    WHERE ai.garment_model_id = gm.id
+                      AND ai.status = 'ENTRENANDO'
+                ) AS ai_training_now
+            FROM garment_models gm
+            WHERE gm.id = %s
+            FOR UPDATE
+            """,
+            (model_id,),
+        )
+
+        model = cur.fetchone()
+
+        if model is None or int(model.get("active") or 0) != 1:
+            conn.rollback()
+            flash("El modelo ya no está disponible.", "error")
+            return redirect(url_for("garment_models_page"))
+
+        if int(model.get("has_batches") or 0) == 1:
+            conn.rollback()
+            flash(
+                "No se puede eliminar este modelo porque ya fue usado en un lote. "
+                "Si el lote fue creado por error y no tiene inspecciones, elimine primero ese lote.",
+                "error",
+            )
+            return redirect(url_for("garment_models_page"))
+
+        if int(model.get("has_active_ai") or 0) == 1:
+            conn.rollback()
+            flash(
+                "No se puede eliminar un modelo que tiene una versión de IA activa.",
+                "error",
+            )
+            return redirect(url_for("garment_models_page"))
+
+        if int(model.get("ai_training_now") or 0) == 1:
+            conn.rollback()
+            flash(
+                "No se puede eliminar el modelo mientras su IA está entrenando.",
+                "error",
+            )
+            return redirect(url_for("garment_models_page"))
+
+        cur.execute(
+            """
+            UPDATE garment_models
+            SET active = 0
+            WHERE id = %s
+              AND active = 1
+            """,
+            (model_id,),
+        )
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            flash("No fue posible eliminar el modelo.", "error")
+            return redirect(url_for("garment_models_page"))
+
+        conn.commit()
+
+        flash(
+            f"Modelo {model.get('code') or model_id} eliminado del catálogo.",
+            "success",
+        )
+        return redirect(url_for("garment_models_page"))
+
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+
+        app.logger.exception(
+            "No fue posible retirar el modelo incompleto %s.",
+            model_id,
+        )
+        flash(
+            "No fue posible eliminar el modelo. Intente nuevamente.",
+            "error",
+        )
+        return redirect(url_for("garment_models_page"))
+    finally:
+        cur.close()
+        conn.close()
+
+# Genera automáticamente un código para cada nuevo modelo.
+def generate_garment_model_code():
+    """
+    Código de modelo nuevo, generado siempre en backend.
+
+    La usuaria nunca lo escribe: la unicidad no depende del frontend.
+    """
+# Establece la conexión con la base de datos MySQL.
+    conn = db()
+# Crea un cursor para consultar y procesar registros.
+    cur = conn.cursor(dictionary=True)
+    try:
+ # Solicita el siguiente código disponible para el modelo.
+        code = next_garment_model_code(cur)
+# Confirma las operaciones realizadas en la transacción.
+        conn.commit()
+# Devuelve el código generado.
+        return code
+    except Exception:
+# Revierte los cambios si ocurre un error en la transacción.
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+# Cierra el cursor y la conexión con MySQL
+        cur.close()
+        conn.close()
+
+# La referencia se toma del mismo trabajador RTSP que usa la estacion.
+# No se registra una inspeccion ni se modifica ninguna sesion de IA.
+@app.route("/modelos-prenda/camara-referencia/video", methods=["GET"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_reference_camera_video():
+    response = Response(
+        generate_video_feed(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.route("/modelos-prenda/camara-referencia/recorte", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_reference_camera_cutout():
+    """Preview-only cleanup of an already captured file; does not store it."""
+    upload = request.files.get("photo")
+    if upload is None or not upload.filename:
+        return jsonify({"error": "Seleccione una fotografia valida."}), 400
+    # Same practical limit as the existing garment reference upload.
+    data = upload.stream.read(8 * 1024 * 1024 + 1)
+    if not data or len(data) > 8 * 1024 * 1024:
+        return jsonify({"error": "La foto excede el tamano permitido."}), 413
+    try:
+        visual = garment_reference_presentation(data)
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    except Exception:
+        app.logger.exception("Error al separar fondo de referencia visual.")
+        visual = None
+    if visual is None:
+        return jsonify({
+            "ok": False,
+            "error": "El fondo no pudo separarse de forma segura."
+        }), 422
+    response = Response(visual, mimetype="image/png")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.route("/modelos-prenda/referencia/<int:model_id>/recorte", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_reference_upload_cutout(model_id):
+    """Preview-only segmentation of an uploaded reference photograph."""
+    model = get_garment_model(model_id)
+    if not model or not can_manage_garment_model(model):
+        return jsonify({"ok": False, "error": "No autorizado."}), 403
+    upload = request.files.get("photo")
+    if upload is None or not upload.filename:
+        return jsonify({"ok": False, "error": "Seleccione una fotografía."}), 400
+    data = upload.stream.read(8 * 1024 * 1024 + 1)
+    if not data or len(data) > 8 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "La foto supera 8 MB."}), 413
+    try:
+        visual = garment_reference_presentation(data)
+    except Exception:
+        app.logger.exception("Error al segmentar referencia del modelo %s", model_id)
+        visual = None
+    if visual is None:
+        return jsonify({
+            "ok": False,
+            "error": "No se pudo aislar la prenda de forma confiable; "
+                     "se muestra la fotografía original.",
+        }), 422
+    response = Response(visual, mimetype="image/png")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.route("/modelos-prenda/camara-referencia/foto", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_reference_camera_photo():
+    """Fotograma limpio y reciente; nunca guardar la guia dibujada."""
+    ensure_camera_capture_worker()
+    frame, timestamp, _ = get_latest_camera_frame()
+    if (
+        frame is None
+        or timestamp is None
+        or not isinstance(timestamp, (int,float))
+        or (time.perf_counter() - timestamp) > 3.0
+        or time.perf_counter() < timestamp
+    ):
+        response = jsonify({
+            "ok": False,
+            "error": "La camara aun no tiene una imagen reciente. "
+                     "Espere unos segundos y vuelva a intentar.",
+        })
+        response.status_code = 503
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    # No alterar latest_frame: recorte/guia solo corresponden a la
+    # vista previa y no deben aparecer en la referencia.
+    height,width=frame.shape[:2]
+    if max(height,width)>1800:
+        scale=1800/max(height,width)
+        frame=cv2.resize(
+            frame,
+            (max(1,round(width*scale)),max(1,round(height*scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+    jpeg=encode_jpeg(frame)
+    if not jpeg:
+        response=jsonify({"ok":False,"error":"No se pudo capturar la imagen."})
+        response.status_code=503
+        return response
+    response=Response(jpeg,mimetype="image/jpeg")
+    response.headers["Cache-Control"]="no-store, max-age=0"
+    response.headers["X-Content-Type-Options"]="nosniff"
+    return response
+
+
+# Define la ruta para registrar nuevos modelos de prenda
+@app.route(
     "/modelos-prenda/nuevo",
     methods=["GET", "POST"],
 )
+# Verifica que el usuario haya iniciado sesión.
 @login_required
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
 def garment_model_create():
     if request.method == "POST":
-        name = request.form.get("name", "").strip()
-        color = request.form.get("color", "").strip()
+        name, name_error = garment_model_name_from_form(request.form)
+        try:
+            color = garment_color_from_form(request.form)
+        except ValueError as error:
+            flash(str(error), "error")
+            return render_template(
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
+            )
         description = request.form.get(
             "description",
             "",
         ).strip()
 
-        if not name:
-            flash(
-                "Ingrese el nombre del modelo de blusa.",
-                "error",
-            )
+        if name_error:
+            flash(name_error, "error")
             return render_template(
-                "garment_model_form.html"
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
 
         if not color:
@@ -15876,7 +18085,7 @@ def garment_model_create():
                 "error",
             )
             return render_template(
-                "garment_model_form.html"
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
 
         try:
@@ -15884,7 +18093,7 @@ def garment_model_create():
         except AIDomainError as error:
             flash(str(error), "error")
             return render_template(
-                "garment_model_form.html"
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
         except Exception:
             app.logger.exception(
@@ -15896,12 +18105,22 @@ def garment_model_create():
                 "error",
             )
             return render_template(
-                "garment_model_form.html"
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
 
-        images = prepare_garment_reference_images(
-            request.files.getlist("reference_images")
-        )
+        reference_files = [
+            photo for photo in request.files.getlist("reference_images")
+            if photo and photo.filename
+        ]
+        if len(reference_files) > 8:
+            flash("Puede registrar un maximo de 8 imagenes por modelo.", "error")
+            return render_template("garment_model_form.html", garment_colors=GARMENT_COLORS)
+
+        try:
+            images = prepare_garment_reference_images(reference_files)
+        except ValueError as error:
+            flash(str(error), "error")
+            return render_template("garment_model_form.html", garment_colors=GARMENT_COLORS)
 
         if not images:
             flash(
@@ -15910,49 +18129,98 @@ def garment_model_create():
                 "error",
             )
             return render_template(
-                "garment_model_form.html"
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
 
-        model_id = execute(
-            """
-            INSERT INTO garment_models (
-                code,
-                name,
-                garment_type,
-                color,
-                size,
-                inspection_side,
-                description,
-                status,
-                created_by,
-                active
-            )
-            VALUES (
-                %s,
-                %s,
-                'Blusa',
-                %s,
-                'S',
-                'Frente',
-                %s,
-                'BORRADOR',
-                %s,
-                1
-            )
-            """,
-            (
-                code,
-                name,
-                color,
-                description or None,
-                session.get("user_id"),
-            ),
-        )
+        conn = db()
+        cur = conn.cursor()
+        saved_paths = []
 
-        save_garment_reference_images(
-            model_id,
-            images,
-        )
+        try:
+            conn.start_transaction()
+
+            cur.execute(
+                """
+                INSERT INTO garment_models (
+                    code,
+                    name,
+                    garment_type,
+                    color,
+                    size,
+                    inspection_side,
+                    description,
+                    status,
+                    created_by,
+                    active
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    'Blusa',
+                    %s,
+                    'S',
+                    'Frente',
+                    %s,
+                    'BORRADOR',
+                    %s,
+                    1
+                )
+                """,
+                (
+                    code,
+                    name,
+                    color,
+                    description or None,
+                    session.get("user_id"),
+                ),
+            )
+            model_id = int(cur.lastrowid)
+
+            saved_paths = save_garment_reference_images(
+                model_id,
+                images,
+                cur=cur,
+            )
+
+            conn.commit()
+
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+
+            for path in reversed(saved_paths):
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            model_directory = (
+                Path(app.root_path)
+                / "static"
+                / "garment_models"
+                / str(locals().get("model_id", ""))
+            )
+            try:
+                model_directory.rmdir()
+            except OSError:
+                pass
+
+            app.logger.exception(
+                "No se pudo crear el modelo de prenda con "
+                "sus imágenes de referencia."
+            )
+            flash(
+                "No se pudo crear el modelo de prenda. "
+                "No se guardaron cambios parciales.",
+                "error",
+            )
+            return render_template(
+                "garment_model_form.html", garment_colors=GARMENT_COLORS
+            )
+
+        finally:
+            cur.close()
+            conn.close()
 
         flash(
             "Modelo de prenda creado correctamente. "
@@ -15969,8 +18237,200 @@ def garment_model_create():
         )
 
     return render_template(
-        "garment_model_form.html"
+        "garment_model_form.html", garment_colors=GARMENT_COLORS
     )
+
+
+@app.route("/modelos-prenda/<int:model_id>/nombre", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_model_rename(model_id):
+    """Cambia solo el nombre comercial del modelo de prenda.
+
+    No se toca la identidad tecnica: el codigo BLUSA-XXXX, el identificador
+    interno, las fotografias, las versiones de IA, los lotes y el historial
+    de inspecciones permanecen igual.
+    """
+    model = get_garment_model(model_id)
+    if not model:
+        flash("El modelo de prenda solicitado no existe.", "error")
+        return redirect(url_for("garment_models_page"))
+
+    if not can_manage_garment_model(model):
+        flash(
+            "No tiene permisos para modificar este modelo.",
+            "error",
+        )
+        return redirect(
+            url_for(
+                "garment_model_detail",
+                model_id=model_id,
+            )
+        )
+
+    name, error = garment_model_name_from_form(request.form)
+    if error:
+        flash(error, "error")
+        return redirect(
+            url_for(
+                "garment_model_detail",
+                model_id=model_id,
+            )
+        )
+
+    if name == str(model.get("name") or "").strip():
+        flash("El nombre del modelo no cambio.", "message")
+        return redirect(
+            url_for(
+                "garment_model_detail",
+                model_id=model_id,
+            )
+        )
+
+    conn = db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE garment_models SET name = %s WHERE id = %s",
+            (name, model_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        app.logger.exception(
+            "No se pudo actualizar el nombre del modelo %s", model_id
+        )
+        flash(
+            "No se pudo guardar el nombre del modelo.",
+            "error",
+        )
+        return redirect(
+            url_for(
+                "garment_model_detail",
+                model_id=model_id,
+            )
+        )
+    finally:
+        cur.close()
+        conn.close()
+
+    flash(f"Nombre actualizado: {name}", "success")
+    return redirect(
+        url_for(
+            "garment_model_detail",
+            model_id=model_id,
+        )
+    )
+
+
+@app.route("/modelos-prenda/<int:model_id>/imagen-referencia", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_model_reference_replace(model_id):
+    """Reemplaza la foto de referencia, sin tocar datasets, capturas ni IA."""
+    model = get_garment_model(model_id)
+    if not model or int(model.get("active") or 0) != 1:
+        flash("El modelo ya no esta disponible.", "error")
+        return redirect(url_for("garment_models_page"))
+    if not can_manage_garment_model(model):
+        return "No tiene permiso para modificar este modelo.", 403
+
+    upload = request.files.get("reference_photo")
+    if not upload or not upload.filename:
+        flash("Seleccione una fotografia de referencia.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    if Path(upload.filename).suffix.lower() not in {".jpg",".jpeg",".png",".webp"}:
+        flash("Seleccione una fotografia JPG, PNG o WEBP.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+
+    # Validate type and dimensions without changing the source bytes.
+    # Presentation is derived separately; source remains exact evidence.
+    data = upload.stream.read(8 * 1024 * 1024 + 1)
+    if not data or len(data) > 8 * 1024 * 1024:
+        flash("La imagen no debe superar 8 MB.", "error")
+        return redirect(url_for("garment_model_detail", model_id=model_id))
+    try:
+        image = cv2.imdecode(np.frombuffer(data,dtype=np.uint8),cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("No se pudo leer la imagen.")
+        height,width = image.shape[:2]
+        if min(height,width) < 100 or height*width > 16_000_000:
+            raise ValueError("La imagen debe medir al menos 100 pixeles por lado y maximo 16 megapixeles.")
+        visual = garment_reference_presentation(data)
+    except (ValueError, cv2.error) as error:
+        flash(str(error), "error")
+        return redirect(url_for("garment_model_detail",model_id=model_id))
+
+    from uuid import uuid4
+    folder = Path(app.static_folder)/"results"/"model_references"/str(model_id)
+    relative = f"results/model_references/{model_id}/{uuid4().hex}{Path(upload.filename).suffix.lower()}"
+    destination = Path(app.static_folder)/relative
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    committed = False
+    preview_path = None
+    try:
+        folder.mkdir(parents=True,exist_ok=True)
+        destination.write_bytes(data)
+        try:
+            if visual:
+                preview_path = (
+                    Path(app.static_folder) / "results" / "model_previews"
+                    / str(model_id) / (destination.stem + ".png")
+                )
+                preview_path.parent.mkdir(parents=True, exist_ok=True)
+                preview_path.write_bytes(visual)
+            else:
+                app.logger.info(
+                    "Vista de catálogo no validada para modelo %s; "
+                    "la referencia original permanece como respaldo.", model_id,
+                )
+        except Exception:
+            app.logger.exception(
+                "No se pudo generar vista de catálogo para modelo %s; "
+                "se conserva el original.", model_id,
+            )
+        conn.start_transaction()
+        cur.execute(
+            """SELECT id, image_path
+               FROM garment_model_images
+               WHERE garment_model_id=%s AND image_type='REFERENCIA'
+               ORDER BY sort_order, id LIMIT 1 FOR UPDATE""",
+            (model_id,),
+        )
+        previous = cur.fetchone()
+        if previous:
+            cur.execute(
+                "UPDATE garment_model_images SET image_path=%s WHERE id=%s",
+                (relative,previous["id"]),
+            )
+        else:
+            cur.execute(
+                """INSERT INTO garment_model_images
+                     (garment_model_id,image_path,image_type,sort_order,created_by)
+                   VALUES (%s,%s,'REFERENCIA',1,%s)""",
+                (model_id,relative,session.get("user_id")),
+            )
+        conn.commit()
+        committed = True
+        app.logger.info(
+            "Referencia de modelo actualizada: model_id=%s, by_user_id=%s",
+            model_id,session.get("user_id"),
+        )
+        flash("Fotografia de referencia actualizada correctamente.", "success")
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception("No se pudo guardar imagen referencia del modelo %s",model_id)
+        flash("No se pudo guardar la imagen. Intente nuevamente.", "error")
+    finally:
+        if not committed:
+            destination.unlink(missing_ok=True)
+            if preview_path is not None:
+                preview_path.unlink(missing_ok=True)
+        cur.close()
+        conn.close()
+    return redirect(url_for("garment_model_detail",model_id=model_id))
 
 
 @app.route("/modelos-prenda/<int:model_id>")
@@ -16012,6 +18472,23 @@ def garment_model_detail(model_id):
         ORDER BY sort_order ASC, id ASC
         """,
         (model_id,),
+    )
+
+    for image in images:
+        image["has_visual_cutout"], image["visual_url"] = garment_reference_preview_status(
+            image.get("image_path", "")
+        )
+        image["visual_label"] = (
+            "Prenda aislada para catálogo" if image["has_visual_cutout"]
+            else "Fotografía original de referencia"
+        )
+    primary_photo_url = garment_cover_url(
+        model_id,
+        next(
+            (row.get("image_path") for row in images
+             if row.get("image_type") == "REFERENCIA"),
+            "",
+        ),
     )
 
     ai_versions = get_garment_ai_versions(model_id)
@@ -16134,8 +18611,29 @@ def garment_model_detail(model_id):
         and int(model.get("active") or 0) == 1
     )
 
-    ai_capture_state = None
+    reference_path = next((image.get("image_path") for image in images
+                           if image.get("image_type") == "REFERENCIA"), "")
+    selected_visual, selected_cutout = garment_cover_display_status(model_id, reference_path)
+    selected_original = garment_cover_original_url(model_id, reference_path)
+    for image in images:
+        image["original_url"] = _safe_reference_original_url(image.get("image_path", ""))
+    if selected_visual:
+        if not images:
+            images.append({})
+        images[0].update(
+            visual_url=selected_visual, has_visual_cutout=selected_cutout,
+            original_url=selected_original,
+            visual_label="Prenda sobre fondo blanco" if selected_cutout else "Referencia original",
+        )
 
+    ai_capture_state = None
+    latest_ai_preparation = next(
+        (item for item in ai_versions
+         if item.get("status") == "PREPARACION"
+         and not item.get("technically_invalidated")),
+        None,
+    )
+    has_ai_history = bool(ai_versions)
     if model.get("status") == "APROBADO":
         try:
             ai_capture_state = _json_sanitize(
@@ -16151,6 +18649,12 @@ def garment_model_detail(model_id):
             )
             ai_capture_state = None
 
+    # A failed/preexisting capture record must never reset progress to 0/20.
+    ai_capture_count = int((ai_capture_state or {}).get("accepted_count") or 0)
+    ai_capture_minimum = int(
+        (ai_capture_state or {}).get("min_count")
+        or get_ai_capture_config()["min_images"]
+    )
     ai_capture_visible = bool(
         can_prepare_ai
         and ai_capture_state
@@ -16179,14 +18683,20 @@ def garment_model_detail(model_id):
         "garment_model_detail.html",
         model=model,
         images=images,
+        primary_photo_url=primary_photo_url,
         role=role,
         can_manage=can_manage,
         ai_versions=ai_versions,
         ai_in_progress=ai_in_progress,
+        latest_ai_preparation=latest_ai_preparation,
+        has_ai_history=has_ai_history,
         ai_historical_only=ai_historical_only,
         can_prepare_ai=can_prepare_ai,
         ai_capture=ai_capture_state,
         ai_capture_visible=ai_capture_visible,
+        ai_capture_count=ai_capture_count,
+        ai_capture_minimum=ai_capture_minimum,
+        ai_capture_can_train=ai_capture_count >= ai_capture_minimum,
         ai_training=ai_training_state,
         normal_augmentation=normal_augmentation,
         normal_augmentation_can_prepare=normal_augmentation_can_prepare,
@@ -16378,45 +18888,54 @@ def garment_ai_prepare(model_id):
                 )
             )
 
+        # The parent garment row is locked above, serializing first-version
+        # preparation and retries from duplicate form submissions. Reuse an
+        # existing preparation; never create a second PatchCore version.
         cur.execute(
             """
-            SELECT
-                id,
-                version,
-                status
+            SELECT id, version, status
             FROM garment_ai_models
             WHERE garment_model_id = %s
-              AND status IN (
-                  'PREPARACION',
-                  'ENTRENANDO',
-                  'ENTRENADO',
-                  'VALIDACION',
-                  'VALIDADO'
-              )
+              AND status = 'PREPARACION'
             ORDER BY id DESC
             LIMIT 1
+            FOR UPDATE
             """,
             (model_id,),
         )
+        existing_preparation = cur.fetchone()
+        if existing_preparation:
+            conn.rollback()
+            flash(
+                f"La versión {existing_preparation['version']} ya está en preparación. "
+                "Puede continuar la captura.",
+                "success",
+            )
+            return redirect(url_for("guided_capture_page", model_id=model_id))
 
+        cur.execute(
+            """
+            SELECT id, version, status
+            FROM garment_ai_models
+            WHERE garment_model_id = %s
+              AND status IN ('ENTRENANDO', 'ENTRENADO', 'VALIDACION', 'VALIDADO')
+              AND (notes IS NULL OR notes NOT LIKE %s)
+            ORDER BY id DESC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (model_id, "%[TECHNICALLY_INVALIDATED]%"),
+        )
         existing_pending = cur.fetchone()
 
         if existing_pending:
             conn.rollback()
             flash(
-                (
-                    "Ya existe una version de IA en proceso: "
-                    f"{existing_pending['version']} "
-                    f"({existing_pending['status']})."
-                ),
+                f"Ya existe una versión de IA en proceso: {existing_pending['version']} "
+                f"({existing_pending['status']}).",
                 "error",
             )
-            return redirect(
-                url_for(
-                    "garment_model_detail",
-                    model_id=model_id,
-                )
-            )
+            return redirect(url_for("garment_model_detail", model_id=model_id))
 
         cur.execute(
             """
@@ -16527,19 +19046,10 @@ def garment_ai_prepare(model_id):
         conn.close()
 
     flash(
-        (
-            f"Version {version} preparada correctamente. "
-            f"Dataset: {dataset_name}."
-        ),
+        f"Versión {version} preparada correctamente. Inicie la captura de fotografías.",
         "success",
     )
-
-    return redirect(
-        url_for(
-            "garment_model_detail",
-            model_id=model_id,
-        )
-    )
+    return redirect(url_for("guided_capture_page", model_id=model_id))
 
 
 @app.route(
@@ -16833,6 +19343,7 @@ def users_admin():
             )
 
         else:
+# Registra un nuevo usuario en la base de datos MySQL.
             execute(
                 """
                 INSERT INTO users (
@@ -16845,9 +19356,13 @@ def users_admin():
                 VALUES (%s, %s, %s, %s, 1)
                 """,
                 (
+# Nombre de usuario utilizado para acceder al sistema.
                     username,
+# Nombre completo de la persona registrada.
                     full_name,
+# Genera un hash para no almacenar la contraseña original.
                     generate_password_hash(password),
+# Asigna el rol que tendrá el usuario en el sistema.
                     role,
                 ),
             )
@@ -16874,9 +19389,15 @@ def users_admin():
         """
     )
 
+    current_profile = next(
+        (item for item in users if item["id"] == session.get("user_id")),
+        None,
+    )
+
     return render_template(
         "users.html",
         users=users,
+        current_profile=current_profile,
         role_labels=ROLE_LABELS,
         valid_roles=[
             ROLE_ADMIN,
@@ -16884,6 +19405,45 @@ def users_admin():
             ROLE_QUALITY_MANAGER,
         ],
     )
+
+
+@app.route("/usuarios/<int:user_id>/nombre", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def user_change_full_name(user_id):
+    """Solo un administrador puede corregir nombres de identificacion.
+
+    Nunca modifica username, contraseña ni rol. El rol mostrado
+    siempre permanece separado del nombre de la persona.
+    """
+    new_name = " ".join((request.form.get("full_name") or "").split())
+    if (
+        not 2 <= len(new_name) <= 150
+        or any(ord(char) < 32 or ord(char) == 127 for char in new_name)
+    ):
+        flash("Ingrese un nombre valido de 2 a 150 caracteres.", "error")
+        return redirect(url_for("users_admin"))
+
+    target = fetch_one(
+        "SELECT id, username, full_name FROM users WHERE id = %s",
+        (user_id,),
+    )
+    if target is None:
+        flash("El usuario solicitado no existe.", "error")
+        return redirect(url_for("users_admin"))
+
+    if (target.get("full_name") or "").strip() == new_name:
+        flash("El nombre ya estaba actualizado.", "success")
+        return redirect(url_for("users_admin"))
+
+    execute(
+        "UPDATE users SET full_name = %s WHERE id = %s",
+        (new_name, user_id),
+    )
+    if session.get("user_id") == user_id:
+        session["display_name"] = new_name
+    flash("Nombre actualizado correctamente.", "success")
+    return redirect(url_for("users_admin"))
 
 
 @app.route("/usuarios/<int:user_id>/rol", methods=["POST"])
@@ -17035,23 +19595,47 @@ def logout():
 
 @app.route("/health")
 def health():
+    """Estado mínimo del servicio sin exponer configuración sensible."""
     try:
-        row = fetch_one("SELECT COUNT(*) AS c FROM inspections")
-        model_ready = MODEL_PATH.exists() and MODEL_PATH.stat().st_size >= 1024
+        fetch_one("SELECT 1 AS ok")
+
+        with latest_frame_lock:
+            frame_available = latest_camera_frame is not None
+            frame_timestamp = latest_frame_timestamp_monotonic
+
+        frame_age_seconds = None
+        if frame_timestamp is not None:
+            frame_age_seconds = max(
+                0.0,
+                time.monotonic() - float(frame_timestamp),
+            )
+
+        camera_connected = (
+            frame_available
+            and frame_age_seconds is not None
+            and frame_age_seconds <= max(
+                5.0,
+                float(CAMERA_RETRY_SECONDS) * 2.0,
+            )
+        )
+
         return jsonify({
-            "status": "ok",
-            "database": DB_NAME,
-            "inspections": row["c"],
-            "camera_source": (
-            "RTSP configurado"
-            if CAMERA_SOURCE.lower().startswith("rtsp://")
-            else CAMERA_SOURCE
+            "status": "ok" if camera_connected else "degraded",
+            "database": "ok",
+            "camera": (
+                "connected"
+                if camera_connected
+                else "disconnected"
             ),
-            "model_ready": model_ready,
-            "detection_mode": "yolo" if model_ready else "prototype",
         })
-    except Exception as e:
-        return jsonify({"status": "error", "detail": str(e)}), 500
+    except Exception:
+        app.logger.exception(
+            "Fallo la comprobacion de salud del servicio."
+        )
+        return jsonify({
+            "status": "error",
+            "database": "unavailable",
+        }), 503
 
 
 
@@ -17555,6 +20139,44 @@ def _ai_guided_segment(frame, roi):
         mask = None
         diagnostics["error"] = str(error)
 
+    # La caja luminosa confunde al segmentador de gradientes si la
+    # prenda es clara. Usar una segunda máscara SOLO si el contraste
+    # realmente delimitó una silueta completamente dentro del ROI.
+    # Este fallback no cambia el procesamiento ni los umbrales de PatchCore.
+    if mask is None or not cv2.countNonZero(mask):
+        try:
+            alternative = garment_visual_preview(frame, mask_only=True)
+            if alternative is not None:
+                candidate_bbox = mask_bbox(alternative, cv2)
+                x1, y1, x2, y2 = roi
+                rw, rh = x2 - x1, y2 - y1
+                margin_x = max(3, round(rw * .015))
+                margin_y = max(3, round(rh * .015))
+                detected_coverage = cv2.countNonZero(
+                    alternative[y1:y2, x1:x2]
+                ) / float(max(1, rw * rh))
+                fully_inside = (
+                    candidate_bbox is not None
+                    and candidate_bbox[0] > x1 + margin_x
+                    and candidate_bbox[1] > y1 + margin_y
+                    and candidate_bbox[2] < x2 - margin_x
+                    and candidate_bbox[3] < y2 - margin_y
+                )
+                diagnostics["contrast_candidate"] = {
+                    "coverage": round(detected_coverage, 4),
+                    "inside_roi": bool(fully_inside),
+                }
+                if (
+                    fully_inside
+                    and GUIDED_COVERAGE_MIN <= detected_coverage
+                    <= GUIDED_COVERAGE_MAX
+                ):
+                    mask = alternative
+                    diagnostics["method"] = "contraste_verificado"
+                    diagnostics["reason"] = None
+        except Exception as error:
+            diagnostics["contrast_fallback_error"] = type(error).__name__
+
     bbox = mask_bbox(mask, cv2) if mask is not None else None
 
     coverage = 0.0
@@ -17917,18 +20539,29 @@ def _ai_guided_manual_capture(garment_model_id):
 
         decision = _ai_capture_evaluate(frame, coverage, sequence)
         warnings = []
-        if segmentation.get("method") == "ninguno":
+        if bbox is None:
+            # Sin máscara no significa necesariamente que no haya prenda:
+            # en tela clara el contraste puede resultar insuficiente.
             warnings.append(
-                "No se detectó la prenda dentro del área: el sistema "
-                "no pudo confirmar una posición ideal. Colóquela entera "
-                "dentro del rectángulo antes de aceptar."
+                "No fue posible verificar automáticamente el contorno. "
+                "Revise que la prenda se vea completa en la fotografía "
+                "antes de aceptar. Si no, presione Repetir."
             )
-        elif bbox is None:
-            warnings.append("El sistema no pudo confirmar una posición ideal. Revise la imagen antes de aceptarla.")
         if float(sharpness or 0.0) < float((AI_CAPTURE_RUNTIME.get("config") or get_ai_capture_config())["min_sharpness"]):
             warnings.append("Imagen posiblemente borrosa.")
-        if float(coverage or 0.0) < float((AI_CAPTURE_RUNTIME.get("config") or get_ai_capture_config())["min_coverage"]):
-            warnings.append("La prenda podría quedar parcial o poco visible dentro del área.")
+        if (
+            bbox is not None
+            and float(coverage or 0.0)
+            < float(
+                (AI_CAPTURE_RUNTIME.get("config") or get_ai_capture_config())[
+                    "min_coverage"
+                ]
+            )
+        ):
+            warnings.append(
+                "La prenda ocupa menos espacio del recomendado. "
+                "Compruebe su tamaño y que no esté cortada en la foto."
+            )
         if decision.get("reason") in (
             "MOVE_LEFT", "MOVE_RIGHT", "MOVE_UP", "MOVE_DOWN",
             "HIGH_COVERAGE",
@@ -18267,6 +20900,15 @@ def _ai_capture_idle_payload(
             garment = {"id": row["id"], "code": row["code"]}
 
     has_prep = _has_preparation_version(cur, garment_model_id)
+    cur.execute(
+        """SELECT COUNT(*) AS accepted
+           FROM ai_training_images ti
+           JOIN ai_capture_sessions cs ON cs.id = ti.capture_session_id
+           WHERE cs.garment_model_id = %s AND ti.status = 'ACEPTADA'
+             AND cs.target_ai_model_id IS NULL""",
+        (garment_model_id,),
+    )
+    accepted_count = int((cur.fetchone() or {}).get("accepted") or 0)
     augmentation = (
         normal_augmentation_summary(cur, augmentation_ai_model_id)
         if augmentation_ai_model_id is not None else None
@@ -18286,7 +20928,7 @@ def _ai_capture_idle_payload(
     station_code = None
     if station_busy:
         cur.execute(
-            "SELECT code FROM garment_models WHERE id = %s",
+            "SELECT code, active FROM garment_models WHERE id = %s",
             (station_row["garment_model_id"],),
         )
         station_row_model = cur.fetchone()
@@ -18299,7 +20941,8 @@ def _ai_capture_idle_payload(
         "session_id": None,
         "status": None,
         "garment_model": garment,
-        "accepted_count": 0,
+        "accepted_count": accepted_count,
+        "min_count": int(cfg["min_images"]),
         "rejected_count": 0,
         "target_count": int(cfg["target_images"]),
         "last_capture": None,
@@ -18316,6 +20959,14 @@ def _ai_capture_idle_payload(
         "normal_augmentation": augmentation,
         "station_busy": station_busy,
         "station_busy_model_code": station_code,
+        "station_busy_model_id": (
+            int(station_row["garment_model_id"]) if station_busy else None
+        ),
+        "station_busy_session_id": int(station_row["id"]) if station_busy else None,
+        "station_busy_model_active": (
+            bool((station_row_model or {}).get("active")) if station_busy else None
+        ),
+        "can_pause_busy": bool(session.get("role") == ROLE_ADMIN),
     }
     return _ai_capture_enrich(
         payload,
@@ -18570,6 +21221,14 @@ def ai_capture_start():
             ),
         }), 409
 
+    active_batch = get_active_batch()
+    if active_batch is not None:
+        return jsonify({
+            "ok":False,
+            "error":"El lote " + str(active_batch["code"]) +
+                    " sigue en inspeccion. Pauselo en Lotes antes de usar la camara."
+        }),409
+
     try:
         ensure_ai_capture_can_start()
     except AIDomainError as error:
@@ -18789,6 +21448,43 @@ def ai_capture_status():
     return jsonify(payload)
 
 
+@app.route("/modelos-prenda/captura-ia/pausar-ocupada", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def pause_busy_capture():
+    """El administrador libera una sesion ABIERTA incluso de modelos archivados."""
+    raw_id = request.form.get("capture_session_id", type=int)
+    return_model = request.form.get("return_model_id", type=int)
+    if not raw_id or raw_id <= 0:
+        flash("Seleccione una sesion de captura valida.", "error")
+        return redirect(url_for("garment_models_page"))
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        active = get_open_capture_session(cur)
+    finally:
+        cur.close()
+        conn.close()
+    if not active or int(active["id"]) != int(raw_id):
+        flash("La sesion ya cambio. Actualice la pagina.", "error")
+        return redirect(url_for("garment_models_page"))
+    result = _ai_capture_finish("pause", session_id_override=int(raw_id))
+    payload = result[0].get_json() if isinstance(result, tuple) else result.get_json()
+    if not payload or not payload.get("ok"):
+        flash((payload or {}).get("error") or "No se pudo pausar la sesion.", "error")
+    else:
+        _stop_ai_guided_worker()
+        _ai_guided_reset_state()
+        flash("Se libero la camara. La sesion anterior quedo pausada, no eliminada.", "success")
+    if request.form.get("return_to_lots") == "1":
+        return redirect(url_for("batches"))
+    if return_model is not None and return_model > 0:
+        if request.form.get("return_to_capture") == "1" and payload and payload.get("ok"):
+            return redirect(url_for("guided_capture_page", model_id=return_model))
+        return redirect(url_for("garment_model_detail", model_id=return_model))
+    return redirect(url_for("garment_models_page"))
+
+
 @app.route("/api/ai/capture/stop", methods=["POST"])
 @login_required
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
@@ -18803,9 +21499,12 @@ def ai_capture_cancel():
     return _ai_capture_finish("cancel")
 
 
-def _ai_capture_finish(action):
+def _ai_capture_finish(action, session_id_override=None):
     body = request.get_json(silent=True) or {}
-    raw_id = body.get("session_id")
+    raw_id = (
+        session_id_override if session_id_override is not None
+        else body.get("session_id")
+    )
     session_id = None
 
     if raw_id not in (None, ""):
@@ -18839,17 +21538,20 @@ def _ai_capture_finish(action):
         if action == "stop":
             result = stop_ai_capture_session(cur, session_id)
             event_type = "CAPTURE_COMPLETED"
-            message = "Sesión de captura finalizada."
+            message = "Sesion finalizada."
+        elif action == "pause":
+            result = transition_capture_session_status(cur,session_id,"PAUSADA")
+            event_type = "CAPTURE_PAUSED"
+            message = "Captura pausada sin perder imagenes."
         else:
             result = cancel_ai_capture_session(cur, session_id)
             event_type = "CAPTURE_CANCELLED"
-            message = "Sesión de captura cancelada."
+            message = "Sesion cancelada."
 
-        already = result.get(
-            "already_finished"
-            if action == "stop"
-            else "already_cancelled",
-            False,
+        already = (
+            result.get("already_finished",False) if action=="stop"
+            else result.get("already_cancelled",False) if action=="cancel"
+            else False
         )
 
         if not already:
@@ -20075,6 +22777,167 @@ def ai_validation_final_test_evaluate():
     return jsonify({"ok": True, "metrics": _json_sanitize(metrics), "final_test": _json_sanitize(state), "active": 0}), 200
 
 
+@app.route("/api/ai/validation/activate", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN)
+def ai_validation_activate():
+    """Activa una versión VALIDADA únicamente después de FINAL_TEST EVALUADA."""
+    body = request.get_json(silent=True) or {}
+    garment_model_id, parse_error = _parse_garment_model_id(body)
+    if parse_error is not None:
+        return parse_error
+
+    raw_ai, ai_error = _parse_optional_ai_model_id(body)
+    if ai_error is not None:
+        return ai_error
+
+    _, resolved, guard_error = _validation_api_guard(
+        garment_model_id,
+        raw_ai,
+    )
+    if guard_error is not None:
+        return guard_error
+
+    actor_id = session.get("user_id")
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        conn.start_transaction()
+
+        validation_state = ai_validation.get_validation_state(cur, resolved)
+        if validation_state.get("model_status") != "VALIDADO":
+            raise AIDomainError(
+                "Solo una versión VALIDADA puede activarse."
+            )
+        if int(validation_state.get("active") or 0) == 1:
+            raise AIDomainError("Esta versión ya está activa.")
+
+        final_state = ai_validation.get_final_test_state(
+            cur,
+            ai_model_id=resolved,
+        )
+        if (
+            not final_state.get("started")
+            or str(final_state.get("status") or "").upper() != "EVALUADA"
+            or not final_state.get("metrics")
+            or not final_state.get("integrity_ok")
+        ):
+            raise AIDomainError(
+                "Debe completar y evaluar la PRUEBA FINAL antes de activar esta versión."
+            )
+
+        cur.execute(
+            """
+            SELECT
+                b.id,
+                b.code,
+                b.ai_model_id,
+                (
+                    SELECT COUNT(*)
+                    FROM inspections i
+                    WHERE i.batch_id = b.id
+                ) AS inspection_count
+            FROM batches b
+            WHERE b.garment_model_id = %s
+              AND b.status = 'EN_INSPECCION'
+            ORDER BY b.id DESC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (garment_model_id,),
+        )
+        active_batch = cur.fetchone()
+        if (
+            active_batch is not None
+            and int(active_batch.get("inspection_count") or 0) > 0
+        ):
+            raise AIDomainError(
+                "Finalice el lote activo "
+                f"{active_batch.get('code') or active_batch.get('id')} "
+                "antes de cambiar la versión de IA, porque ya contiene inspecciones."
+            )
+
+        cur.execute(
+            """
+            SELECT id, version
+            FROM garment_ai_models
+            WHERE garment_model_id = %s
+              AND status = 'ACTIVO'
+              AND id <> %s
+            FOR UPDATE
+            """,
+            (garment_model_id, resolved),
+        )
+        previous_active = cur.fetchall()
+
+        result = transition_ai_model_status(
+            cur,
+            int(resolved),
+            "ACTIVO",
+            actor_id,
+        )
+
+        if active_batch is not None:
+            cur.execute(
+                "UPDATE batches SET ai_model_id = %s WHERE id = %s",
+                (int(resolved), int(active_batch["id"])),
+            )
+
+        for previous in previous_active:
+            record_ai_event(
+                cur,
+                "RETIRED",
+                actor_id=actor_id,
+                ai_model_id=int(previous["id"]),
+                payload={
+                    "reason": "REPLACED_BY_VALIDATED_VERSION",
+                    "replacement_ai_model_id": int(resolved),
+                },
+            )
+
+        record_ai_event(
+            cur,
+            "ACTIVATED",
+            actor_id=actor_id,
+            ai_model_id=int(resolved),
+            payload={
+                "garment_model_id": int(garment_model_id),
+                "final_test_session_id": int(final_state["id"]),
+                "final_test_metrics": final_state.get("metrics"),
+            },
+        )
+
+        conn.commit()
+    except AIDomainError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        return jsonify({"ok": False, "error": str(error)}), 409
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo activar ai_model_id=%s después de FINAL_TEST.",
+            resolved,
+        )
+        return jsonify({
+            "ok": False,
+            "error": "No se pudo activar la versión de IA. Intente de nuevo.",
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "message": (
+            f"La versión {result.get('version')} quedó ACTIVA y la versión anterior fue retirada."
+        ),
+        "result": _json_sanitize(result),
+        "redirect_url": url_for("garment_model_detail", model_id=garment_model_id),
+    }), 200
+
+
 @app.route("/api/ai/validation/threshold/freeze", methods=["POST"])
 @login_required
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
@@ -20717,10 +23580,37 @@ def guided_capture_page(model_id):
         )
         payload = None
 
+    occupied_capture = None
+    try:
+        capture_conn = db()
+        capture_cur = capture_conn.cursor(dictionary=True)
+        try:
+            station_session = get_open_capture_session(capture_cur)
+            if (
+                station_session is not None
+                and int(station_session["garment_model_id"]) != int(model_id)
+            ):
+                capture_cur.execute(
+                    "SELECT code, active FROM garment_models WHERE id = %s",
+                    (station_session["garment_model_id"],),
+                )
+                previous_model = capture_cur.fetchone() or {}
+                occupied_capture = {
+                    "session_id": int(station_session["id"]),
+                    "model_code": previous_model.get("code") or "modelo anterior",
+                    "model_archived": int(previous_model.get("active") or 0) != 1,
+                }
+        finally:
+            capture_cur.close()
+            capture_conn.close()
+    except Exception:
+        app.logger.exception("No se pudo consultar la captura que ocupa la estacion.")
+
     return render_template(
         "guided_capture.html",
         model=model,
         ai_capture=_json_sanitize(payload) if payload else None,
+        occupied_capture=occupied_capture,
     )
 
 
@@ -21012,6 +23902,7 @@ GUIDED_REVIEW_DECISIONS = {
     "repeat": ("RECHAZADA", "MANUAL_REPEAT"),
     "discard": ("RECHAZADA", "MANUAL_DISCARD"),
 }
+# Inicializa la aplicación web utilizando el framework Flask.
 
 
 @app.route("/api/ai/capture/guide/review", methods=["POST"])
@@ -21289,6 +24180,183 @@ def ai_capture_guide_review():
     })
 
 
+
+@app.route("/modelos-prenda/<int:model_id>/captura-ia/imagenes", methods=["GET"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def training_image_gallery(model_id):
+    """Revisar imagenes de la ultima sesion sin abrir la camara."""
+    model = get_garment_model(model_id)
+    if not model or not can_manage_garment_model(model):
+        return "No tiene permiso para revisar estas imagenes.", 403
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """SELECT id, status
+               FROM ai_capture_sessions
+               WHERE garment_model_id = %s
+               ORDER BY id DESC LIMIT 1""",
+            (model_id,),
+        )
+        capture = cur.fetchone()
+        images = []
+        accepted_count = 0
+        can_review = False
+        if capture:
+            cur.execute(
+                """SELECT ti.id, ti.status, ti.reject_reason, ti.captured_at,
+                          EXISTS (
+                             SELECT 1 FROM ai_dataset_images di
+                             WHERE di.image_id = ti.id
+                          ) AS in_dataset
+                   FROM ai_training_images ti
+                   WHERE ti.capture_session_id = %s
+                     AND ti.garment_model_id = %s
+                     AND (ti.status = 'ACEPTADA'
+                          OR (ti.status = 'RECHAZADA' AND
+                              ti.reject_reason = 'MANUAL_TRAINING_EXCLUDED'))
+                   ORDER BY ti.captured_at ASC, ti.id ASC
+                   LIMIT 250""",
+                (capture["id"], model_id),
+            )
+            images = cur.fetchall()
+            for sequence, photo in enumerate(images, 1):
+                photo["sequence"] = sequence
+                photo["excluded"] = (
+                    photo["status"] == "RECHAZADA"
+                    and photo["reject_reason"] == "MANUAL_TRAINING_EXCLUDED"
+                )
+                photo["editable"] = (
+                    capture["status"] in ("ABIERTA", "PAUSADA")
+                    and not photo["in_dataset"]
+                )
+                if photo["status"] == "ACEPTADA":
+                    accepted_count += 1
+            can_review = capture["status"] in ("ABIERTA", "PAUSADA")
+    finally:
+        cur.close()
+        conn.close()
+
+    return render_template(
+        "training_image_gallery.html",
+        model=model,
+        capture=capture,
+        images=images,
+        accepted_count=accepted_count,
+        can_review=can_review,
+    )
+
+
+@app.route(
+    "/modelos-prenda/<int:model_id>/captura-ia/imagenes/<int:image_id>/revisar",
+    methods=["POST"],
+)
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def training_image_gallery_review(model_id, image_id):
+    """Excluye o restaura una toma; nunca borra el archivo ni altera datasets."""
+    model = get_garment_model(model_id)
+    if not model or not can_manage_garment_model(model):
+        return "No tiene permiso para modificar esta imagen.", 403
+    operation = (request.form.get("action") or "").strip()
+    confirm_image_id = request.form.get("confirm_image_id", type=int)
+    if operation not in ("exclude", "restore") or confirm_image_id != image_id:
+        flash("La solicitud de revision no es valida.", "error")
+        return redirect(url_for("training_image_gallery", model_id=model_id))
+
+    conn = db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        conn.start_transaction()
+        cur.execute(
+            """SELECT id, status
+               FROM ai_capture_sessions
+               WHERE garment_model_id = %s
+               ORDER BY id DESC LIMIT 1 FOR UPDATE""",
+            (model_id,),
+        )
+        capture = cur.fetchone()
+        if not capture or capture["status"] not in ("ABIERTA", "PAUSADA"):
+            conn.rollback()
+            flash("La preparacion ya fue cerrada; las imagenes se conservan sin cambios.", "error")
+            return redirect(url_for("training_image_gallery", model_id=model_id))
+        cur.execute(
+            """SELECT id, status, reject_reason
+               FROM ai_training_images
+               WHERE id = %s AND capture_session_id = %s
+                 AND garment_model_id = %s
+               FOR UPDATE""",
+            (image_id, capture["id"], model_id),
+        )
+        photo = cur.fetchone()
+        if photo is None:
+            conn.rollback()
+            flash("La imagen no pertenece a esta sesion.", "error")
+            return redirect(url_for("training_image_gallery", model_id=model_id))
+        cur.execute(
+            "SELECT 1 FROM ai_dataset_images WHERE image_id = %s LIMIT 1",
+            (image_id,),
+        )
+        if cur.fetchone() is not None:
+            conn.rollback()
+            flash("La imagen ya pertenece a un dataset y no puede modificarse.", "error")
+            return redirect(url_for("training_image_gallery", model_id=model_id))
+        is_excluded = (
+            photo["status"] == "RECHAZADA"
+            and photo["reject_reason"] == "MANUAL_TRAINING_EXCLUDED"
+        )
+        if operation == "exclude" and photo["status"] == "ACEPTADA":
+            new_status, new_reason = "RECHAZADA", "MANUAL_TRAINING_EXCLUDED"
+        elif operation == "restore" and is_excluded:
+            new_status, new_reason = "ACEPTADA", None
+        else:
+            conn.rollback()
+            flash("La imagen ya cambio de estado; actualice la galeria.", "error")
+            return redirect(url_for("training_image_gallery", model_id=model_id))
+        cur.execute(
+            """UPDATE ai_training_images
+               SET status = %s, reject_reason = %s
+               WHERE id = %s AND capture_session_id = %s""",
+            (new_status, new_reason, image_id, capture["id"]),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            flash("No fue posible actualizar la imagen.", "error")
+            return redirect(url_for("training_image_gallery", model_id=model_id))
+        record_ai_event(
+            cur,
+            "CAPTURE_IMAGE_REVIEWED",
+            actor_id=session.get("user_id"),
+            capture_session_id=capture["id"],
+            payload={
+                "source": "training_gallery",
+                "action": operation,
+                "image_id": image_id,
+                "status": new_status,
+            },
+        )
+        conn.commit()
+        flash(
+            "Imagen excluida del entrenamiento. Las otras capturas siguen intactas."
+            if operation == "exclude"
+            else "Imagen restaurada entre las capturas validas.",
+            "success",
+        )
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        app.logger.exception(
+            "No se pudo revisar la imagen de entrenamiento %s", image_id
+        )
+        flash("No se pudo guardar el cambio. Intente nuevamente.", "error")
+    finally:
+        cur.close()
+        conn.close()
+    return redirect(url_for("training_image_gallery", model_id=model_id))
+
+
 @app.route(
     "/modelos-prenda/<int:model_id>/captura-ia/imagen/<int:image_id>",
     methods=["GET"],
@@ -21461,6 +24529,31 @@ def _ai_guided_close(model_id, action):
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
 def guided_capture_finish(model_id):
     return _ai_guided_close(model_id, "stop")
+
+
+@app.route("/modelos-prenda/<int:model_id>/captura-ia/pausar",methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def guided_capture_pause(model_id):
+    model,blocked=_guarded_model_or_none(model_id)
+    if blocked is not None:return blocked
+    conn=db();cur=conn.cursor(dictionary=True)
+    try:
+        open_row=get_open_capture_session(cur)
+    finally:
+        cur.close();conn.close()
+    if open_row is None or int(open_row["garment_model_id"])!=int(model_id):
+        flash("No hay captura activa para pausar.","error")
+        return redirect(url_for("garment_model_detail",model_id=model_id))
+    response=_ai_capture_finish("pause")
+    payload=response[0].get_json() if isinstance(response,tuple) else response.get_json()
+    if not payload or not payload.get("ok"):
+        flash((payload or {}).get("error") or "No se pudo pausar.","error")
+        return redirect(url_for("guided_capture_page",model_id=model_id))
+    _stop_ai_guided_worker()
+    _ai_guided_reset_state()
+    flash("Captura pausada. Puede reanudarla desde la ficha del modelo.","success")
+    return redirect(url_for("garment_model_detail",model_id=model_id))
 
 
 @app.route(

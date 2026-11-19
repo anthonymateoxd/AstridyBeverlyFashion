@@ -19,6 +19,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tests.test_support import configure_test_environment
+
+# Las pruebas nunca heredan el `.env` del proyecto (base real, camara ni
+# checkpoint de PatchCore): solo usan la base de pruebas aislada.
+configure_test_environment()
+
 from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")
@@ -796,13 +802,17 @@ class CaptureSessionDbTests(unittest.TestCase):
         claim_frame_sequence(cur, sid, 102)
         conn.rollback()
 
+# Comprueba que el registro de imágenes requiere una sesión abierta.
     def test_register_requires_open_session(self):
+
+        # Importa las funciones necesarias para realizar la prueba.
         from ai_domain import (
             register_training_image,
             start_ai_capture_session,
             stop_ai_capture_session,
         )
 
+        # Prepara la conexión y la transacción de prueba.
         conn, cur = self._tx()
         opened = start_ai_capture_session(
             cur,

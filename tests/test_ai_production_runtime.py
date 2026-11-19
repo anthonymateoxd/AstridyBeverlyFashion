@@ -103,6 +103,19 @@ class ProductionRuntimeTests(unittest.TestCase):
         self.assertTrue(conn.cursor_obj.closed)
         self.assertTrue(conn.closed)
 
+    def test_runtime_preserves_selected_version_v1_and_v2(self):
+        for version, model_id, threshold in (("v1", 2538, 44.41), ("v2", 2539, 51.25)):
+            with self.subTest(version=version):
+                conn = _Connection(self._row(ai_version=version, ai_model_id=model_id,
+                                             threshold_final=threshold))
+                with patch.object(A, "db", return_value=conn), \
+                     patch.object(A, "get_ai_artifacts_root", return_value=self.root), \
+                     patch.object(A.ai_validation, "get_model_inspector", return_value=object()):
+                    runtime = A.resolve_active_production_ai_runtime()
+                self.assertEqual(runtime["version"], version)
+                self.assertEqual(runtime["ai_model_id"], model_id)
+                self.assertEqual(runtime["threshold"], threshold)
+
     def test_runtime_rejects_ai_from_another_garment_model(self):
         conn = _Connection(self._row(ai_garment_model_id=9999))
         with patch.object(A, "db", return_value=conn), \
@@ -120,6 +133,38 @@ class ProductionRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "threshold definitivo congelado"):
                 A.resolve_active_production_ai_runtime()
         get_inspector.assert_not_called()
+
+    def test_runtime_rejects_unavailable_patchcore_engine(self):
+        conn = _Connection(self._row())
+        with patch.object(A, "db", return_value=conn), \
+             patch.object(A, "get_ai_artifacts_root", return_value=self.root), \
+             patch.object(
+                 A.ai_validation,
+                 "get_model_inspector",
+                 return_value=None,
+             ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "motor de inferencia PatchCore",
+            ):
+                A.resolve_active_production_ai_runtime()
+
+        self.assertTrue(conn.cursor_obj.closed)
+        self.assertTrue(conn.closed)
+
+    def test_detect_defect_does_not_use_legacy_fallback_if_runtime_fails(self):
+        with patch.object(
+            A,
+            "resolve_active_production_ai_runtime",
+            side_effect=RuntimeError("PatchCore no disponible"),
+        ), patch.object(A, "load_yolo_model") as legacy_loader:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "PatchCore no disponible",
+            ):
+                A.detect_defect(Path("unused.jpg"))
+
+        legacy_loader.assert_not_called()
 
 
 if __name__ == "__main__":

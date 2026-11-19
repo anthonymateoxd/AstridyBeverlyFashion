@@ -416,6 +416,9 @@ def verify_normal_expansion_capture_isolation(cur, *, ai_model_id, garment_model
     }
 
 
+# CAPÍTULO V — Preparación del conjunto de entrenamiento.
+# Organiza las imágenes aceptadas de sesiones terminadas en un dataset
+# versionado, que se utilizará posteriormente para entrenar PatchCore.
 def materialize_training_dataset(
     cur,
     garment_model_id: int,
@@ -2520,6 +2523,9 @@ class PatchCoreTrainer:
         }
 
 
+# CAPÍTULO V — Ejecución del entrenamiento PatchCore.
+# El proceso asíncrono toma un trabajo ya asignado, prepara
+# sus artefactos y registra el estado del entrenamiento.
 def execute_training_job(
     job_id: int,
     *,

@@ -269,20 +269,24 @@ def get_model_inspector(bundle, inspector_factory=None) -> object:
         str(bundle["checkpoint_path"]),
         int(bundle["input_size"]),
     )
-
+# Protege el acceso a los modelos cargados en memoria.
     with _INSPECTORS_LOCK:
+# Busca si el inspector del modelo ya está cargado.
         inspector = _INSPECTORS.get(key)
-
+# Reutiliza el modelo para evitar cargarlo nuevamente.
         if inspector is not None:
             return inspector
 
+# Obtiene la clase o función encargada de crear el inspector.
         factory = inspector_factory
 
         if factory is None:
+# Importa el inspector PatchCore cuando es necesario.
             from patchcore_inference import PatchCoreInspector
 
             factory = PatchCoreInspector
-
+# Carga el modelo utilizando su archivo de referencia
+# y el tamaño de imagen definido en su configuración.
         inspector = factory(
             bundle["checkpoint_abs"],
             image_size=int(bundle["input_size"]),
@@ -369,6 +373,9 @@ def build_validation_input(image_path, *, preprocessing_profile="PER_IMAGE") -> 
     return temp_path
 
 
+# CAPÍTULO V — Pruebas de validación de una versión de IA.
+# Analiza imágenes de prueba con los artefactos de la versión seleccionada,
+# sin reemplazar el modelo que esté activo en producción.
 def predict_with_ai_model(
     ai_model_id,
     image_path,
@@ -1689,6 +1696,9 @@ def compute_defect_breakdown(cases, threshold=None) -> dict:
     return breakdown
 
 
+# CAPÍTULO V — Evaluación de los resultados de IA.
+# Resume los casos clasificados como prendas buenas o defectuosas
+# y calcula métricas para analizar posibles umbrales de decisión.
 def compute_validation_metrics(
     cases,
     *,

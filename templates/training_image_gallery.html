@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.tig-wrap{max-width:1200px;margin:0 auto;color:var(--ui-text,#10275a);font-family:Arial,Helvetica,sans-serif}
+.tig-back{color:var(--ui-navy-soft,#24487f);font-weight:700;text-decoration:none;display:inline-block;margin-bottom:18px}
+.tig-head h1{font-size:29px;margin:0 0 9px;line-height:1.2}
+.tig-head p{color:var(--ui-muted,#7080a1);margin:0 0 16px;line-height:1.55}
+.tig-stats{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:18px}
+.tig-pill{padding:9px 13px;border-radius:9px;border:1px solid var(--ui-line,#e4e9f1);background:#fff;font-size:13px;font-weight:700}
+.tig-info{padding:13px 16px;margin-bottom:18px;background:#f0f5fc;border:1px solid #d8e4f5;border-radius:12px;color:#365477;font-size:13px;line-height:1.6}
+.tig-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}
+.tig-card{border:1px solid var(--ui-line,#e4e9f1);border-radius:14px;background:#fff;overflow:hidden;box-shadow:0 4px 18px rgba(22,45,82,.04)}
+.tig-image{width:100%;height:195px;object-fit:contain;background:#edf1f7;display:block}
+.tig-body{padding:14px}
+.tig-row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:9px}
+.tig-number{font-size:15px;font-weight:800}
+.tig-status{font-size:11px;padding:5px 8px;border-radius:99px;background:#e5f7ed;color:#0b7e50;font-weight:800}
+.tig-status.excluded{background:#fdeeee;color:#a44848}
+.tig-time{font-size:12px;color:#6b7d99;margin-bottom:12px}
+.tig-btn{display:block;width:100%;border:1px solid #d7e1ef;border-radius:8px;padding:10px 12px;background:#fff;color:var(--ui-navy,#0d2a66);font:700 13px Arial,Helvetica,sans-serif;cursor:pointer}
+.tig-btn:hover{background:#f1f5fb}
+.tig-btn.restore{background:var(--ui-navy,#0d2a66);color:#fff;border-color:var(--ui-navy,#0d2a66)}
+.tig-btn:focus-visible{outline:2px solid var(--ui-blue,#1597dc);outline-offset:3px}
+.tig-locked{color:#7b879b;font-size:12px;line-height:1.4}
+@media(max-width:560px){.tig-head h1{font-size:24px}.tig-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.tig-image{height:135px}.tig-body{padding:10px}}
+@media(max-width:370px){.tig-grid{grid-template-columns:1fr}}
+</style>
+<div class="tig-wrap">
+<a class="tig-back" href="{{ url_for('garment_model_detail', model_id=model.id) }}">&larr; Volver al modelo</a>
+<div class="tig-head">
+<h1>Revisar imagenes del entrenamiento</h1>
+<p>{{ model.code }} &middot; {{ model.name }}. Revise cada fotografia antes de finalizar la preparacion.</p>
+</div>
+{% if capture %}
+<div class="tig-stats">
+<span class="tig-pill">{{ accepted_count }} capturas validas</span>
+<span class="tig-pill">{{ images|length - accepted_count }} excluidas</span>
+<span class="tig-pill">Sesion {{ capture.id }} &middot; {{ capture.status }}</span>
+</div>
+<div class="tig-info">
+{% if can_review %}
+Puede excluir una imagen incorrecta sin borrar el archivo ni perder las otras capturas.
+El contador disminuira en una unidad. Si cambia de opinion, podra restaurarla.
+{% else %}
+Esta sesion ya se cerro. Las imagenes se muestran solamente para consulta y no se altera ningun entrenamiento anterior.
+{% endif %}
+</div>
+{% if images %}
+<div class="tig-grid">
+{% for photo in images %}
+<article class="tig-card">
+<img class="tig-image"
+ src="{{ url_for('guided_capture_image',model_id=model.id,image_id=photo.id) }}"
+ alt="Captura {{ photo.sequence }} de {{ model.code }}" loading="lazy">
+<div class="tig-body">
+<div class="tig-row">
+<span class="tig-number">Captura {{ photo.sequence }}</span>
+<span class="tig-status{% if photo.excluded %} excluded{% endif %}">
+{{ 'Excluida' if photo.excluded else 'Aceptada' }}</span>
+</div>
+<div class="tig-time">{{ photo.captured_at.strftime('%d/%m/%Y %H:%M') if photo.captured_at else '' }}</div>
+{% if photo.editable %}
+<form method="post"
+ action="{{ url_for('training_image_gallery_review',model_id=model.id,image_id=photo.id) }}"
+ onsubmit="return confirm('{{ 'Restaurar' if photo.excluded else 'Excluir' }} la captura {{ photo.sequence }}? Esta accion no borra las otras fotografias.');">
+<input type="hidden" name="confirm_image_id" value="{{ photo.id }}">
+<input type="hidden" name="action" value="{{ 'restore' if photo.excluded else 'exclude' }}">
+<button type="submit" class="tig-btn{% if photo.excluded %} restore{% endif %}">
+{{ 'Restaurar imagen' if photo.excluded else 'Excluir del entrenamiento' }}</button>
+</form>
+{% else %}
+<p class="tig-locked">Solo lectura: sesion cerrada o imagen en dataset.</p>
+{% endif %}
+</div>
+</article>
+{% endfor %}
+</div>
+{% else %}
+<p>No hay capturas aceptadas en esta sesion.</p>
+{% endif %}
+{% else %}
+<div class="tig-info">Este modelo aun no tiene sesiones de captura.</div>
+{% endif %}
+</div>
+{% endblock %}

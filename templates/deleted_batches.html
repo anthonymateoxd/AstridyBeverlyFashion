@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block content %}
+
+{# BATCH_LOGICAL_DELETION_V1: auditoria de lotes eliminados (solo ADMIN). #}
+
+<style>
+.audit-page{font-family:Arial,Helvetica,sans-serif;max-width:1100px;}
+.audit-page h1{margin:0;font-size:24px;color:var(--ui-text,#10275a);}
+.audit-lead{margin:8px 0 18px;font-size:14px;line-height:1.6;color:#667794;}
+.audit-toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;}
+.audit-card{background:#fff;border:1px solid #e6ded2;border-radius:12px;padding:16px;margin-bottom:14px;}
+.audit-card header{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center;}
+.audit-card h2{margin:0;font-size:17px;color:#302a24;}
+.audit-badge{display:inline-block;padding:3px 8px;border-radius:999px;background:#f4f1ec;color:#6b6257;font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;}
+.audit-reason{margin:10px 0 0;font-size:14px;color:#746a60;line-height:1.55;}
+.audit-meta{margin:6px 0 0;font-size:12px;color:#667794;}
+.audit-figures{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;}
+.audit-figure strong{display:block;font-size:18px;color:#302a24;}
+.audit-figure span{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:#667794;}
+.audit-actions{display:flex;gap:8px;flex-wrap:wrap;}
+.audit-table{width:100%;border-collapse:collapse;background:#fff;font-size:13px;}
+.audit-table th,.audit-table td{border-bottom:1px solid #eee7dd;padding:10px;text-align:left;vertical-align:top;}
+.audit-table th{background:#f4f1ec;color:#496481;text-transform:uppercase;letter-spacing:.6px;font-size:11px;}
+.audit-actions a,.audit-actions button{cursor:pointer;font:inherit;}
+.lot-btn{display:inline-block;padding:9px 14px;border:1px solid var(--ui-navy,#0d2a66);border-radius:8px;background:var(--ui-navy,#0d2a66);color:#fff;font-size:13px;font-weight:700;text-decoration:none;}
+.lot-btn-ghost{background:#fff;color:var(--ui-navy,#0d2a66);}
+@media (max-width:700px){
+  .audit-page h1{font-size:20px;}
+  .audit-table{display:block;overflow-x:auto;white-space:nowrap;}
+  .audit-card header{flex-direction:column;align-items:flex-start;}
+}
+</style>
+
+<article class="audit-page">
+ <h1>Lotes eliminados</h1>
+ <p class="audit-lead">
+  Los lotes listados aqu&iacute; est&aacute;n dados de baja de forma l&oacute;gica:
+  no cuentan en el dashboard, la planificaci&oacute;n, el historial operativo ni los
+  informes, pero <strong>ning&uacute;n dato fue borrado</strong>. Las inspecciones,
+  fotograf&iacute;as, decisiones y alertas permanecen disponibles para auditor&iacute;a.
+ </p>
+
+ <div class="audit-toolbar">
+  <a class="lot-btn lot-btn-ghost" href="{{ url_for('batches') }}">Volver a lotes</a>
+  <a class="lot-btn lot-btn-ghost" href="{{ url_for('dashboard') }}">Dashboard</a>
+ </div>
+
+ {% if not deleted_batches %}
+ <div class="audit-card">
+  <p>No hay lotes eliminados.</p>
+ </div>
+ {% endif %}
+
+ {% for item in deleted_batches %}
+ <section class="audit-card" aria-labelledby="audit-batch-{{ item.id }}">
+  <header>
+   <h2 id="audit-batch-{{ item.id }}">{{ item.code }}</h2>
+   <span class="audit-badge">Eliminado</span>
+  </header>
+
+  <p class="audit-reason">
+   <strong>Motivo:</strong>
+   {{ item.last_audit_reason or item.deletion_reason or 'Sin motivo registrado' }}
+  </p>
+  <p class="audit-meta">
+   Estado original: {{ item.status|replace('_',' ') }} &middot;
+   eliminado el {{ item.deleted_at }} por {{ item.deleted_by_name or ('administrador #' ~ item.deleted_by) }}
+  </p>
+
+  <div class="audit-figures">
+   <div class="audit-figure"><strong>{{ item.planned_quantity }}</strong><span>Planificadas</span></div>
+   <div class="audit-figure"><strong>{{ item.processed_quantity }}</strong><span>Inspeccionadas</span></div>
+   <div class="audit-figure"><strong>{{ item.production_date or '—' }}</strong><span>Fecha de producci&oacute;n</span></div>
+  </div>
+
+  <div class="audit-figures audit-actions">
+   <a class="lot-btn" href="{{ url_for('batch_deletion_audit_detail', batch_id=item.id) }}">Ver evidencia e inspecciones</a>
+   <form
+    method="post"
+    action="{{ url_for('restore_batch', batch_id=item.id) }}"
+    onsubmit="return confirm('¿Restaurar este lote? Volverá a contar en los indicadores operativos.');"
+   >
+    <button class="lot-btn lot-btn-ghost" type="submit">Restaurar lote</button>
+   </form>
+  </div>
+ </section>
+ {% endfor %}
+
+ <section class="audit-card" aria-labelledby="auditHistoryTitle">
+  <header><h2 id="auditHistoryTitle">Historial de auditor&iacute;a</h2></header>
+  <table class="audit-table">
+   <thead>
+    <tr>
+     <th scope="col">Fecha</th>
+     <th scope="col">Lote</th>
+     <th scope="col">Acci&oacute;n</th>
+     <th scope="col">Administrador</th>
+     <th scope="col">Motivo</th>
+     <th scope="col">Planificadas</th>
+     <th scope="col">Inspeccionadas</th>
+    </tr>
+   </thead>
+   <tbody>
+    {% for entry in audit_entries %}
+    <tr>
+     <td>{{ entry.created_at }}</td>
+     <td>{{ entry.batch_code }}</td>
+     <td>{{ entry.action }}{% if entry.active_after == 1 %} &rarr; activo{% else %} &rarr; eliminado{% endif %}</td>
+     <td>{{ entry.admin_username or entry.admin_id }}</td>
+     <td>{{ entry.reason }}</td>
+     <td>{{ entry.planned_quantity }}</td>
+     <td>{{ entry.processed_quantity }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7">Sin registros de auditor&iacute;a.</td></tr>
+    {% endfor %}
+   </tbody>
+  </table>
+ </section>
+</article>
+
+{% endblock %}

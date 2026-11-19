@@ -250,7 +250,7 @@ body.app-body{
 .models-list{display:grid;gap:18px}
 .model-card{
   display:grid;
-  grid-template-columns:170px minmax(0,1fr) auto;
+  grid-template-columns:210px minmax(0,1fr) auto;
   gap:28px;
   align-items:center;
   min-height:210px;
@@ -262,15 +262,16 @@ body.app-body{
 }
 .model-card[hidden]{display:none}
 .model-visual{
-  height:164px;
+  height:210px;
   border-radius:14px;
-  background:linear-gradient(145deg,#fbf5f5,#f2f4f8);
+  background:#fff;
   border:1px solid #edf0f4;
   display:grid;
   place-items:center;
   overflow:hidden;
   position:relative;
 }
+.model-cover-photo{width:100%;height:100%;object-fit:contain;display:block;padding:0;box-sizing:border-box}
 .model-shirt{
   width:98px;
   height:98px;
@@ -360,7 +361,7 @@ body.app-body{
   gap:18px;
   padding:2px 0;
 }
-.model-actions{display:flex;align-items:center;gap:10px}
+.model-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .model-view-btn{
   display:inline-flex;
   align-items:center;
@@ -378,6 +379,21 @@ body.app-body{
 }
 .model-view-btn:hover{background:#f7f9fc;color:var(--models-navy)}
 .model-view-btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2}
+
+.model-delete-form{margin:0}
+.model-delete-btn{
+  min-height:44px;
+  padding:0 14px;
+  border:1px solid #efcaca;
+  border-radius:8px;
+  background:#fff;
+  color:#a83232;
+  font-family:inherit;
+  font-size:13px;
+  font-weight:800;
+  cursor:pointer;
+}
+.model-delete-btn:hover{background:#fff4f4}
 
 .models-empty{
   display:none;
@@ -410,7 +426,7 @@ body.app-body{
 @media(max-width:1100px){
   .models-toolbar{grid-template-columns:1fr 1fr}
   .models-count{text-align:left}
-  .model-card{grid-template-columns:140px minmax(0,1fr)}
+  .model-card{grid-template-columns:180px minmax(0,1fr)}
   .model-side{grid-column:1/-1;flex-direction:row;align-items:center}
 }
 @media(max-width:900px){
@@ -427,7 +443,7 @@ body.app-body{
   .models-page-head h2{font-size:30px}
   .models-toolbar{grid-template-columns:1fr}
   .model-card{grid-template-columns:1fr;gap:18px}
-  .model-visual{height:180px}
+  .model-visual{height:clamp(240px,72vw,340px)}
   .model-side{grid-column:auto;align-items:stretch;flex-direction:column}
   .model-actions{width:100%}
   .model-view-btn{width:100%}
@@ -515,6 +531,8 @@ body.app-body{
     </div>
   </section>
 
+  {# CAPÍTULO V — Catálogo de modelos de prenda.
+   Representa los modelos registrados y su estado en la interfaz. #}
   <section class="models-list" id="modelsList">
     {% for model in models %}
     <article
@@ -524,13 +542,17 @@ body.app-body{
       data-status="{{ (model.status or '')|e }}"
       data-view="{{ (model.inspection_side or '')|e }}"
     >
-      <div class="model-visual" aria-hidden="true">
+      <div class="model-visual">
+        {% if model.cover_url %}
+        <img class="model-cover-photo" src="{{ model.cover_url }}" alt="{{ model.cover_display_label }} de {{ model.name }}" loading="lazy">
+        {% else %}
         <div class="model-shirt">
           <svg viewBox="0 0 120 120">
             <path d="M42 23c5 5 11 8 18 8s13-3 18-8l18 10 10 24-17 8-5-10v42H36V55l-5 10-17-8 10-24 18-10Z"/>
             <path d="M49 25c2 5 6 8 11 8s9-3 11-8" fill="none"/>
           </svg>
         </div>
+        {% endif %}
       </div>
 
       <div class="model-body">
@@ -586,10 +608,29 @@ body.app-body{
         {% endif %}
 
         <div class="model-actions">
+          {% if role == 'ADMIN' or (role == 'MODEL_MANAGER' and model.created_by == session.get('user_id')) %}
+          <a class="model-view-btn" href="{{ url_for('garment_model_edit', model_id=model.id) }}" aria-label="Editar {{ model.name }} y su fotografia">
+            Editar
+          </a>
+          {% endif %}
           <a class="model-view-btn" href="{{ url_for('garment_model_detail', model_id=model.id) }}">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></svg>
             Ver modelo
           </a>
+
+          {% if role == 'ADMIN' %}
+          <form
+            class="model-delete-form"
+            method="post"
+            action="{{ url_for('garment_model_archive', model_id=model.id) }}"
+            data-confirm-code="{{ model.code }}"
+          >
+            <input type="hidden" name="confirm_code" value="">
+            <button class="model-delete-btn" type="submit">
+              Eliminar
+            </button>
+          </form>
+          {% endif %}
         </div>
       </div>
     </article>
@@ -614,6 +655,23 @@ body.app-body{
 
 <script>
 (() => {
+  document.querySelectorAll(".model-delete-form").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      const code = form.dataset.confirmCode;
+      const typed = window.prompt(
+        "¿Retirar el modelo " + code +
+        " del catálogo? Las inspecciones y versiones de IA se conservarán. " +
+        "Escriba el código del modelo para confirmar:",
+        ""
+      );
+      if (typed === null || typed.trim() !== code) {
+        event.preventDefault();
+        if (typed !== null) window.alert("Código incorrecto. No se eliminó el modelo.");
+        return;
+      }
+      form.querySelector('input[name="confirm_code"]').value = typed.trim();
+    });
+  });
   const dateEl = document.getElementById("modelsCurrentDate");
   const timeEl = document.getElementById("modelsCurrentTime");
   const search = document.getElementById("modelSearch");
