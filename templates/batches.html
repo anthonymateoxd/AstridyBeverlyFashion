@@ -676,7 +676,7 @@
      {{ 'prenda' if production_plan.remaining_garments == 1 else 'prendas' }}
     </strong>
     <span>
-     Pendiente
+     Por planificar
      {% if production_plan.estimated_remaining_batches %}
       &middot;
       {{ production_plan.estimated_remaining_batches }}
@@ -872,7 +872,7 @@
      type="hidden"
      id="quantity_override"
      name="quantity_override"
-     value="0"
+     value="{{ '1' if production_plan.has_goal and production_plan.remaining_garments <= 0 else '0' }}"
     >
 
     {% if production_plan.has_goal
@@ -929,23 +929,13 @@
     <div class="smart-covered">
 
      <strong>
-      Objetivo cubierto.
+      Objetivo completamente planificado.
      </strong>
 
-     No necesita crear otro lote para cumplir
-     la producci&oacute;n de hoy.
-
-     <button
-      id="extraProductionBtn"
-      class="smart-edit-btn"
-      type="button"
-     >
-      Producci&oacute;n adicional
-     </button>
+     Producci&oacute;n adicional
 
      <div
       id="extraProductionFields"
-      hidden
       style="margin-top:12px"
      >
 
@@ -956,7 +946,7 @@
        min="1"
        max="5000"
        value="100"
-       disabled
+       required
       >
 
       <div class="smart-extra">
@@ -992,6 +982,10 @@
 
 
    <button
+   id="batchSubmitBtn"
+   id="batchSubmitBtn"
+   id="batchSubmitBtn"
+   id="batchSubmitBtn"
    class="lot-btn"
    type="submit"
    {% if not available_models or not available_lines %}disabled{% endif %}
@@ -1008,7 +1002,7 @@
 
 <article class="lot-panel">
 
- <h2>Lotes de hoy y pausados</h2>
+ <h2>Lotes</h2>
 
 
 
@@ -1060,7 +1054,7 @@
      <div class="lot-status">
 
       {% if batch.status == 'REVISION_PENDIENTE' %}
-       REVISI&Oacute;N PENDIENTE
+       {% if batch.alerts|int == 0 %}CIERRE PENDIENTE · SIN ALERTAS{% else %}REVISIÓN / CIERRE PENDIENTES{% endif %}
 
       {% elif batch.status == 'EN_INSPECCION' %}
        EN INSPECCI&Oacute;N
@@ -1421,21 +1415,6 @@ document.addEventListener(
         "customQuantityWarning"
       );
 
-    const extraButton =
-      document.getElementById(
-        "extraProductionBtn"
-      );
-
-    const extraFields =
-      document.getElementById(
-        "extraProductionFields"
-      );
-
-    const submitButton =
-      document.getElementById(
-        "batchSubmitBtn"
-      );
-
     const suggested =
       {{ production_plan.suggested_quantity }};
 
@@ -1489,49 +1468,6 @@ document.addEventListener(
     }
 
 
-    if (
-      extraButton &&
-      extraFields &&
-      quantityInput &&
-      overrideInput &&
-      submitButton
-    ) {
-
-      extraButton.addEventListener(
-        "click",
-        function () {
-
-          const enabled =
-            overrideInput.value !== "1";
-
-          overrideInput.value =
-            enabled ? "1" : "0";
-
-          extraFields.hidden =
-            !enabled;
-
-          quantityInput.disabled =
-            !enabled;
-
-          quantityInput.required =
-            enabled;
-
-          submitButton.disabled =
-            !enabled;
-
-          extraButton.textContent =
-            enabled
-              ? "Cancelar producci\u00f3n adicional"
-              : "Planificar producci\u00f3n adicional";
-
-          if (enabled) {
-            quantityInput.focus();
-            quantityInput.select();
-          }
-
-        }
-      );
-    }
 
   }
 );

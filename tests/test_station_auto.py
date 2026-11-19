@@ -27,6 +27,7 @@ class AutomaticStationTests(unittest.TestCase):
         self.saved = {
             "AUTO_INSPECTION_ENABLED": A.AUTO_INSPECTION_ENABLED,
             "AUTO_THREAD": A.AUTO_THREAD,
+            "AUTO_SESSION": dict(A.AUTO_SESSION),
             "MANUAL_INSPECTION_IN_PROGRESS": A.MANUAL_INSPECTION_IN_PROGRESS,
             "AUTO_LAST_RESULT": A.AUTO_LAST_RESULT,
             "AUTO_LAST_ERROR": A.AUTO_LAST_ERROR,
@@ -42,6 +43,7 @@ class AutomaticStationTests(unittest.TestCase):
         }
         A.AUTO_INSPECTION_ENABLED = True
         A.AUTO_THREAD = None
+        A.AUTO_SESSION = {"identity": None, "waiting_for_exit": False}
         A.MANUAL_INSPECTION_IN_PROGRESS = False
         A.AUTO_LAST_RESULT = None
         A.AUTO_LAST_ERROR = None
@@ -72,7 +74,7 @@ class AutomaticStationTests(unittest.TestCase):
             except StopIteration:
                 A.AUTO_INSPECTION_ENABLED = False
                 return None, None, -1
-            return frame.copy(), float(seq), seq
+            return frame.copy(), A.time.perf_counter(), seq
 
         def coverage(_frame):
             return next(coverage_iter)
@@ -118,6 +120,32 @@ class AutomaticStationTests(unittest.TestCase):
         self.assertEqual(registrations[0][1]["source"], "auto")
         self.assertIsNone(self.A.AUTO_LAST_ERROR)
         self.assertIsNotNone(self.A.AUTO_LAST_RESULT)
+
+    def test_resume_keeps_waiting_for_already_inspected_garment_to_exit(self):
+        self.A.AUTO_SESSION["waiting_for_exit"] = True
+        registrations = self._run_worker(
+            [.36, .36, .34, .05, .04, .03, .30, .34, .36, .34],
+            stop_after_registrations=2,
+        )
+        self.assertEqual(len(registrations), 1)
+
+    def test_changed_batch_identity_stops_without_registering(self):
+        self.A.AUTO_SESSION["identity"] = (1, 2, 3)
+        with patch.object(self.A, "get_active_batch", return_value={"id": 1, "garment_model_id": 2, "ai_model_id": 4}):
+            registrations = self._run_worker([.30, .34, .36, .34], stop_after_registrations=1)
+        self.assertEqual(registrations, [])
+        self.assertFalse(self.A.AUTO_INSPECTION_ENABLED)
+
+    def test_stale_frame_stops_without_inference(self):
+        A = self.A
+        with (
+            patch.object(A, "is_ai_capture_mode_active", return_value=False),
+            patch.object(A, "get_latest_camera_frame", return_value=(np.zeros((16, 16, 3), dtype=np.uint8), A.time.perf_counter() - 20, 1)),
+            patch.object(A, "register_inspection_from_frame") as register,
+        ):
+            A.auto_inspection_worker()
+        register.assert_not_called()
+        self.assertFalse(A.AUTO_INSPECTION_ENABLED)
 
     def test_same_garment_is_not_registered_twice_before_exit(self):
         registrations = self._run_worker(

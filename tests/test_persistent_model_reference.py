@@ -41,7 +41,9 @@ class ReferenceUploadTests(unittest.TestCase):
         self.a.app.static_folder=self.original
         self.temp.cleanup()
     def image(self):
-        ok,buf=cv2.imencode(".png",np.zeros((240,300,3),np.uint8))
+        from tests.test_garment_background_preview import legacy_sample
+        frame = cv2.imdecode(np.frombuffer(legacy_sample(), np.uint8), cv2.IMREAD_COLOR)
+        ok, buf = cv2.imencode(".png", frame)
         assert ok
         return io.BytesIO(buf.tobytes())
     def submit(self,content,previous=True,fail=False,authorized=True):
@@ -61,9 +63,11 @@ class ReferenceUploadTests(unittest.TestCase):
         updates=[(sql,p) for sql,p in cur.calls if sql.startswith("UPDATE garment_model_images")]
         self.assertEqual(len(updates),1)
         self.assertTrue(updates[0][1][0].startswith("results/model_references/2069/"))
-        files=list(Path(self.temp.name).rglob("*.jpg"))
+        files=list((Path(self.temp.name)/"results/model_references").rglob("*.png"))
         self.assertEqual(len(files),1)
-        self.assertTrue(files[0].read_bytes().startswith(b"\xff\xd8"))
+        self.assertEqual(files[0].read_bytes(), self.image().getvalue())
+        previews=list((Path(self.temp.name)/"results/model_previews").rglob("*.png"))
+        self.assertEqual(len(previews),1)
     def test_new_ref_if_legacy_missing_row(self):
         resp,conn,cur=self.submit({"reference_photo":(self.image(),"blusa.png")},previous=False)
         self.assertEqual(conn.commits,1)

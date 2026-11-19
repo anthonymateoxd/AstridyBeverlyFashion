@@ -1,4 +1,6 @@
+from inspection_request_guard import ManualInspectionGate, InspectionBusy
 from production_totals import daily_production_totals
+MANUAL_REQUEST_GATE = ManualInspectionGate()
 # CAPÍTULO V — Backend de la aplicación web.
 # Flask recibe las solicitudes del navegador y conecta las pantallas
 # con los módulos de inspección, inteligencia artificial y persistencia.
@@ -15,6 +17,7 @@ from flask import (
     send_file,
 )
 from werkzeug.security import generate_password_hash, check_password_hash
+from history_evidence import checkpoint_is_available, inspection_evidence_path
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -926,6 +929,7 @@ def execute(sql, params=None):
         cur = conn.cursor()
         cur.execute(sql, params or ())
         conn.commit()
+
         return cur.lastrowid
     except Exception:
         try:
@@ -1592,6 +1596,7 @@ MANUAL_INSPECTION_IN_PROGRESS = False
 AUTO_LAST_RESULT = None
 AUTO_LAST_ERROR = None
 AUTO_LAST_CAPTURE_TIME = 0
+AUTO_SESSION = {"identity": None, "waiting_for_exit": False}
 
 # ------------------------------------------------------------
 # FASE 2A — modo preparación IA (mutex con producción)
@@ -3648,6 +3653,54 @@ def register_inspection_from_frame(
 
 
 
+def compute_station_presence_coverage(frame):
+    """Station presence only; never changes the mask passed to PatchCore."""
+    if frame is None or frame.size == 0:
+        raise ValueError("No se recibió un fotograma válido de la cámara.")
+    try:
+        coverage = compute_roi_coverage(frame)
+    except RuntimeError as error:
+        if str(error) not in (
+            "La silueta detectada es demasiado pequeña.",
+            "La silueta detectada es demasiado grande.",
+        ):
+            raise
+        coverage = 0.0
+    if coverage >= AUTO_GARMENT_ENTER_COVERAGE:
+        return coverage
+    x1, y1, x2, y2 = get_roi_bounds(frame)
+    # Close the silhouette before applying the vertical inspection crop.
+    # A sleeve just beyond ROI_Y2 must not merge with the cropped panel edge.
+    # Lateral ROI borders and full-frame top/bottom still reject cut silhouettes.
+    roi = frame[:, x1:x2]
+    width = min(640, roi.shape[1])
+    height = max(1, round(roi.shape[0] * width / roi.shape[1]))
+    small = cv2.resize(roi, (width, height), interpolation=cv2.INTER_AREA)
+    gray = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+    edges = cv2.Canny(gray, 20, 60)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    scale_y = height / float(frame.shape[0])
+    roi_top = int(round(y1 * scale_y))
+    roi_bottom = int(round(y2 * scale_y))
+    roi_area = float(width * (roi_bottom - roi_top))
+    candidates = []
+    for contour in contours:
+        contour_mask = np.zeros(gray.shape, np.uint8)
+        cv2.drawContours(contour_mask, [contour], -1, 255, cv2.FILLED)
+        fraction = cv2.countNonZero(contour_mask[roi_top:roi_bottom]) / roi_area
+        x, y, w, h = cv2.boundingRect(contour)
+        # Exclude panel edges and silhouettes cut by the context boundaries.
+        if (0.20 <= fraction <= 0.75 and x > 2 and y > 2
+                and x + w < width - 2 and y + h < height - 2):
+            candidates.append((fraction, contour))
+    if not candidates:
+        return coverage
+    mask = np.zeros(gray.shape, np.uint8)
+    cv2.drawContours(mask, [max(candidates, key=lambda item: item[0])[1]], -1, 255, cv2.FILLED)
+    return max(coverage, float(cv2.countNonZero(mask[roi_top:roi_bottom])) / roi_area)
+
+
 def auto_inspection_worker():
     """
     Inspección automática orientada a cinta transportadora.
@@ -3668,7 +3721,8 @@ def auto_inspection_worker():
 
     # Estado de la prenda que actualmente atraviesa la estación.
     tracking = False
-    waiting_for_exit = False
+    expected_identity = AUTO_SESSION["identity"]
+    waiting_for_exit = AUTO_SESSION["waiting_for_exit"]
 
     present_frames = 0
     exit_frames = 0
@@ -3711,11 +3765,24 @@ def auto_inspection_worker():
             )
 
             if frame is None:
+                # A gap invalidates partially tracked frames, never evidence.
+                tracking = False
+                present_frames = tracked_frames = exit_frames = 0
+                best_frame = None
+                best_coverage = 0.0
                 AUTO_LAST_ERROR = (
                     "Cámara no disponible."
                 )
-                time.sleep(0.5)
-                continue
+                AUTO_INSPECTION_ENABLED = False
+                break
+
+            if (
+                frame_timestamp is None
+                or time.perf_counter() - frame_timestamp > 5.0
+            ):
+                AUTO_LAST_ERROR = "Inspeccion automatica detenida: no se reciben imagenes recientes de la camara."
+                AUTO_INSPECTION_ENABLED = False
+                break
 
             if sequence == last_camera_sequence:
                 # Misma secuencia: no reintentar el mismo frame.
@@ -3735,14 +3802,7 @@ def auto_inspection_worker():
             # Se reutiliza EXACTAMENTE la segmentación de la
             # blusa que usa PatchCore (compute_roi_coverage).
             # -------------------------------------------------
-            try:
-                coverage = compute_roi_coverage(frame)
-
-            except Exception:
-                # Una silueta demasiado pequeña normalmente
-                # significa que la prenda apenas está entrando,
-                # saliendo, o que el área está vacía.
-                coverage = 0.0
+            coverage = compute_station_presence_coverage(frame)
 
             # -------------------------------------------------
             # ESTADO 1: ya inspeccionamos esta blusa.
@@ -3763,6 +3823,7 @@ def auto_inspection_worker():
                     >= AUTO_GARMENT_EXIT_FRAMES
                 ):
                     waiting_for_exit = False
+                    AUTO_SESSION["waiting_for_exit"] = False
                     tracking = False
 
                     present_frames = 0
@@ -3945,6 +4006,17 @@ def auto_inspection_worker():
                     # disponible a partir de este instante.
                     decision_start = time.perf_counter()
 
+                    if expected_identity is not None:
+                        current_batch = get_active_batch()
+                        current_identity = (
+                            tuple(current_batch.get(key) for key in ("id", "garment_model_id", "ai_model_id"))
+                            if current_batch else None
+                        )
+                        if current_identity != expected_identity:
+                            AUTO_LAST_ERROR = "Inspeccion automatica detenida: cambio el lote, el modelo o la version de IA."
+                            AUTO_INSPECTION_ENABLED = False
+                            break
+
                     result = (
                         register_inspection_from_frame(
                             best_frame,
@@ -3995,6 +4067,7 @@ def auto_inspection_worker():
                     # Esta misma blusa no puede generar otro
                     # registro hasta abandonar completamente ROI.
                     waiting_for_exit = True
+                    AUTO_SESSION["waiting_for_exit"] = True
                     tracking = False
 
                     present_frames = 0
@@ -4011,12 +4084,14 @@ def auto_inspection_worker():
                     continue
 
         except Exception as error:
-            AUTO_LAST_ERROR = str(error)
+            AUTO_LAST_ERROR = "Inspección automática detenida: " + str(error)
+            AUTO_INSPECTION_ENABLED = False
 
             print(
                 "[AUTO] Error controlado: "
                 f"{error}"
             )
+            break
 
         time.sleep(0.20)
 
@@ -5500,10 +5575,7 @@ def resolve_active_production_ai_runtime():
 
         inspector = ai_validation.get_model_inspector(bundle)
         if inspector is None:
-            raise RuntimeError(
-                "La versión de IA activa no pudo cargar su motor "
-                "de inferencia PatchCore."
-            )
+            raise RuntimeError("La versión de IA activa no pudo cargar su motor de inferencia PatchCore.")
 
         return {
             "batch_id": int(row["batch_id"]),
@@ -6265,23 +6337,18 @@ def login():
 # Permite acceder únicamente a usuarios autenticados.
 @login_required
 def dashboard():
-
-# Importa herramientas para trabajar con fechas y horarios.
     from datetime import date, time, timedelta
     from zoneinfo import ZoneInfo
 
-# Define las zonas horarias de Guatemala y UTC.
     timezone_gt = ZoneInfo("America/Guatemala")
     timezone_utc = ZoneInfo("UTC")
 
-# Obtiene la fecha y hora actuales en Guatemala.
     now_gt = datetime.now(timezone_gt)
     today = now_gt.date()
 
     # La base almacena los tiempos operativos usando UTC.
     # Convertimos el inicio y fin del día de Guatemala a UTC
     # antes de consultar los registros.
-    # Establece el inicio del día según la hora de Guatemala.
     day_start_gt = datetime.combine(
         today,
         time.min,
@@ -7988,7 +8055,7 @@ def get_today_production_plan():
             True,
 
         "target_batches":
-            estimated_target_batches,
+            int(goal["target_batches"] or 0),
 
         "configured_target_batches":
             int(
@@ -8020,7 +8087,7 @@ def get_today_production_plan():
         "batches_excess":
             max(
                 planned_batches
-                - estimated_target_batches,
+                - int(goal["target_batches"] or 0),
                 0,
             ),
 
@@ -8141,20 +8208,6 @@ def batches():
         except (TypeError, ValueError):
             planned_quantity = 0
 
-        if (
-            planned_quantity < 1
-            or planned_quantity > 5000
-        ):
-            flash(
-                "La cantidad del lote debe estar "
-                "entre 1 y 5000 prendas.",
-                "error",
-            )
-
-            return redirect(
-                url_for("batches")
-            )
-
         quantity_override = (
             request.form.get(
                 "quantity_override",
@@ -8179,21 +8232,6 @@ def batches():
             )
 
             if (
-                remaining <= 0
-                and not quantity_override
-            ):
-                flash(
-                    "El objetivo de producci\u00f3n ya est\u00e1 "
-                    "completamente planificado. "
-                    "No es necesario crear otro lote.",
-                    "error",
-                )
-
-                return redirect(
-                    url_for("batches")
-                )
-
-            if (
                 remaining > 0
                 and not quantity_override
                 and planned_quantity != suggested
@@ -8209,6 +8247,20 @@ def batches():
                 return redirect(
                     url_for("batches")
                 )
+
+        if (
+            planned_quantity < 1
+            or planned_quantity > 5000
+        ):
+            flash(
+                "La cantidad del lote debe estar "
+                "entre 1 y 5000 prendas.",
+                "error",
+            )
+
+            return redirect(
+                url_for("batches")
+            )
 
         selected_line = fetch_one(
             """
@@ -9915,6 +9967,13 @@ def review_batch_alert(
     inspection_id,
     decision,
 ):
+    asynchronous = request.headers.get("X-Requested-With") == "XMLHttpRequest" and request.accept_mimetypes.best == "application/json"
+
+    def review_response(traditional, message, status):
+        if asynchronous:
+            return jsonify(ok=False, message=message), status
+        return traditional
+
     batch = get_batch_review_summary(
         batch_id
     )
@@ -9924,12 +9983,12 @@ def review_batch_alert(
         or batch["status"]
         != "REVISION_PENDIENTE"
     ):
-        return redirect(
+        return review_response(redirect(
             url_for(
                 "batch_review",
                 batch_id=batch_id,
             )
-        )
+        ), 'El lote ya no admite revisiones.', 409)
 
     inspection = fetch_one(
         """
@@ -9950,12 +10009,12 @@ def review_batch_alert(
     )
 
     if inspection is None:
-        return redirect(
+        return review_response(redirect(
             url_for(
                 "batch_review",
                 batch_id=batch_id,
             )
-        )
+        ), 'La inspección no pertenece a este lote.', 404)
 
     current_status = (
         inspection["review_status"]
@@ -9968,12 +10027,12 @@ def review_batch_alert(
         or current_status
         != "PENDIENTE"
     ):
-        return redirect(
+        return review_response(redirect(
             url_for(
                 "batch_review",
                 batch_id=batch_id,
             )
-        )
+        ), 'La alerta ya fue revisada o no requiere revisión.', 409)
 
     if decision == "confirmar":
         review_status = (
@@ -9988,12 +10047,12 @@ def review_batch_alert(
         human_validation = "Incorrecto"
 
     else:
-        return redirect(
+        return review_response(redirect(
             url_for(
                 "batch_review",
                 batch_id=batch_id,
             )
-        )
+        ), 'Decisión no válida.', 400)
 
     review_notes = (
         request.form.get(
@@ -10004,13 +10063,13 @@ def review_batch_alert(
     )
 
     if len(review_notes) < 5:
-        return redirect(
+        return review_response(redirect(
             url_for(
                 "batch_review",
                 batch_id=batch_id,
             )
             + f"#alert-{inspection_id}"
-        )
+        ), 'Escriba un motivo de al menos cinco caracteres.', 400)
 
     if len(review_notes) > 500:
         review_notes = (
@@ -10050,6 +10109,15 @@ def review_batch_alert(
         ),
     )
 
+    if asynchronous:
+        saved = fetch_one(
+            "SELECT review_status, review_notes, reviewed_by FROM inspections WHERE id=%s AND batch_id=%s",
+            (inspection_id, batch_id),
+        )
+        if not saved or saved["review_status"] != review_status or saved["review_notes"] != review_notes or saved["reviewed_by"] != reviewed_by:
+            return jsonify(ok=False, message="La decisión no pudo confirmarse; la alerta pudo ser revisada por otro usuario."), 409
+        return jsonify(ok=True, inspection_id=inspection_id)
+
     return redirect(
         url_for(
             "batch_review",
@@ -10074,117 +10142,109 @@ def station():
 @login_required
 @role_required(ROLE_ADMIN, ROLE_QUALITY_MANAGER)
 def station_manual_inspect():
-    global AUTO_LAST_RESULT
-    global AUTO_LAST_ERROR
     global MANUAL_INSPECTION_IN_PROGRESS
+    def execute():
+        global AUTO_LAST_RESULT
+        global AUTO_LAST_ERROR
 
-    with AUTO_THREAD_LOCK:
-        auto_worker_alive = (
-            AUTO_THREAD is not None
-            and AUTO_THREAD.is_alive()
-        )
-        if AUTO_INSPECTION_ENABLED or auto_worker_alive:
-            return jsonify({
-                "ok": False,
-                "message": (
-                    "El modo automático está activo o terminando. "
-                    "Espere a que se detenga antes de ejecutar "
-                    "una inspección manual."
-                ),
-            }), 409
-
-        if MANUAL_INSPECTION_IN_PROGRESS:
-            return jsonify({
-                "ok": False,
-                "message": (
-                    "Ya hay una inspección manual en curso. "
-                    "Espere a que finalice."
-                ),
-            }), 409
-
-        MANUAL_INSPECTION_IN_PROGRESS = True
-
-    try:
-        if get_active_batch() is None:
-            return jsonify({
-                "ok": False,
-                "message": (
-                    "No hay un lote activo. "
-                    "Inicia un lote antes de inspeccionar."
-                ),
-            }), 409
-
-        # latest_frame: NO cap.read(); no abre otra sesión RTSP.
-        ok, frame = read_camera_frame(source="manual")
-
-        if not ok:
-            return jsonify({
-                "ok": False,
-                "message": (
-                    "No se pudo leer la cámara. "
-                    "No se guardó ningún registro."
-                ),
-            }), 503
-
-        frame_available = time.perf_counter()
         try:
-            result = register_inspection_from_frame(
-                frame,
-                notes=(
-                    "Registro manual generado desde "
-                    "estación de inspección."
-                ),
-                decision_start=frame_available,
-                source="manual",
-            )
-        except AIDomainError as domain_error:
-            return jsonify({
-                "ok": False,
-                "message": str(domain_error),
-            }), 409
-        except RuntimeError as runtime_error:
-            if not is_garment_not_detected_error(runtime_error):
-                app.logger.exception(
-                    "Error inesperado en la inspección manual."
-                )
+            if get_active_batch() is None:
                 return jsonify({
                     "ok": False,
                     "message": (
-                        "No se pudo completar la inspección. "
-                        "Intente de nuevo."
+                        "No hay un lote activo. "
+                        "Inicia un lote antes de inspeccionar."
                     ),
-                }), 500
+                }), 409
+
+            # latest_frame: NO cap.read(); no abre otra sesión RTSP.
+            frame, timestamp, sequence = get_latest_camera_frame()
+            MANUAL_REQUEST_GATE.validate_frame(frame, timestamp, sequence)
+            ok = frame is not None
+
+            if not ok:
+                return jsonify({
+                    "ok": False,
+                    "message": (
+                        "No se pudo leer la cámara. "
+                        "No se guardó ningún registro."
+                    ),
+                }), 503
+
+            frame_available = time.perf_counter()
+            try:
+                result = register_inspection_from_frame(
+                    frame,
+                    notes=(
+                        "Registro manual generado desde "
+                        "estación de inspección."
+                    ),
+                    decision_start=frame_available,
+                    source="manual",
+                )
+            except AIDomainError as domain_error:
+                return jsonify({
+                    "ok": False,
+                    "message": str(domain_error),
+                }), 409
+            except RuntimeError as runtime_error:
+                if not is_garment_not_detected_error(runtime_error):
+                    app.logger.exception(
+                        "Error inesperado en la inspección manual."
+                    )
+                    return jsonify({
+                        "ok": False,
+                        "message": (
+                            "No se pudo completar la inspección. "
+                            "Intente de nuevo."
+                        ),
+                    }), 500
+
+                return jsonify({
+                    "ok": False,
+                    "message": (
+                        "No se detectó una prenda completa en el área de "
+                        "inspección. Colóquela correctamente e intente de nuevo."
+                    ),
+                }), 409
+
+            MANUAL_REQUEST_GATE.completed(sequence)
+            AUTO_LAST_RESULT = result
+            AUTO_LAST_ERROR = None
+
+            return jsonify({
+                "ok": True,
+                "message": (
+                    "Inspección manual registrada correctamente."
+                ),
+                "result": result,
+            })
+
+        except InspectionBusy:
+            raise
+
+        except Exception:
+            app.logger.exception("Error al ejecutar la inspección manual.")
+            AUTO_LAST_ERROR = "Error al ejecutar la inspección manual."
 
             return jsonify({
                 "ok": False,
                 "message": (
-                    "No se detectó una prenda completa en el área de "
-                    "inspección. Colóquela correctamente e intente de nuevo."
+                    "Error al ejecutar la inspección manual."
                 ),
-            }), 409
+            }), 500
 
-        AUTO_LAST_RESULT = result
-        AUTO_LAST_ERROR = None
-
-        return jsonify({
-            "ok": True,
-            "message": (
-                "Inspección manual registrada correctamente."
-            ),
-            "result": result,
-        })
-
-    except Exception:
-        app.logger.exception("Error al ejecutar la inspección manual.")
-        AUTO_LAST_ERROR = "Error al ejecutar la inspección manual."
-
-        return jsonify({
-            "ok": False,
-            "message": (
-                "Error al ejecutar la inspección manual."
-            ),
-        }), 500
-
+    with AUTO_THREAD_LOCK:
+        if AUTO_INSPECTION_ENABLED or (AUTO_THREAD is not None and AUTO_THREAD.is_alive()):
+            return jsonify(ok=False, message="Detenga el modo automático antes de inspeccionar manualmente."), 409
+        if MANUAL_INSPECTION_IN_PROGRESS:
+            return jsonify(ok=False, message="Ya hay una inspección manual en curso. Espere a que finalice."), 409
+        MANUAL_INSPECTION_IN_PROGRESS = True
+    try:
+        with MANUAL_REQUEST_GATE.acquire(db):
+            return execute()
+    except InspectionBusy as exc:
+        return jsonify(ok=False, message=str(exc)), 429
     finally:
         with AUTO_THREAD_LOCK:
             MANUAL_INSPECTION_IN_PROGRESS = False
@@ -10220,6 +10280,7 @@ def station_camera_reconnect():
 def station_auto_start():
     global AUTO_INSPECTION_ENABLED
     global AUTO_THREAD
+    global AUTO_LAST_ERROR
 
     if is_ai_capture_mode_active():
         return jsonify({
@@ -10284,6 +10345,11 @@ def station_auto_start():
                 ),
             }), 409
 
+        identity = tuple(active_batch.get(key) for key in ("id", "garment_model_id", "ai_model_id"))
+        if AUTO_SESSION["identity"] != identity:
+            AUTO_SESSION["waiting_for_exit"] = False
+        AUTO_SESSION["identity"] = identity
+        AUTO_LAST_ERROR = None
         AUTO_INSPECTION_ENABLED = True
         AUTO_THREAD = threading.Thread(
             target=auto_inspection_worker,
@@ -10363,7 +10429,8 @@ def station_auto_status():
 
     return jsonify({
         "ok": True,
-        "automatic": AUTO_INSPECTION_ENABLED,
+        "automatic": bool(AUTO_INSPECTION_ENABLED and AUTO_THREAD is not None and AUTO_THREAD.is_alive()),
+        "worker_running": bool(AUTO_THREAD is not None and AUTO_THREAD.is_alive()),
         "last_result": last_result,
         "last_error": AUTO_LAST_ERROR,
         "active_batch": row_to_json(active_batch),
@@ -10653,6 +10720,89 @@ def inspection():
 # Permite consultar registros y filtrar las inspecciones por fechas,
 # lote, modelo de prenda, responsable y resultado.
 # Permite consultar el historial de inspecciones.
+
+
+def available_history_models():
+    """Catalog members whose active AI version is actually usable for production."""
+    rows = fetch_all(f"""
+        SELECT gm.id, gm.code, gm.name, ai.id AS ai_id,
+               ai.status AS ai_status, ai.active AS ai_active,
+               ai.checkpoint_path, ai.checkpoint_hash,
+               ai.threshold_final, ai.threshold_frozen_at, ai.notes
+        FROM garment_models gm
+        JOIN garment_ai_models ai ON ai.garment_model_id = gm.id
+        {garment_catalog_where(approved_only=True)}
+          AND ai.active = 1 AND ai.status = 'ACTIVO'
+          AND ai.model_type = 'PatchCore'
+        ORDER BY gm.code, ai.id DESC
+    """)
+    available = {}
+    for row in rows:
+        if (str(row['ai_status'] or '').upper() == 'ACTIVO'
+                and int(row['ai_active'] or 0) == 1
+                and row['threshold_final'] is not None
+                and row['threshold_frozen_at'] is not None
+                and bool(str(row['checkpoint_path'] or '').strip())
+                and not ai_validation.is_technically_invalidated(row.get('notes'))
+                and checkpoint_is_available(get_ai_artifacts_root(), row['checkpoint_path'], row['checkpoint_hash'])):
+            available.setdefault(row['id'], dict(id=row['id'], code=row['code'], name=row['name']))
+    return list(available.values())
+
+
+def inspection_evidence_url(original=None, result=None):
+    """Original capture only. Result evidence must be requested separately."""
+    relative = inspection_evidence_path(app.static_folder, original)
+    return url_for('static', filename=relative) if relative else None
+
+
+app.jinja_env.globals['inspection_evidence_url'] = inspection_evidence_url
+
+
+def inspection_capture_url(relative):
+    """Resolve an inspection's own file without substituting catalog imagery."""
+    root = Path(app.static_folder).resolve()
+    value = str(relative or '').replace(chr(92), '/')
+    if not value:
+        return None
+    try:
+        source = (root / value).resolve()
+        if not source.is_relative_to(root) or not source.is_file():
+            return None
+        resolved = source.relative_to(root).as_posix()
+        if (source.suffix.lower() in {'.jpg', '.jpeg', '.png', '.webp'}
+                and source.relative_to(root).parts[0] in {'captures', 'results'}
+                and not resolved.startswith(('results/model_', 'garment_models/'))):
+            return url_for('static', filename=resolved)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+app.jinja_env.globals['inspection_capture_url'] = inspection_capture_url
+
+
+def get_garment_presentation_urls(model_ids):
+    """Read catalog derivatives for listings; never substitute an unsafe original."""
+    ids = sorted({int(value) for value in model_ids if str(value or "").isdigit() and int(value) > 0})
+    if not ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(ids))
+    references = fetch_all(
+        f"""SELECT gm.id,
+            (SELECT image_path FROM garment_model_images image
+             WHERE image.garment_model_id=gm.id AND image.image_type='REFERENCIA'
+             ORDER BY image.sort_order,image.id LIMIT 1) AS reference_image_path
+            FROM garment_models gm WHERE gm.id IN ({placeholders})""",
+        tuple(ids),
+    )
+    result = {}
+    for item in references:
+        url, has_cutout = garment_cover_display_status(item["id"], item.get("reference_image_path"))
+        if url and has_cutout:
+            result[int(item["id"])] = url
+    return result
+
+
 @app.route("/registros")
 @login_required
 def records():
@@ -11005,6 +11155,7 @@ def records():
                     'Sin lote'
                 ) AS batch_code,
 
+                gm.id AS garment_model_id,
                 gm.code AS garment_model_code,
                 gm.name AS garment_model_name,
 
@@ -11067,6 +11218,7 @@ def records():
             GROUP BY
                 b.id,
                 b.code,
+                gm.id,
                 gm.code,
                 gm.name
 
@@ -11225,6 +11377,7 @@ def records():
                 b.id AS batch_id,
                 b.code AS batch_code,
 
+                gm.id AS garment_model_id,
                 gm.code AS garment_model_code,
                 gm.name AS garment_model_name,
 
@@ -11254,7 +11407,13 @@ def records():
             timezone_gt
         )
 
+    model_presentations = get_garment_presentation_urls(
+        item.get("garment_model_id") for item in [*lot_summary, *rows]
+    )
+    for lot in lot_summary:
+        lot["model_presentation_url"] = model_presentations.get(lot.get("garment_model_id"))
     for row in rows:
+        row["model_presentation_url"] = model_presentations.get(row.get("garment_model_id"))
         row["created_at_gt"] = convert_utc_to_gt(
             row.get("created_at")
         )
@@ -11296,7 +11455,7 @@ def records():
             )
         ):
             row["decision_label"] = (
-                "Apta - alerta descartada"
+                "Apta - falsa alerta"
             )
             row["decision_class"] = "passed"
 
@@ -11310,16 +11469,18 @@ def records():
         """
         SELECT id, code
         FROM batches
+        WHERE active = 1
         ORDER BY id DESC
         LIMIT 200
         """
     )
 
     models_options = fetch_all(
-        """
-        SELECT id, code, name
-        FROM garment_models
-        ORDER BY code
+        f"""
+        SELECT gm.id, gm.code, gm.name
+        FROM garment_models gm
+        {garment_catalog_where(normalize_role(session.get("role")) == ROLE_QUALITY_MANAGER)}
+        ORDER BY gm.code
         """
     )
 
@@ -16878,6 +17039,10 @@ def garment_reference_preview_path(relative):
     """Derive a visual PNG path; the original DB image path never changes."""
     relative = str(relative or "").replace(chr(92), "/")
     parts = Path(relative).parts
+    if (len(parts) == 3 and parts[:2] == ("results", "model_covers")
+            and Path(parts[2]).stem.isdigit() and Path(parts[2]).suffix == ".jpg"):
+        return (Path(app.static_folder) / "results" / "model_cover_previews"
+                / (Path(parts[2]).stem + ".png"))
     if (
         len(parts) != 4
         or parts[:2] != ("results", "model_references")
@@ -16891,12 +17056,52 @@ def garment_reference_preview_path(relative):
     )
 
 
+def _safe_reference_original_url(relative):
+    """Resolve only a static reference path; reject traversal and other assets."""
+    relative = str(relative or "").replace(chr(92), "/")
+    parts = Path(relative).parts
+    valid_reference = (len(parts) == 4 and parts[:2] in (("results", "model_references"), ("results", "model_cover_originals")) and parts[2].isdigit() and Path(parts[3]).name == parts[3])
+    valid_legacy = (len(parts) == 3 and parts[0] == "garment_models" and parts[1].isdigit() and Path(parts[2]).name == parts[2])
+    if not (valid_reference or valid_legacy):
+        return None
+    source = Path(app.static_folder).joinpath(*parts)
+    try:
+        source.resolve().relative_to(Path(app.static_folder).resolve())
+    except (OSError, ValueError):
+        return None
+    if not source.is_file():
+        return None
+    return url_for("static", filename="/".join(parts), v=source.stat().st_mtime_ns)
+
+
 def garment_reference_visual_url(relative):
     preview = garment_reference_preview_path(relative)
     if preview is not None and preview.is_file():
         static_path = preview.relative_to(Path(app.static_folder)).as_posix()
         return url_for("static", filename=static_path, v=preview.stat().st_mtime_ns)
-    return url_for("static", filename=relative)
+    return _safe_reference_original_url(relative)
+
+
+def garment_reference_preview_exists(relative):
+    """Whether the derived cutout passed segmentation and was persisted."""
+    preview = garment_reference_preview_path(relative)
+    return preview is not None and preview.is_file()
+
+
+def garment_reference_preview_status(relative):
+    """Return preview success and a safe display URL, falling back to source."""
+    preview = garment_reference_preview_path(relative)
+    if preview is not None and preview.is_file():
+        static_path = preview.relative_to(Path(app.static_folder)).as_posix()
+        return True, url_for(
+            "static", filename=static_path, v=preview.stat().st_mtime_ns
+        )
+    return False, _safe_reference_original_url(relative)
+
+
+def garment_reference_display_url(relative):
+    """Use a derived cutout only when present; otherwise show the source photo."""
+    return garment_reference_preview_status(relative)[1]
 
 
 def garment_cover_url(model_id, reference_image_path=None):
@@ -16937,6 +17142,9 @@ def garment_cover_url(model_id, reference_image_path=None):
         existing.append((candidate.stat().st_mtime_ns, relative))
     if not existing:
         return None
+    # Prefer a successfully generated preview for the newest reference before
+    # falling back to its unchanged source. Legacy standalone cover uploads
+    # remain eligible as source images.
     # When both types exist, the most recently uploaded photo wins.
     modified_ns, relative = max(existing)
     preview = garment_reference_preview_path(relative)
@@ -16945,7 +17153,79 @@ def garment_cover_url(model_id, reference_image_path=None):
         return url_for(
             "static", filename=static_path, v=preview.stat().st_mtime_ns
         )
-    return url_for("static", filename=relative, v=modified_ns)
+    # If a cover is just an uploaded reference without a stored derivative,
+    # return its original URL; the UI can accurately label it as original.
+    if relative.startswith("results/model_covers/"):
+        cover = static_root / relative
+        if cover.is_file():
+            return url_for("static", filename=relative,
+                           v=cover.stat().st_mtime_ns)
+    return _safe_reference_original_url(relative)
+
+
+def garment_cover_has_cutout(model_id, reference_image_path=None):
+    return garment_cover_display_status(model_id, reference_image_path)[1]
+
+
+def garment_cover_display_status(model_id, reference_image_path=None):
+    """Choose catalog cover and its truthful cutout/original label together."""
+    model_id = int(model_id)
+    if reference_image_path is None:
+        row = fetch_one(
+            """SELECT image_path FROM garment_model_images
+               WHERE garment_model_id = %s AND image_type='REFERENCIA'
+               ORDER BY sort_order, id LIMIT 1""",
+            (model_id,),
+        )
+        reference_image_path = (row or {}).get("image_path") or ""
+    static_root = Path(app.static_folder).resolve()
+    candidates = [f"results/model_covers/{model_id}.jpg"]
+    rel = str(reference_image_path or "").replace(chr(92), "/")
+    if rel.startswith((f"results/model_references/{model_id}/", f"garment_models/{model_id}/")):
+        candidates.append(rel)
+    existing = []
+    for relative in candidates:
+        source = (static_root / relative).resolve()
+        if source.is_relative_to(static_root) and source.is_file():
+            existing.append((source.stat().st_mtime_ns, relative, source))
+    if not existing:
+        return None, False
+    _, relative, source = max(existing)
+    preview = garment_reference_preview_path(relative)
+    if preview is not None and preview.is_file():
+        visual = preview.relative_to(static_root).as_posix()
+        return url_for("static", filename=visual, v=preview.stat().st_mtime_ns), True
+    if relative.startswith(("results/model_references/", "garment_models/")):
+        return _safe_reference_original_url(relative), False
+    return url_for("static", filename=relative, v=source.stat().st_mtime_ns), False
+
+
+def garment_cover_original_url(model_id, reference_image_path=None):
+    """Link the selected presentation to its exact, append-only source file."""
+    model_id = int(model_id)
+    if reference_image_path is None:
+        row = fetch_one(
+            """SELECT image_path FROM garment_model_images
+               WHERE garment_model_id = %s AND image_type='REFERENCIA'
+               ORDER BY sort_order, id LIMIT 1""", (model_id,),
+        )
+        reference_image_path = (row or {}).get("image_path") or ""
+    root = Path(app.static_folder)
+    cover = root / "results" / "model_covers" / f"{model_id}.jpg"
+    reference = root / str(reference_image_path or "")
+    if cover.is_file() and (not reference.is_file()
+                           or cover.stat().st_mtime_ns > reference.stat().st_mtime_ns):
+        metadata = cover.with_suffix(".original.json")
+        if metadata.is_file():
+            try:
+                stored = json.loads(metadata.read_text(encoding="utf-8"))
+                relative = stored.get("original_path", "")
+                if relative.startswith(f"results/model_cover_originals/{model_id}/"):
+                    return _safe_reference_original_url(relative)
+            except (OSError, ValueError, TypeError):
+                pass
+        return url_for("static", filename=f"results/model_covers/{model_id}.jpg")
+    return _safe_reference_original_url(reference_image_path)
 
 
 def prepare_garment_cover_photo(upload):
@@ -16985,6 +17265,7 @@ GARMENT_COLOR_ALIASES = {
     "cafe": "Café",
 }
 GARMENT_COLOR_OTHER = "__otro__"
+GARMENT_MODEL_NAME_MAX = 150
 
 
 def normalize_garment_color(raw):
@@ -17005,6 +17286,26 @@ def normalize_garment_color(raw):
         if key == lookup:
             return standard
     return GARMENT_COLOR_ALIASES.get(lookup, candidate)
+
+
+def garment_model_name_from_form(form):
+    """Valida en servidor el nombre comercial del modelo de blusa.
+
+    Devuelve (nombre, error). El nombre es solo la etiqueta comercial: no
+    interviene en el código BLUSA-XXXX, en los identificadores internos ni
+    en las versiones de IA.
+    """
+    raw = " ".join((form.get("name") or "").split())
+    if not raw:
+        return "", "Ingrese el nombre del modelo de blusa."
+    if len(raw) > GARMENT_MODEL_NAME_MAX:
+        return "", (
+            "El nombre del modelo no puede superar "
+            f"{GARMENT_MODEL_NAME_MAX} caracteres."
+        )
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        return "", "El nombre contiene caracteres no permitidos."
+    return raw, None
 
 
 def garment_color_from_form(form):
@@ -17053,8 +17354,15 @@ def garment_model_edit(model_id):
     editable_details = model.get("status") in ("BORRADOR", "RECHAZADO")
     if request.method == "POST":
         photo = request.files.get("cover_photo")
+        original_bytes = None
+        visual = None
         try:
+            if photo and photo.filename:
+                original_bytes = photo.stream.read(5 * 1024 * 1024 + 1)
+                photo.stream.seek(0)
             image_bytes = prepare_garment_cover_photo(photo)
+            if image_bytes is not None:
+                visual = garment_reference_presentation(original_bytes)
         except ValueError as error:
             flash(str(error), "error")
             return redirect(url_for("garment_model_edit", model_id=model_id))
@@ -17081,6 +17389,20 @@ def garment_model_edit(model_id):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 temporary = path.with_name(f".{model_id}.{uuid.uuid4().hex}.tmp")
                 temporary.write_bytes(image_bytes)
+                archive = (Path(app.static_folder) / "results" / "model_cover_originals"
+                           / str(model_id))
+                archive.mkdir(parents=True, exist_ok=True)
+                if path.is_file():
+                    (archive / (uuid.uuid4().hex + ".jpg")).write_bytes(path.read_bytes())
+                original = archive / (uuid.uuid4().hex + Path(photo.filename).suffix.lower())
+                original.write_bytes(original_bytes)
+                presentation = garment_reference_preview_path(f"results/model_covers/{model_id}.jpg")
+                presentation.parent.mkdir(parents=True, exist_ok=True)
+                visual_temporary = presentation.with_name("." + uuid.uuid4().hex + ".tmp")
+                if visual is not None:
+                    visual_temporary.write_bytes(visual)
+                metadata = {"original_path": original.relative_to(Path(app.static_folder)).as_posix(),
+                            "sha256": sha256_bytes(original_bytes)}
             if editable_details:
                 execute(
                     """UPDATE garment_models
@@ -17090,7 +17412,14 @@ def garment_model_edit(model_id):
                     (name, color, description or None, model_id),
                 )
             if temporary is not None:
+                if visual is not None:
+                    os.replace(visual_temporary, presentation)
+                elif presentation.is_file():
+                    os.replace(presentation, archive / (uuid.uuid4().hex + ".png"))
                 os.replace(temporary, path)
+                path.with_suffix(".original.json").write_text(
+                    json.dumps(metadata), encoding="utf-8",
+                )
         except Exception:
             app.logger.exception("No se pudo actualizar el modelo o su fotografia.")
             flash("No se pudo guardar el modelo. Intente nuevamente.", "error")
@@ -17098,6 +17427,8 @@ def garment_model_edit(model_id):
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+            if "visual_temporary" in locals():
+                visual_temporary.unlink(missing_ok=True)
 
         flash("Modelo actualizado correctamente.", "success")
         return redirect(url_for("garment_models_page"))
@@ -17107,10 +17438,39 @@ def garment_model_edit(model_id):
         "garment_model_edit.html", model=model,
         editable_details=editable_details,
         cover_url=garment_cover_url(model_id),
+        cover_has_cutout=garment_cover_has_cutout(model_id),
         garment_colors=GARMENT_COLORS,
         selected_color=selected_color,
         other_color=other_color,
     )
+
+
+def garment_reference_presentation(data):
+    """Apply an explicit catalog outline to these exact original bytes only."""
+    from flask import has_request_context
+    from garment_background_preview import garment_manual_preview
+    options = None
+    if has_request_context():
+        raw = request.form.get("reference_presentation", "")
+        if raw:
+            if len(raw) > 65536:
+                raise ValueError("El ajuste de presentacion supera el limite.")
+            try:
+                values = json.loads(raw)
+                if not isinstance(values, dict) or len(values) > 8:
+                    raise ValueError()
+                options = values.get(sha256_bytes(data))
+            except (TypeError, ValueError):
+                raise ValueError("Ajuste de presentacion no valido.") from None
+    if options is not None:
+        if not isinstance(options, dict):
+            raise ValueError("Ajuste de presentacion no valido.")
+        return garment_manual_preview(data, options.get("points"), options.get("turns", 0))
+    try:
+        return garment_visual_preview(data)
+    except Exception:
+        app.logger.exception("Reference presentation failed; original is preserved.")
+        return None
 
 
 def prepare_garment_reference_images(files):
@@ -17164,7 +17524,9 @@ def save_garment_reference_images(model_id, images, *, cur):
             saved_paths.append(full_path)
             # Non-destructive derivative for display only.
             try:
-                visual = garment_visual_preview(data)
+                # Preview processing is isolated from the immutable source
+                # bytes that are uploaded, stored and used for training.
+                visual = garment_reference_presentation(data)
                 if visual:
                     visual_path = (
                         Path(app.static_folder) / "results" / "model_previews"
@@ -17173,9 +17535,14 @@ def save_garment_reference_images(model_id, images, *, cur):
                     visual_path.parent.mkdir(parents=True, exist_ok=True)
                     visual_path.write_bytes(visual)
                     saved_paths.append(visual_path)
+                else:
+                    app.logger.info(
+                        "Vista de catálogo omitida: segmentación de referencia "
+                        "no confiable para modelo %s (%s)", model_id, filename,
+                    )
             except Exception:
                 app.logger.exception(
-                    "No se pudo generar la vista sin fondo; "
+                    "No se pudo generar la vista de catálogo; "
                     "se conserva la referencia original."
                 )
 
@@ -17220,21 +17587,21 @@ def save_garment_reference_images(model_id, images, *, cur):
 # CAPÍTULO V — Administración de modelos de prenda.
 # Consulta los modelos registrados y determina cuáles puede visualizar
 # cada usuario según su rol y el estado de aprobación.
+def garment_catalog_where(approved_only=False):
+    """Shared catalog membership; soft deletion is represented by active=0."""
+    where = "WHERE gm.active = 1"
+    if approved_only:
+        where += " AND gm.status = 'APROBADO'"
+    return where
+
+
 @app.route("/modelos-prenda")
 @login_required
 def garment_models_page():
     role = normalize_role(session.get("role"))
 
-    where = """
-        WHERE gm.active = 1
-    """
+    where = garment_catalog_where(role == ROLE_QUALITY_MANAGER)
     params = ()
-
-    if role == ROLE_QUALITY_MANAGER:
-        where = """
-            WHERE gm.status = 'APROBADO'
-              AND gm.active = 1
-        """
 
     models = fetch_all(
         f"""
@@ -17309,6 +17676,13 @@ def garment_models_page():
     for model in models:
         model["cover_url"] = garment_cover_url(
             model["id"], model["primary_reference_image"]
+        )
+        model["cover_url"], model["cover_has_cutout"] = garment_cover_display_status(
+            model["id"], model["primary_reference_image"]
+        )
+        model["cover_display_label"] = (
+            "Vista de catálogo" if model["cover_has_cutout"]
+            else "Fotografía original"
         )
 
     return render_template(
@@ -17584,7 +17958,9 @@ def garment_reference_camera_cutout():
     if not data or len(data) > 8 * 1024 * 1024:
         return jsonify({"error": "La foto excede el tamano permitido."}), 413
     try:
-        visual = garment_visual_preview(data)
+        visual = garment_reference_presentation(data)
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
     except Exception:
         app.logger.exception("Error al separar fondo de referencia visual.")
         visual = None
@@ -17592,6 +17968,37 @@ def garment_reference_camera_cutout():
         return jsonify({
             "ok": False,
             "error": "El fondo no pudo separarse de forma segura."
+        }), 422
+    response = Response(visual, mimetype="image/png")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.route("/modelos-prenda/referencia/<int:model_id>/recorte", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_reference_upload_cutout(model_id):
+    """Preview-only segmentation of an uploaded reference photograph."""
+    model = get_garment_model(model_id)
+    if not model or not can_manage_garment_model(model):
+        return jsonify({"ok": False, "error": "No autorizado."}), 403
+    upload = request.files.get("photo")
+    if upload is None or not upload.filename:
+        return jsonify({"ok": False, "error": "Seleccione una fotografía."}), 400
+    data = upload.stream.read(8 * 1024 * 1024 + 1)
+    if not data or len(data) > 8 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "La foto supera 8 MB."}), 413
+    try:
+        visual = garment_reference_presentation(data)
+    except Exception:
+        app.logger.exception("Error al segmentar referencia del modelo %s", model_id)
+        visual = None
+    if visual is None:
+        return jsonify({
+            "ok": False,
+            "error": "No se pudo aislar la prenda de forma confiable; "
+                     "se muestra la fotografía original.",
         }), 422
     response = Response(visual, mimetype="image/png")
     response.headers["Cache-Control"] = "no-store"
@@ -17653,7 +18060,7 @@ def garment_reference_camera_photo():
 @role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
 def garment_model_create():
     if request.method == "POST":
-        name = request.form.get("name", "").strip()
+        name, name_error = garment_model_name_from_form(request.form)
         try:
             color = garment_color_from_form(request.form)
         except ValueError as error:
@@ -17666,11 +18073,8 @@ def garment_model_create():
             "",
         ).strip()
 
-        if not name:
-            flash(
-                "Ingrese el nombre del modelo de blusa.",
-                "error",
-            )
+        if name_error:
+            flash(name_error, "error")
             return render_template(
                 "garment_model_form.html", garment_colors=GARMENT_COLORS
             )
@@ -17712,7 +18116,11 @@ def garment_model_create():
             flash("Puede registrar un maximo de 8 imagenes por modelo.", "error")
             return render_template("garment_model_form.html", garment_colors=GARMENT_COLORS)
 
-        images = prepare_garment_reference_images(reference_files)
+        try:
+            images = prepare_garment_reference_images(reference_files)
+        except ValueError as error:
+            flash(str(error), "error")
+            return render_template("garment_model_form.html", garment_colors=GARMENT_COLORS)
 
         if not images:
             flash(
@@ -17833,6 +18241,87 @@ def garment_model_create():
     )
 
 
+@app.route("/modelos-prenda/<int:model_id>/nombre", methods=["POST"])
+@login_required
+@role_required(ROLE_ADMIN, ROLE_MODEL_MANAGER)
+def garment_model_rename(model_id):
+    """Cambia solo el nombre comercial del modelo de prenda.
+
+    No se toca la identidad tecnica: el codigo BLUSA-XXXX, el identificador
+    interno, las fotografias, las versiones de IA, los lotes y el historial
+    de inspecciones permanecen igual.
+    """
+    model = get_garment_model(model_id)
+    if not model:
+        flash("El modelo de prenda solicitado no existe.", "error")
+        return redirect(url_for("garment_models_page"))
+
+    if not can_manage_garment_model(model):
+        flash(
+            "No tiene permisos para modificar este modelo.",
+            "error",
+        )
+        return redirect(
+            url_for(
+                "garment_model_detail",
+                model_id=model_id,
+            )
+        )
+
+    name, error = garment_model_name_from_form(request.form)
+    if error:
+        flash(error, "error")
+        return redirect(
+            url_for(
+                "garment_model_detail",
+                model_id=model_id,
+            )
+        )
+
+    if name == str(model.get("name") or "").strip():
+        flash("El nombre del modelo no cambio.", "message")
+        return redirect(
+            url_for(
+                "garment_model_detail",
+                model_id=model_id,
+            )
+        )
+
+    conn = db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE garment_models SET name = %s WHERE id = %s",
+            (name, model_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        app.logger.exception(
+            "No se pudo actualizar el nombre del modelo %s", model_id
+        )
+        flash(
+            "No se pudo guardar el nombre del modelo.",
+            "error",
+        )
+        return redirect(
+            url_for(
+                "garment_model_detail",
+                model_id=model_id,
+            )
+        )
+    finally:
+        cur.close()
+        conn.close()
+
+    flash(f"Nombre actualizado: {name}", "success")
+    return redirect(
+        url_for(
+            "garment_model_detail",
+            model_id=model_id,
+        )
+    )
+
 
 @app.route("/modelos-prenda/<int:model_id>/imagen-referencia", methods=["POST"])
 @login_required
@@ -17854,8 +18343,8 @@ def garment_model_reference_replace(model_id):
         flash("Seleccione una fotografia JPG, PNG o WEBP.", "error")
         return redirect(url_for("garment_model_detail", model_id=model_id))
 
-    # Limite de bytes, dimensiones y normalizacion para no guardar
-    # metadatos privados ni archivos arbitrarios del cliente.
+    # Validate type and dimensions without changing the source bytes.
+    # Presentation is derived separately; source remains exact evidence.
     data = upload.stream.read(8 * 1024 * 1024 + 1)
     if not data or len(data) > 8 * 1024 * 1024:
         flash("La imagen no debe superar 8 MB.", "error")
@@ -17867,27 +18356,40 @@ def garment_model_reference_replace(model_id):
         height,width = image.shape[:2]
         if min(height,width) < 100 or height*width > 16_000_000:
             raise ValueError("La imagen debe medir al menos 100 pixeles por lado y maximo 16 megapixeles.")
-        scale = min(1.0, 1800/max(height,width))
-        if scale < 1:
-            image = cv2.resize(image, (int(width*scale),int(height*scale)),
-                               interpolation=cv2.INTER_AREA)
-        valid,encoded = cv2.imencode(".jpg",image,[cv2.IMWRITE_JPEG_QUALITY,90])
-        if not valid:
-            raise ValueError("No fue posible procesar la imagen.")
+        visual = garment_reference_presentation(data)
     except (ValueError, cv2.error) as error:
         flash(str(error), "error")
         return redirect(url_for("garment_model_detail",model_id=model_id))
 
     from uuid import uuid4
     folder = Path(app.static_folder)/"results"/"model_references"/str(model_id)
-    relative = f"results/model_references/{model_id}/{uuid4().hex}.jpg"
+    relative = f"results/model_references/{model_id}/{uuid4().hex}{Path(upload.filename).suffix.lower()}"
     destination = Path(app.static_folder)/relative
     conn = db()
     cur = conn.cursor(dictionary=True)
     committed = False
+    preview_path = None
     try:
         folder.mkdir(parents=True,exist_ok=True)
-        destination.write_bytes(encoded.tobytes())
+        destination.write_bytes(data)
+        try:
+            if visual:
+                preview_path = (
+                    Path(app.static_folder) / "results" / "model_previews"
+                    / str(model_id) / (destination.stem + ".png")
+                )
+                preview_path.parent.mkdir(parents=True, exist_ok=True)
+                preview_path.write_bytes(visual)
+            else:
+                app.logger.info(
+                    "Vista de catálogo no validada para modelo %s; "
+                    "la referencia original permanece como respaldo.", model_id,
+                )
+        except Exception:
+            app.logger.exception(
+                "No se pudo generar vista de catálogo para modelo %s; "
+                "se conserva el original.", model_id,
+            )
         conn.start_transaction()
         cur.execute(
             """SELECT id, image_path
@@ -17924,6 +18426,8 @@ def garment_model_reference_replace(model_id):
     finally:
         if not committed:
             destination.unlink(missing_ok=True)
+            if preview_path is not None:
+                preview_path.unlink(missing_ok=True)
         cur.close()
         conn.close()
     return redirect(url_for("garment_model_detail",model_id=model_id))
@@ -17971,8 +18475,12 @@ def garment_model_detail(model_id):
     )
 
     for image in images:
-        image["visual_url"] = garment_reference_visual_url(
+        image["has_visual_cutout"], image["visual_url"] = garment_reference_preview_status(
             image.get("image_path", "")
+        )
+        image["visual_label"] = (
+            "Prenda aislada para catálogo" if image["has_visual_cutout"]
+            else "Fotografía original de referencia"
         )
     primary_photo_url = garment_cover_url(
         model_id,
@@ -18103,8 +18611,29 @@ def garment_model_detail(model_id):
         and int(model.get("active") or 0) == 1
     )
 
-    ai_capture_state = None
+    reference_path = next((image.get("image_path") for image in images
+                           if image.get("image_type") == "REFERENCIA"), "")
+    selected_visual, selected_cutout = garment_cover_display_status(model_id, reference_path)
+    selected_original = garment_cover_original_url(model_id, reference_path)
+    for image in images:
+        image["original_url"] = _safe_reference_original_url(image.get("image_path", ""))
+    if selected_visual:
+        if not images:
+            images.append({})
+        images[0].update(
+            visual_url=selected_visual, has_visual_cutout=selected_cutout,
+            original_url=selected_original,
+            visual_label="Prenda sobre fondo blanco" if selected_cutout else "Referencia original",
+        )
 
+    ai_capture_state = None
+    latest_ai_preparation = next(
+        (item for item in ai_versions
+         if item.get("status") == "PREPARACION"
+         and not item.get("technically_invalidated")),
+        None,
+    )
+    has_ai_history = bool(ai_versions)
     if model.get("status") == "APROBADO":
         try:
             ai_capture_state = _json_sanitize(
@@ -18120,6 +18649,12 @@ def garment_model_detail(model_id):
             )
             ai_capture_state = None
 
+    # A failed/preexisting capture record must never reset progress to 0/20.
+    ai_capture_count = int((ai_capture_state or {}).get("accepted_count") or 0)
+    ai_capture_minimum = int(
+        (ai_capture_state or {}).get("min_count")
+        or get_ai_capture_config()["min_images"]
+    )
     ai_capture_visible = bool(
         can_prepare_ai
         and ai_capture_state
@@ -18153,10 +18688,15 @@ def garment_model_detail(model_id):
         can_manage=can_manage,
         ai_versions=ai_versions,
         ai_in_progress=ai_in_progress,
+        latest_ai_preparation=latest_ai_preparation,
+        has_ai_history=has_ai_history,
         ai_historical_only=ai_historical_only,
         can_prepare_ai=can_prepare_ai,
         ai_capture=ai_capture_state,
         ai_capture_visible=ai_capture_visible,
+        ai_capture_count=ai_capture_count,
+        ai_capture_minimum=ai_capture_minimum,
+        ai_capture_can_train=ai_capture_count >= ai_capture_minimum,
         ai_training=ai_training_state,
         normal_augmentation=normal_augmentation,
         normal_augmentation_can_prepare=normal_augmentation_can_prepare,
@@ -18348,45 +18888,54 @@ def garment_ai_prepare(model_id):
                 )
             )
 
+        # The parent garment row is locked above, serializing first-version
+        # preparation and retries from duplicate form submissions. Reuse an
+        # existing preparation; never create a second PatchCore version.
         cur.execute(
             """
-            SELECT
-                id,
-                version,
-                status
+            SELECT id, version, status
             FROM garment_ai_models
             WHERE garment_model_id = %s
-              AND status IN (
-                  'PREPARACION',
-                  'ENTRENANDO',
-                  'ENTRENADO',
-                  'VALIDACION',
-                  'VALIDADO'
-              )
+              AND status = 'PREPARACION'
             ORDER BY id DESC
             LIMIT 1
+            FOR UPDATE
             """,
             (model_id,),
         )
+        existing_preparation = cur.fetchone()
+        if existing_preparation:
+            conn.rollback()
+            flash(
+                f"La versión {existing_preparation['version']} ya está en preparación. "
+                "Puede continuar la captura.",
+                "success",
+            )
+            return redirect(url_for("guided_capture_page", model_id=model_id))
 
+        cur.execute(
+            """
+            SELECT id, version, status
+            FROM garment_ai_models
+            WHERE garment_model_id = %s
+              AND status IN ('ENTRENANDO', 'ENTRENADO', 'VALIDACION', 'VALIDADO')
+              AND (notes IS NULL OR notes NOT LIKE %s)
+            ORDER BY id DESC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (model_id, "%[TECHNICALLY_INVALIDATED]%"),
+        )
         existing_pending = cur.fetchone()
 
         if existing_pending:
             conn.rollback()
             flash(
-                (
-                    "Ya existe una version de IA en proceso: "
-                    f"{existing_pending['version']} "
-                    f"({existing_pending['status']})."
-                ),
+                f"Ya existe una versión de IA en proceso: {existing_pending['version']} "
+                f"({existing_pending['status']}).",
                 "error",
             )
-            return redirect(
-                url_for(
-                    "garment_model_detail",
-                    model_id=model_id,
-                )
-            )
+            return redirect(url_for("garment_model_detail", model_id=model_id))
 
         cur.execute(
             """
@@ -18497,19 +19046,10 @@ def garment_ai_prepare(model_id):
         conn.close()
 
     flash(
-        (
-            f"Version {version} preparada correctamente. "
-            f"Dataset: {dataset_name}."
-        ),
+        f"Versión {version} preparada correctamente. Inicie la captura de fotografías.",
         "success",
     )
-
-    return redirect(
-        url_for(
-            "garment_model_detail",
-            model_id=model_id,
-        )
-    )
+    return redirect(url_for("guided_capture_page", model_id=model_id))
 
 
 @app.route(
@@ -20360,6 +20900,15 @@ def _ai_capture_idle_payload(
             garment = {"id": row["id"], "code": row["code"]}
 
     has_prep = _has_preparation_version(cur, garment_model_id)
+    cur.execute(
+        """SELECT COUNT(*) AS accepted
+           FROM ai_training_images ti
+           JOIN ai_capture_sessions cs ON cs.id = ti.capture_session_id
+           WHERE cs.garment_model_id = %s AND ti.status = 'ACEPTADA'
+             AND cs.target_ai_model_id IS NULL""",
+        (garment_model_id,),
+    )
+    accepted_count = int((cur.fetchone() or {}).get("accepted") or 0)
     augmentation = (
         normal_augmentation_summary(cur, augmentation_ai_model_id)
         if augmentation_ai_model_id is not None else None
@@ -20392,7 +20941,8 @@ def _ai_capture_idle_payload(
         "session_id": None,
         "status": None,
         "garment_model": garment,
-        "accepted_count": 0,
+        "accepted_count": accepted_count,
+        "min_count": int(cfg["min_images"]),
         "rejected_count": 0,
         "target_count": int(cfg["target_images"]),
         "last_capture": None,

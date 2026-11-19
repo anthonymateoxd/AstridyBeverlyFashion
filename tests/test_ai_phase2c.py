@@ -28,6 +28,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tests.test_support import configure_test_environment
+
+# Las pruebas nunca heredan el `.env` del proyecto (base real, camara ni
+# checkpoint de PatchCore): solo usan la base de pruebas aislada.
+configure_test_environment()
+
 from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")
@@ -949,7 +955,8 @@ class GuidedCaptureHttpTests(unittest.TestCase):
             f"/modelos-prenda/{self.model_a}"
         ).get_data(as_text=True)
 
-        self.assertIn("Iniciar preparación", html)
+        # A model that already has a preparation offers to continue it.
+        self.assertIn("Continuar captura", html)
         self.assertIn('id="startGuidedPreparation"', html)
         self.assertIn(f'href="{self._guided_url(self.model_a)}"', html)
         self.assertNotIn("ASTRID_AI_CAPTURE", html)
@@ -962,7 +969,7 @@ class GuidedCaptureHttpTests(unittest.TestCase):
 
         self.assertIn("Captura guiada", html)
         self.assertIn("frame_fresh", html)
-        self.assertIn("Se activa cuando la cámara tiene una imagen reciente", html)
+        self.assertIn("El botón se habilita cuando la cámara esté lista.", html)
         self.assertIn(self._guided_url(self.model_a, "/video"), html)
         self.assertIn("FINALIZAR PREPARACIÓN", html)
         self.assertIn("CANCELAR SESIÓN", html)
@@ -1315,6 +1322,23 @@ class GuidedCaptureHttpTests(unittest.TestCase):
         self.conn.commit()
         return int(self.cur.lastrowid)
 
+    def test_detail_page_counter_follows_accepted_captures(self):
+        """The counter of the detail sheet must follow the valid captures."""
+        self._prepare_version(self.model_a)
+        started = self._json(self._start(self.model_a, guided=True))
+        session_id = int(started["session"]["session_id"])
+        for index in range(3):
+            self._insert_image(session_id, "ACEPTADA", sequence=index + 1)
+
+        html = self.client.get(
+            f"/modelos-prenda/{self.model_a}"
+        ).get_data(as_text=True)
+
+        self.assertIn("3 / 20", html)
+        self.assertEqual(
+            self._json(self._status(self.model_a))["accepted_count"], 3
+        )
+
     def test_capture_button_is_visible_and_disabled_until_ready(self):
         html = self.client.get(
             self._guided_url(self.model_a)
@@ -1326,7 +1350,7 @@ class GuidedCaptureHttpTests(unittest.TestCase):
             r'id="captureBtn"[^>]*disabled',
         )
         self.assertIn(
-            "Se activa cuando la cámara tiene una imagen reciente",
+            "El botón se habilita cuando la cámara esté lista.",
             html,
         )
         self.assertIn("Lista para capturar", html)
@@ -1560,7 +1584,9 @@ class GuidedCaptureHttpTests(unittest.TestCase):
             self.assertIn("data:image/png;base64,", preview["preview_data_url"])
             self.assertFalse(preview["metrics"]["detected"])
             self.assertEqual(preview["metrics"]["frame_size"], [1920, 1080])
-            self.assertIn("no pudo confirmar", " ".join(preview["warnings"]).lower())
+            self.assertIn(
+                "no fue posible verificar", " ".join(preview["warnings"]).lower()
+            )
             self.assertEqual(
                 self._json(self._status(self.model_a))["accepted_count"],
                 0,
@@ -1821,8 +1847,153 @@ class GuidedCaptureHttpTests(unittest.TestCase):
             f"/modelos-prenda/{self.model_a}"
         ).get_data(as_text=True)
 
-        self.assertIn("Iniciar preparación", html)
-        self.assertIn(self._guided_url(self.model_a), html)
+        self.assertIn("Iniciar captura de fotografías", html)
+        self.assertIn('id="prepareAiForm"', html)
+
+    def test_new_model_prepare_creates_one_v1_and_retries_reuse_it(self):
+        self.cur.execute(
+            "DELETE FROM garment_ai_models WHERE garment_model_id = %s",
+            (self.model_a,),
+        )
+        self.conn.commit()
+
+        first = self._prepare_version(self.model_a)
+        self.assertEqual(first.status_code, 302)
+        self.assertIn(self._guided_url(self.model_a), first.headers["Location"])
+
+        self.cur.execute(
+            "SELECT id, version, model_type, status, active "
+            "FROM garment_ai_models WHERE garment_model_id = %s",
+            (self.model_a,),
+        )
+        created = self.cur.fetchall()
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]["version"], "v1")
+        self.assertEqual(created[0]["model_type"].lower(), "patchcore")
+        self.assertEqual(created[0]["status"], "PREPARACION")
+        self.assertEqual(int(created[0]["active"] or 0), 0)
+
+        repeated = [self._prepare_version(self.model_a) for _ in range(4)]
+        self.assertTrue(all(r.status_code == 302 for r in repeated))
+        self.cur.execute(
+            "SELECT COUNT(*) AS n FROM garment_ai_models "
+            "WHERE garment_model_id = %s AND version = 'v1'",
+            (self.model_a,),
+        )
+        self.assertEqual(int(self.cur.fetchone()["n"]), 1)
+        self.assertTrue(all(
+            self._guided_url(self.model_a) in r.headers["Location"]
+            for r in repeated
+        ))
+
+        page = self.client.get(f"/modelos-prenda/{self.model_a}")
+        html = page.get_data(as_text=True)
+        self.assertIn("Continuar captura", html)
+        self.assertNotIn("Iniciar captura de fotografías", html)
+
+    def test_concurrent_prepare_posts_create_only_one_v1(self):
+        import threading
+
+        self.cur.execute(
+            "DELETE FROM garment_ai_models WHERE garment_model_id = %s",
+            (self.model_a,),
+        )
+        self.conn.commit()
+        # The fixture cursor is not thread safe: resolve the user before the
+        # workers start and let every worker use its own connection.
+        admin_id = self._user_id(self.ADMIN_USERNAME)
+        barrier = threading.Barrier(6)
+        responses = []
+        errors = []
+
+        def post_once():
+            try:
+                with self.A.app.test_client() as client:
+                    with client.session_transaction() as sess:
+                        sess["user_id"] = admin_id
+                    barrier.wait(timeout=10)
+                    responses.append(client.post(
+                        f"/modelos-prenda/{self.model_a}/ia/preparar",
+                        follow_redirects=False,
+                    ))
+            except Exception as exc:
+                errors.append(exc)
+
+        workers = [threading.Thread(target=post_once) for _ in range(6)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=30)
+        self.assertFalse(errors, errors)
+        self.assertEqual(len(responses), 6)
+        self.assertTrue(all(r.status_code == 302 for r in responses))
+        # The fixture connection is in REPEATABLE READ: commit first so the
+        # read below observes the rows committed by the workers.
+        self.conn.commit()
+        self.cur.execute(
+            "SELECT version, status, active FROM garment_ai_models "
+            "WHERE garment_model_id = %s",
+            (self.model_a,),
+        )
+        rows = self.cur.fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["version"], "v1")
+        self.assertEqual(rows[0]["status"], "PREPARACION")
+        self.assertEqual(int(rows[0]["active"] or 0), 0)
+
+    def test_prepare_opens_the_capture_screen_directly(self):
+        """Preparing must take the user to the camera, not back to the sheet."""
+        self.cur.execute(
+            "DELETE FROM garment_ai_models WHERE garment_model_id = %s",
+            (self.model_a,),
+        )
+        self.conn.commit()
+
+        response = self._prepare_version(self.model_a)
+
+        self.assertEqual(response.status_code, 302)
+        location = response.headers.get("Location", "")
+        self.assertIn(f"/modelos-prenda/{self.model_a}/captura-ia", location)
+        self.assertNotEqual(location, f"/modelos-prenda/{self.model_a}")
+
+        page = self.client.get(location)
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        self.assertIn("Captura guiada", html)
+        self.assertIn("CAPTURAR IMAGEN", html)
+        self.assertIn(f"modelos-prenda/{self.model_a}/captura-ia/video", html)
+
+    def test_prepare_rejects_unapproved_and_unauthorized_models(self):
+        self.cur.execute(
+            "DELETE FROM garment_ai_models WHERE garment_model_id = %s",
+            (self.model_a,),
+        )
+        self.cur.execute(
+            "UPDATE garment_models SET status='BORRADOR', active=1 WHERE id=%s",
+            (self.model_a,),
+        )
+        self.conn.commit()
+        response = self._prepare_version(self.model_a)
+        self.assertEqual(response.status_code, 302)
+        self.cur.execute(
+            "SELECT COUNT(*) AS n FROM garment_ai_models WHERE garment_model_id=%s",
+            (self.model_a,),
+        )
+        self.assertEqual(int(self.cur.fetchone()["n"]), 0)
+
+        self.cur.execute(
+            "UPDATE garment_models SET status='APROBADO', active=1 WHERE id=%s",
+            (self.model_a,),
+        )
+        self.conn.commit()
+        self._login(self.QM_USERNAME)
+        denied = self._prepare_version(self.model_a)
+        self.assertNotEqual(denied.status_code, 500)
+        self.cur.execute(
+            "SELECT COUNT(*) AS n FROM garment_ai_models WHERE garment_model_id=%s",
+            (self.model_a,),
+        )
+        self.assertEqual(int(self.cur.fetchone()["n"]), 0)
 
     def test_capture_image_endpoint_serves_existing_file(self):
         from ai_domain import (

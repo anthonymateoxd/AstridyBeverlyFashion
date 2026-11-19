@@ -378,7 +378,7 @@
 
 .detail-images-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
   gap: 16px;
 }
 
@@ -391,10 +391,10 @@
 
 .detail-image-card img {
   width: 100%;
-  height: 240px;
-  object-fit: cover;
+  height: clamp(280px, 35vw, 440px);
+  object-fit: contain;
   display: block;
-  background: #f3f5f8;
+  background: #fff;
 }
 
 .detail-image-card figcaption {
@@ -499,6 +499,79 @@
 .detail-button.primary:hover { background: #163979; }
 .detail-button.success { background: #e5f7ed; color: #187f50; border-color: #ccebd9; }
 .detail-button.danger { background: #fdeaea; color: #a33c3c; border-color: #efcece; }
+
+/* Edicion en linea del nombre comercial del modelo */
+.detail-card-head-name { flex-wrap: wrap; }
+.detail-card-head-name > div { flex: 1 1 100%; min-width: 0; }
+.detail-inline-edit {
+  position: relative;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.detail-inline-edit > summary {
+  list-style: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.detail-inline-edit > summary::-webkit-details-marker { display: none; }
+
+.detail-inline-edit-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  background: #f9fbfd;
+  border: 1px solid #e5eaf2;
+  border-radius: 14px;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.detail-inline-edit-form label {
+  color: #8996ad;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+
+.detail-inline-edit-form input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 11px 14px;
+  border: 1px solid #dfe5ef;
+  border-radius: 12px;
+  background: #fff;
+  color: #10275a;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+}
+
+.detail-inline-edit-form input:focus {
+  outline: 2px solid #1597dc;
+  outline-offset: 1px;
+  border-color: #1597dc;
+}
+
+.detail-inline-edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.detail-inline-edit-form small {
+  color: #7a88a2;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  line-height: 1.5;
+}
 
 .detail-muted {
   margin: 0;
@@ -1175,11 +1248,41 @@
 
   <div class="detail-content-grid">
     <section class="detail-card">
-      <div class="detail-card-head">
+      <div class="detail-card-head detail-card-head-name">
         <div>
           <h2>Información general</h2>
           <p>Datos principales del modelo registrados para su operación y seguimiento.</p>
         </div>
+        {% if can_manage %}
+        <details class="detail-inline-edit">
+          <summary class="detail-button neutral">Editar nombre</summary>
+          <form
+            class="detail-inline-edit-form"
+            method="post"
+            action="{{ url_for('garment_model_rename', model_id=model.id) }}"
+          >
+            <label for="garmentModelNameInput">Nombre del modelo</label>
+            <input
+              id="garmentModelNameInput"
+              name="name"
+              type="text"
+              maxlength="150"
+              value="{{ model.name }}"
+              autocomplete="off"
+              required
+            >
+            <div class="detail-inline-edit-actions">
+              <button class="detail-button primary" type="submit">
+                Guardar nombre
+              </button>
+            </div>
+            <small>
+              Solo cambia la etiqueta comercial. El código, las fotografías,
+              las versiones de IA y los lotes se conservan.
+            </small>
+          </form>
+        </details>
+        {% endif %}
       </div>
 
       <div class="detail-info-grid">
@@ -1287,7 +1390,7 @@
     </div>
 
     {% if can_manage %}
-    <form method="post" action="{{ url_for('garment_model_reference_replace',model_id=model.id) }}"
+    <form data-presentation-form data-presentation-endpoint="{{ url_for('garment_reference_camera_cutout') }}" method="post" action="{{ url_for('garment_model_reference_replace',model_id=model.id) }}"
           enctype="multipart/form-data"
           style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin:0 0 18px">
       <label style="flex:1 1 230px;min-width:0;font-size:13px;color:var(--ui-text,#10275a);font-weight:700">
@@ -1306,14 +1409,15 @@
         {% for image in images %}
         <figure class="detail-image-card">
           <img
-            src="{{ primary_photo_url if loop.first and primary_photo_url else image.visual_url }}"
-            alt="Referencia del modelo {{ model.name }}"
+            src="{{ image.visual_url }}"
+            alt="{{ image.visual_label }} del modelo {{ model.name }}"
             onerror="this.hidden=true;this.nextElementSibling.hidden=false"
           >
           <div hidden role="status" style="min-height:140px;padding:18px;background:#f4f6fa;color:#64758f;font-size:13px">
             La foto de referencia anterior ya no esta disponible. Puede volver a subirla arriba.
           </div>
-          <figcaption>Referencia {{ loop.index }} · {{ model.code }}</figcaption>
+          <figcaption>Referencia {{ loop.index }} · {{ model.code }} · {{ 'Prenda sobre fondo blanco' if image.has_visual_cutout else 'Original' }}{% if image.original_url %} &middot; <a href="{{ image.original_url }}" target="_blank" rel="noopener">Ver original</a>{% endif %}</figcaption>
+          {% if not image.has_visual_cutout %}<p role="status" style="padding:0 14px 14px;color:#64748b;font-size:13px">Presentaci&oacute;n pendiente: ajuste el contorno para aislar la prenda. La imagen mostrada es el original.</p>{% endif %}
         </figure>
         {% endfor %}
       </div>
@@ -1335,7 +1439,7 @@
           MODO PREPARACIÓN DE IA
         </span>
 
-        {% if can_prepare_ai and ai_versions and ai_versions[0].status == 'PREPARACION' %}
+        {% if can_prepare_ai and latest_ai_preparation %}
         <a
           class="detail-button success"
           id="startGuidedPreparation"
@@ -1345,14 +1449,14 @@
         </a>
         {% endif %}
 
-        {% if can_prepare_ai and not ai_in_progress %}
+        {% if can_prepare_ai and not latest_ai_preparation and not ai_in_progress %}
         <form
           id="prepareAiForm"
           method="post"
           action="{{ url_for('garment_ai_prepare', model_id=model.id) }}"
         >
           <button class="detail-button primary" type="submit">
-            Preparar nueva versión
+            {{ 'Iniciar captura de fotografías' if not has_ai_history else 'Preparar nueva versión' }}
           </button>
         </form>
         {% endif %}
@@ -1510,7 +1614,13 @@
           <div>
             <span class="detail-label">Capturas válidas</span>
             <span class="detail-value">
-              {{ ai_training.accepted_count or 0 }} / {{ ai_training.min_count or 20 }} mínimas
+              {{ ai_capture_count }} / {{ ai_capture_minimum }} válidas (mínimo)
+            </span>
+          </div>
+          <div>
+            <span class="detail-label">Entrenamiento</span>
+            <span class="detail-value">
+              {{ 'Disponible para iniciar manualmente' if ai_capture_can_train else 'Se habilita al alcanzar el mínimo; no inicia automáticamente' }}
             </span>
           </div>
           {% elif current_ai.normal_images_count is not none %}
@@ -2817,4 +2927,5 @@
 })();
 </script>
 
+<script src="{{ url_for('static',filename='js/garment-reference-preview.js') }}"></script>
 {% endblock %}

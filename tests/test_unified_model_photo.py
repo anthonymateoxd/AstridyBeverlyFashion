@@ -64,7 +64,7 @@ class MainPhotoTests(unittest.TestCase):
         query.assert_called_once()
     def test_template_uses_same_main_photo(self):
         html=(ROOT/"templates/garment_model_detail.html").read_text(encoding="utf-8")
-        self.assertIn("primary_photo_url if loop.first",html)
+        self.assertIn('src="{{ image.visual_url }}"',html)
         catalog=(ROOT/"templates/garment_models.html").read_text(encoding="utf-8")
         self.assertIn("model.cover_url",catalog)
 

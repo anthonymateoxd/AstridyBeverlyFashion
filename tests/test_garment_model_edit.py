@@ -58,12 +58,8 @@ class GarmentModelEditTests(unittest.TestCase):
 
     @staticmethod
     def photo():
-        from cv2 import imencode
-        from numpy import full
-        image = full((240, 180, 3), 175, dtype="uint8")
-        ok, jpg = imencode(".jpg", image)
-        assert ok
-        return io.BytesIO(jpg.tobytes())
+        from tests.test_garment_background_preview import legacy_sample
+        return io.BytesIO(legacy_sample())
 
     def test_edit_draft_name_color_and_photo(self):
         response, execute = self._post({
@@ -83,7 +79,7 @@ class GarmentModelEditTests(unittest.TestCase):
             self.a.app.test_request_context(),
             patch.object(self.a, "fetch_one", return_value=None),
         ):
-            self.assertIn("model_covers/12345.jpg", self.a.garment_cover_url(12345))
+            self.assertIn("model_cover_previews/12345.png", self.a.garment_cover_url(12345))
 
     def test_approved_model_accepts_cover_but_cannot_change_metadata(self):
         self.model["status"] = "APROBADO"
@@ -123,6 +119,48 @@ class GarmentModelEditTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("/dashboard", response.location)
         execute.assert_not_called()
+
+    def test_cover_keeps_exact_original_and_separate_white_presentation(self):
+        import json
+        import hashlib
+        photo = self.photo()
+        original = photo.getvalue()
+        response, execute = self._post({
+            "name": "Modelo", "color": "Azul", "description": "",
+            "cover_photo": (photo, "camara.jpg"),
+        })
+        self.assertEqual(response.status_code, 302)
+        execute.assert_called_once()
+        root = Path(self.temp.name)
+        metadata = json.loads((root/"results/model_covers/12345.original.json").read_text())
+        self.assertEqual((root/metadata["original_path"]).read_bytes(), original)
+        self.assertEqual(metadata["sha256"], hashlib.sha256(original).hexdigest())
+        self.assertTrue((root/"results/model_cover_previews/12345.png").is_file())
+        with self.a.app.test_request_context():
+            url, isolated = self.a.garment_cover_display_status(12345, "")
+            self.assertTrue(isolated)
+            self.assertIn("model_cover_previews/12345.png", url)
+            self.assertIn(metadata["original_path"], self.a.garment_cover_original_url(12345, ""))
+
+    def test_failed_cutout_saves_original_without_claiming_catalog_cutout(self):
+        from cv2 import imencode
+        from numpy import full
+        _, encoded = imencode(".jpg", full((240, 180, 3), 240, dtype="uint8"))
+        previous=Path(self.temp.name)/"results/model_cover_previews/12345.png"
+        previous.parent.mkdir(parents=True,exist_ok=True)
+        previous.write_bytes(b'previous derived preview')
+        response, execute = self._post({
+            "name": "Modelo", "color": "Azul",
+            "cover_photo": (io.BytesIO(encoded.tobytes()), "sin-prenda.jpg"),
+        })
+        self.assertEqual(response.status_code, 302)
+        execute.assert_called_once()
+        self.assertTrue((Path(self.temp.name)/"results/model_covers/12345.jpg").exists())
+        self.assertFalse((Path(self.temp.name)/"results/model_cover_previews/12345.png").exists())
+        originals=list((Path(self.temp.name)/"results/model_cover_originals/12345").glob('*.jpg'))
+        self.assertEqual(len(originals),1)
+        self.assertEqual(originals[0].read_bytes(),encoded.tobytes())
+        self.assertEqual(list((Path(self.temp.name)/"results/model_cover_originals/12345").glob('*.png'))[0].read_bytes(),b'previous derived preview')
 
     def test_photo_is_rejected_above_five_megabytes(self):
         upload = FileStorage(

@@ -19,6 +19,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tests.test_support import configure_test_environment
+
+# Las pruebas nunca heredan el `.env` del proyecto (base real, camara ni
+# checkpoint de PatchCore): solo usan la base de pruebas aislada.
+configure_test_environment()
+
 from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")

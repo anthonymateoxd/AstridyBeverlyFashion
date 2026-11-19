@@ -103,6 +103,19 @@ class ProductionRuntimeTests(unittest.TestCase):
         self.assertTrue(conn.cursor_obj.closed)
         self.assertTrue(conn.closed)
 
+    def test_runtime_preserves_selected_version_v1_and_v2(self):
+        for version, model_id, threshold in (("v1", 2538, 44.41), ("v2", 2539, 51.25)):
+            with self.subTest(version=version):
+                conn = _Connection(self._row(ai_version=version, ai_model_id=model_id,
+                                             threshold_final=threshold))
+                with patch.object(A, "db", return_value=conn), \
+                     patch.object(A, "get_ai_artifacts_root", return_value=self.root), \
+                     patch.object(A.ai_validation, "get_model_inspector", return_value=object()):
+                    runtime = A.resolve_active_production_ai_runtime()
+                self.assertEqual(runtime["version"], version)
+                self.assertEqual(runtime["ai_model_id"], model_id)
+                self.assertEqual(runtime["threshold"], threshold)
+
     def test_runtime_rejects_ai_from_another_garment_model(self):
         conn = _Connection(self._row(ai_garment_model_id=9999))
         with patch.object(A, "db", return_value=conn), \

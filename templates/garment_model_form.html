@@ -9,10 +9,11 @@
 .gmf-field input,.gmf-field textarea{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d8e1ee;border-radius:8px;font:inherit;color:var(--ui-text,#10275a)}
 .gmf-field textarea{min-height:110px;resize:vertical}
 .gmf-field select{width:100%;box-sizing:border-box;min-height:47px;padding:12px;border:1px solid #d8e1ee;border-radius:8px;background:#fff;color:var(--ui-text,#10275a);font:inherit}
-.garment-custom-color{margin-top:12px;padding:12px;background:#f7f9fe;border:1px solid #e0e8f4;border-radius:9px}
+.garment-custom-color{margin:0 0 18px;padding:12px;background:#f7f9fe;border:1px solid #e0e8f4;border-radius:9px}
 .garment-custom-color[hidden]{display:none}
 .garment-custom-color label{font-size:12px;margin-bottom:7px}
 .garment-custom-color small{display:block;margin-top:7px;color:#657b98;font-size:12px;line-height:1.4}
+@media(min-width:801px){.garment-custom-color{margin-left:calc(50% + 9px);max-width:calc(50% - 9px)}}
 .gmf-fixed{padding:12px;background:#f4f7fc;border:1px solid #dce5f2;border-radius:8px;color:#445e80;line-height:1.5}
 .gmf-button{background:var(--ui-navy,#0d2a66);color:#fff;border:1px solid var(--ui-navy,#0d2a66);border-radius:8px;padding:13px 18px;font-weight:800;cursor:pointer}
 .gmf-button:hover:not(:disabled){background:var(--ui-navy-soft,#24487f)}
@@ -27,9 +28,9 @@
 .gmf-photo-status{min-height:20px;color:#315778;font-size:13px;line-height:1.5;margin-top:10px}
 .gmf-photo-status[data-error="true"]{color:#a33341}
 .gmf-photo-summary{margin:16px 0 10px;font-size:13px;font-weight:700;color:var(--ui-text,#10275a)}
-.gmf-photo-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:11px;margin:0 0 20px}
+.gmf-photo-gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:11px;margin:0 0 20px}
 .gmf-photo-card{min-width:0;background:#fff;border:1px solid #e1e8f2;border-radius:10px;overflow:hidden}
-.gmf-photo-card img{height:110px;width:100%;object-fit:contain;background:#f0f4fa;display:block}
+.gmf-photo-card img{height:clamp(240px,30vw,320px);width:100%;object-fit:contain;background:#fff;display:block}
 .gmf-photo-card span{display:block;margin:9px 9px 5px;font-size:11px;color:#58708f;overflow-wrap:anywhere}
 .gmf-photo-remove{margin:0 9px 10px;display:block;border:1px solid #d6e1f1;background:#fff;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700;color:#183666;cursor:pointer}
 .gmf-photo-option:focus-visible,.gmf-photo-remove:focus-visible,.gmf-button:focus-visible{outline:2px solid #1597dc;outline-offset:2px}
@@ -64,9 +65,11 @@
       {% set color_field_id = "gmfColorSelect" %}
       {% set selected_color = "" %}
       {% set other_color = "" %}
-      {% include "_garment_color_select.html" %}
+      {% with color_part = "select" %}{% include "_garment_color_select.html" %}{% endwith %}
     </div>
   </div>
+
+  {% with color_part = "custom" %}{% include "_garment_color_select.html" %}{% endwith %}
 
   <div class="gmf-grid">
     <div class="gmf-field">
@@ -164,10 +167,17 @@
         method:"POST",credentials:"same-origin",cache:"no-store",
         body:payload
       });
-      if(!response.ok) return null;
+      if(!response.ok){
+        const detail=await response.json().catch(()=>({}));
+        throw new Error(detail.error||"No se pudo validar el recorte.");
+      }
       const result=await response.blob();
-      return result.type==="image/png"&&result.size?result:null;
-    }catch(_error){return null;}
+      if(result.type!=="image/png"||!result.size)
+        throw new Error("La respuesta de recorte no es una imagen válida.");
+      return result;
+    }catch(error){
+      throw new Error(error.message||"No se pudo validar el recorte.");
+    }
   }
   function message(text,error=false){
     status.textContent=text;
@@ -239,7 +249,9 @@
       card.append(remove);
       gallery.append(card);
     });
+    submit.disabled=capturing||!photos.length;
     captureButton.disabled=capturing||photos.length>=maxPhotos;
+    input.disabled=capturing;
   }
 
   input.addEventListener("change",()=>{
@@ -261,11 +273,27 @@
         return;
       }
     }
-    photos.push(...selected);
-    thumbnails.push(...selected.map(()=>null));
-    showOriginal.push(...selected.map(()=>false));
-    refresh();
-    message("Fotografías listas para guardar con el nuevo modelo.");
+    capturing=true;refresh();
+    Promise.all(selected.map(async file=>{try{return {file,clean:await removeBackground(file)};}catch{return {file,clean:null};}}))
+      .then(results=>{
+        photos.push(...results.map(item=>item.file));
+        thumbnails.push(...results.map(item=>item.clean));
+        showOriginal.push(...results.map(()=>false));
+        refresh();
+        const rejected=results.filter(item=>!item.clean).length;
+        message(rejected
+          ?"Original conservado. No se confirmó el recorte de "+rejected+
+            " fotografía(s); revise el original antes de guardar."
+          :"Fotografías listas: las vistas muestran la prenda aislada y se conservan los originales.",
+          rejected>0);
+      })
+      .catch(error=>{
+        photos.push(...selected);
+        thumbnails.push(...selected.map(()=>null));
+        showOriginal.push(...selected.map(()=>true));
+        refresh();
+        message((error.message||"No se pudo comprobar el recorte.")+" Se conserva el original; puede guardarlo o volver a capturar.",true);
+      }).finally(()=>{capturing=false;refresh();});
   });
 
   captureButton.addEventListener("click",async()=>{
@@ -288,7 +316,13 @@
       }
       if(photos.length>=maxPhotos) return;
       const file=new File([blob],"camara-"+Date.now()+".jpg",{type:"image/jpeg"});
-      const clean=await removeBackground(file);
+      let clean=null;
+      try{clean=await removeBackground(file);}
+      catch(error){
+        photos.push(file);thumbnails.push(null);showOriginal.push(true);refresh();
+        message((error.message||"No se pudo comprobar el recorte.")+" Se conserva el original; puede guardarlo o volver a capturar.",true);
+        return;
+      }
       photos.push(file);
       thumbnails.push(clean);
       showOriginal.push(false);

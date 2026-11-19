@@ -250,7 +250,7 @@ body.app-body{
 .models-list{display:grid;gap:18px}
 .model-card{
   display:grid;
-  grid-template-columns:170px minmax(0,1fr) auto;
+  grid-template-columns:210px minmax(0,1fr) auto;
   gap:28px;
   align-items:center;
   min-height:210px;
@@ -262,16 +262,16 @@ body.app-body{
 }
 .model-card[hidden]{display:none}
 .model-visual{
-  height:164px;
+  height:210px;
   border-radius:14px;
-  background:linear-gradient(145deg,#fbf5f5,#f2f4f8);
+  background:#fff;
   border:1px solid #edf0f4;
   display:grid;
   place-items:center;
   overflow:hidden;
   position:relative;
 }
-.model-cover-photo{width:100%;height:100%;object-fit:contain;display:block;padding:6px;box-sizing:border-box}
+.model-cover-photo{width:100%;height:100%;object-fit:contain;display:block;padding:0;box-sizing:border-box}
 .model-shirt{
   width:98px;
   height:98px;
@@ -426,7 +426,7 @@ body.app-body{
 @media(max-width:1100px){
   .models-toolbar{grid-template-columns:1fr 1fr}
   .models-count{text-align:left}
-  .model-card{grid-template-columns:140px minmax(0,1fr)}
+  .model-card{grid-template-columns:180px minmax(0,1fr)}
   .model-side{grid-column:1/-1;flex-direction:row;align-items:center}
 }
 @media(max-width:900px){
@@ -443,7 +443,7 @@ body.app-body{
   .models-page-head h2{font-size:30px}
   .models-toolbar{grid-template-columns:1fr}
   .model-card{grid-template-columns:1fr;gap:18px}
-  .model-visual{height:180px}
+  .model-visual{height:clamp(240px,72vw,340px)}
   .model-side{grid-column:auto;align-items:stretch;flex-direction:column}
   .model-actions{width:100%}
   .model-view-btn{width:100%}
@@ -544,7 +544,7 @@ body.app-body{
     >
       <div class="model-visual">
         {% if model.cover_url %}
-        <img class="model-cover-photo" src="{{ model.cover_url }}" alt="Foto de {{ model.name }}" loading="lazy">
+        <img class="model-cover-photo" src="{{ model.cover_url }}" alt="{{ model.cover_display_label }} de {{ model.name }}" loading="lazy">
         {% else %}
         <div class="model-shirt">
           <svg viewBox="0 0 120 120">
